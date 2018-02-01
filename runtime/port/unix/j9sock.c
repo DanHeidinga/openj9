@@ -17,7 +17,7 @@
  * [1] https://www.gnu.org/software/classpath/license.html
  * [2] http://openjdk.java.net/legal/assembly-exception.html
  *
- * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
+ * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
  *******************************************************************************/
 
 /**
@@ -47,7 +47,7 @@
 #include <arpa/inet.h>
 #endif
 
-#if defined(J9ZTPF)
+#if defined(J9ZTPF) || defined(OSX)
 #undef GLIBC_R
 #endif /* defined(J9ZTPF) */
 
@@ -57,9 +57,11 @@
 
 #if defined(LINUX) || defined(OSX)
 #include <poll.h>
+#if defined(LINUX)
 #define IPV6_FLOWINFO_SEND      33
 #define HAS_RTNETLINK 1
-#endif /* defined(LINUX) || defined(OSX) */
+#endif /* LINUX */
+#endif /* LINUX || OSX */
 
 #if defined(HAS_RTNETLINK)
 #include <asm/types.h>
@@ -796,7 +798,7 @@ j9sock_fdset_init(struct J9PortLibrary *portLibrary, j9socket_t socketP)
 #else
 	FD_ZERO(&fdset->handle);
 	FD_SET(SOCKET_CAST(socketP), &fdset->handle);
-#endif /* defined(LINUX) || defined(OSX) */
+#endif
 
 	return 0;
 }
@@ -969,11 +971,11 @@ j9sock_getaddrinfo_address(struct J9PortLibrary *portLibrary, j9addrinfo_t handl
 {
 	int32_t rc = 0;
 	OSADDRINFO *addr;
-	void *sock_addr;
+    	void *sock_addr;
 #ifndef IPv6_FUNCTION_SUPPORT
 	char ** addr_list;
 #endif /* IPv6_FUNCTION_SUPPORT */
-	int i;
+    	int i;
 
 	/* If we have the IPv6 functions available we cast to an OSADDRINFO structure otherwise a OSHOSTENET structure */
 #ifdef IPv6_FUNCTION_SUPPORT
@@ -981,17 +983,17 @@ j9sock_getaddrinfo_address(struct J9PortLibrary *portLibrary, j9addrinfo_t handl
 	for( i=0; i<index; i++ ) {
 		addr = addr->ai_next;
 	}
-	if( addr->ai_family == OS_AF_INET6 ) {
+	if( addr->ai_family == OS_AF_INET6 ) {			
 		sock_addr = ((OSSOCKADDR_IN6 *)addr->ai_addr)->sin6_addr.s6_addr;
 		memcpy( address, sock_addr, 16 );
 		*scope_id =  ((OSSOCKADDR_IN6 *)addr->ai_addr)->sin6_scope_id;
-	} else {
+         } else {
 		sock_addr = &((OSSOCKADDR *)addr->ai_addr)->sin_addr.s_addr;
 		memcpy( address, sock_addr, 4 );
 	}
 #else
 	addr_list = ((OSHOSTENT *) handle->addr_info)->h_addr_list;
-	for( i=0; i<index; i++ ) {
+	for( i=0; i<index; i++ ) { 
 		if( addr_list[i] == NULL ) {
 			return J9PORT_ERROR_SOCKET_VALUE_NULL;
 		}
@@ -1102,7 +1104,7 @@ j9sock_getaddrinfo_family(struct J9PortLibrary *portLibrary, j9addrinfo_t handle
 {
 	int32_t rc = 0;
 	OSADDRINFO *addr;
-    	int i;
+	int i;
 
 	/* If we have the IPv6 functions then we'll cast to a OSADDRINFO othewise we have a hostent */
 #ifdef IPv6_FUNCTION_SUPPORT
@@ -1182,7 +1184,7 @@ j9sock_getaddrinfo_name(struct J9PortLibrary *portLibrary, j9addrinfo_t handle, 
 	addr = (OSADDRINFO *) handle->addr_info;
 	for( i=0; i<index; i++ ) {
 		addr = addr->ai_next;
-	}
+	}		
 	if( addr->ai_canonname == NULL ) {
 		name[0] = 0;
 	} else {
@@ -1190,7 +1192,7 @@ j9sock_getaddrinfo_name(struct J9PortLibrary *portLibrary, j9addrinfo_t handle, 
 	}
 #else
 	alias_list = ((OSHOSTENT *) handle->addr_info)->h_aliases;
-	for( i=0; i<index; i++ ) {
+	for( i=0; i<index; i++ ) { 
 		if( alias_list[i] == NULL ) {
 			return J9PORT_ERROR_SOCKET_VALUE_NULL;
 		}
@@ -1225,7 +1227,7 @@ j9sock_getaddrinfo_name(struct J9PortLibrary *portLibrary, j9addrinfo_t handle, 
 int32_t
 j9sock_gethostbyaddr(struct J9PortLibrary *portLibrary, char *addr, int32_t length, int32_t type, j9hostent_t handle)
 {
-#if defined(J9ZTPF)
+#if defined(J9ZTPF) || defined(OSX) /* Disable this on OSX to get to version */
     int herr = NO_RECOVERY;
     OMRPORT_ACCESS_FROM_J9PORT(portLibrary);
 
@@ -1347,6 +1349,9 @@ j9sock_gethostbyaddr(struct J9PortLibrary *portLibrary, char *addr, int32_t leng
 int32_t
 j9sock_gethostbyname(struct J9PortLibrary *portLibrary, const char *name, j9hostent_t handle)
 {
+#if defined(OSX) /* Disable this on OSX to get to version */
+	return -1;
+#else
 #if !HOSTENT_DATA_R
 	OSHOSTENT *result;
 #endif
@@ -1440,6 +1445,7 @@ j9sock_gethostbyname(struct J9PortLibrary *portLibrary, const char *name, j9host
 #undef hostentBuffer
 
 	return 0;
+#endif /* OSX */
 }
 
 
@@ -1494,7 +1500,7 @@ j9sock_getnameinfo(struct J9PortLibrary *portLibrary, j9sockaddr_t in_addr, int3
 {
 	OMRPORT_ACCESS_FROM_J9PORT(portLibrary);
 	/* On z/TPF we don't support this option of returning the host name from the in_addr */
-#if defined(J9ZTPF)
+#if defined(J9ZTPF) || defined(OSX)  /* Disable this on OSX to get to version */
 	int herr = NO_RECOVERY;
 	J9SOCKDEBUGH( "<gethostbyaddr failed, err=%d>\n", herr);
 	return omrerror_set_last_error(herr, findHostError(herr));
@@ -2417,7 +2423,7 @@ j9sock_select(struct J9PortLibrary *portLibrary, int32_t nfds, j9fdset_t readfd,
 {
 	OMRPORT_ACCESS_FROM_J9PORT(portLibrary);
 	int32_t rc = 0;
-#if !defined(LINUX) && !defined(OSX)	
+#if !defined(LINUX) && !defined(OSX)
 	int32_t result = 0;
 #endif /* !defined(LINUX) && !defined(OSX) */
 
