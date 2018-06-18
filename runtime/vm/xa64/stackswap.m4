@@ -47,7 +47,7 @@ START_PROC(swapStacksAndRunHandler)
         mov rsp, J9TR_ELS_machineSPSaveSlot[rax]
         xor rax, rax
         mov rbp, 8[rsp]
-        call vmSignalHandler
+        call CALL_C_FUNCTION(vmSignalHandler)
 dnl XMM registers are not saved / restored.  Does that matter here?
         nop
         mov rsp, r12

@@ -64,6 +64,8 @@ define({DECLARE_EXTERN},{extrn $1:near})
 
 define({LABEL},$1)
 
+define({CALL_C_FUNCTION},$1)
+
 },{	dnl WIN32
 
 ifdef({OSX},{ 
@@ -73,6 +75,14 @@ define({SHORT_JMP},{})
 define({FILE_START},{
 	.intel_syntax noprefix
 	.text
+})
+
+define({CALL_C_FUNCTION},_$1)
+
+define({START_PROC},{
+	.align 16
+	DECLARE_PUBLIC($1)
+	_$1:
 })
 
 },{	dnl OSX
@@ -85,15 +95,17 @@ define({FILE_START},{
 	.text
 })
 
-})	dnl OSX
-
-define({FILE_END})
+define({CALL_C_FUNCTION},$1)
 
 define({START_PROC},{
 	.align 16
 	DECLARE_PUBLIC($1)
 	$1:
 })
+
+})	dnl OSX
+
+define({FILE_END})
 
 define({END_PROC},{
 END_$1:
@@ -104,7 +116,11 @@ ifdef({OSX},{
 })	dnl OSX
 })
 
+ifdef({OSX},{
+define({DECLARE_PUBLIC},{.global _$1})
+},{	dnl OSX
 define({DECLARE_PUBLIC},{.global $1})
+})	dnl OSX
 
 define({DECLARE_EXTERN},{.extern $1})
 
