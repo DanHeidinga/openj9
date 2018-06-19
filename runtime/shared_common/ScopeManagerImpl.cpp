@@ -31,8 +31,10 @@
 #include "j9consts.h"
 #include <string.h>
 
-SH_ScopeManagerImpl::SH_ScopeManagerImpl():
-	_allCacheletsStarted(false)
+SH_ScopeManagerImpl::SH_ScopeManagerImpl()
+#if defined(J9SHR_CACHELET_SUPPORT)
+	:_allCacheletsStarted(false)
+#endif
 {
 	_htMutexName = "scTableMutex";
 }

@@ -103,9 +103,9 @@ private:
 	IDATA scCollectHashes(J9VMThread* currentThread, SH_CompositeCache* cachelet, CacheletHints* hints);
 	static UDATA scCollectHashOfEntry(void* entry, void* userData);
 	static UDATA scCountCacheletHashes(void* entry, void* userData);
-#endif
 	
 	bool _allCacheletsStarted;
+#endif
 };
 
 #endif /* SCOPEMANAGERIMPL_H_INCLUDED */
