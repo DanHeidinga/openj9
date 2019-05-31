@@ -561,7 +561,7 @@ reportSuspectedPadding(J9PortLibrary *portLib, J9ROMClass *romClass, J9ROMClassG
 	} else if (nbytes > 6) {
 		nbytes = 6;
 	}
-	j9tty_printf(PORTLIB, "0x%p-0x%p [ %*.s", base + lastOffset, base + offset, 12 - 2*nbytes , "");
+	j9tty_printf(PORTLIB, "0x%p-0x%p [ %.*s", base + lastOffset, base + offset, 12 - 2*nbytes , "");
 
 	if (NULL != state->validateRangeCallback) {
 		rangeValid = state->validateRangeCallback(romClass, romBase + lastOffset, nbytes, NULL);
