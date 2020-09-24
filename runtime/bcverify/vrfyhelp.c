@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -121,13 +121,14 @@ addClassName(J9BytecodeVerificationData * verifyData, U_8 * name, UDATA length, 
 	offset = (U_32 *) verifyData->classNameSegmentFree;
 	utf8 = (J9UTF8 *) (offset + 1);
 	J9UTF8_SET_LENGTH(utf8, (U_16) length);
-	verifyData->classNameSegmentFree += (sizeof(U_32) + sizeof(J9UTF8));
+	verifyData->classNameSegmentFree += sizeof(U_32);
 	if (classNameInClass) {
 		offset[0] = (U_32) ((UDATA) name - (UDATA) romClass);
+		verifyData->classNameSegmentFree += sizeof(U_32);
 	} else {
 		offset[0] = 0;
 		strncpy((char *) J9UTF8_DATA(utf8), (char *) name, length);
-		verifyData->classNameSegmentFree += (length - 2 + sizeof(U_32) - 1) & ~(sizeof(U_32) - 1);	/* next U_32 boundary */
+		verifyData->classNameSegmentFree += (sizeof(J9UTF8) + length + sizeof(U_32) - 1) & ~(sizeof(U_32) - 1);	/* next U_32 boundary */
 	}
 	verifyData->classNameList[index] = (J9UTF8 *) offset;
 	verifyData->classNameList[index + 1] = NULL;
@@ -152,7 +153,7 @@ findClassName(J9BytecodeVerificationData * verifyData, U_8 * name, UDATA length)
 
 
 	while ((offset = (U_32 *) verifyData->classNameList[index]) != NULL) {
-		utf8 = (J9UTF8 *) offset + 1;
+		utf8 = (J9UTF8 *) (offset + 1);
 		if ((UDATA) J9UTF8_LENGTH(utf8) == length) {
 			data = (U_8 *) ((UDATA) offset[0] + (UDATA) romClass);
 
@@ -192,7 +193,7 @@ convertClassNameToStackMapType(J9BytecodeVerificationData * verifyData, U_8 *nam
 
 
 	while ((offset = (U_32 *) verifyData->classNameList[index]) != NULL) {
-		utf8 = (J9UTF8 *) offset + 1;
+		utf8 = (J9UTF8 *) (offset + 1);
 		if ((UDATA) J9UTF8_LENGTH(utf8) == (UDATA)length) {
 			data = (U_8 *) ((UDATA) offset[0] + (UDATA) romClass);
 
@@ -247,7 +248,7 @@ buildStackFromMethodSignature( J9BytecodeVerificationData *verifyData, UDATA **s
 
 	if ((!(romMethod->modifiers & J9AccStatic)) && (argMax > 0)) {	
 		/* this is a virtual method, an object compatible with this class is on the stack */
-		J9UTF8* utf8string  = J9ROMMETHOD_GET_NAME(romClass, romMethod);
+		J9UTF8* utf8string  = J9ROMMETHOD_NAME(romMethod);
 		J9UTF8 *className = J9ROMCLASS_CLASSNAME(romClass);
 
 		classIndex = findClassName(verifyData, J9UTF8_DATA(className), J9UTF8_LENGTH(className));
@@ -265,7 +266,7 @@ buildStackFromMethodSignature( J9BytecodeVerificationData *verifyData, UDATA **s
 
 	/* Walk the signature of the method to determine the arg shape */
 
-	args = J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod));
+	args = J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod));
  
 	for (i = 1; args[i] != ')'; i++) {
 		(*argCount)++;
@@ -396,7 +397,7 @@ initializeClassNameList(J9BytecodeVerificationData *verifyData)
 
 
 UDATA * 
-pushLdcType(J9ROMClass * romClass, UDATA index, UDATA * stackTop)
+pushLdcType(J9BytecodeVerificationData *verifyData, J9ROMClass * romClass, UDATA index, UDATA * stackTop)
 {
 	switch(J9_CP_TYPE(J9ROMCLASS_CPSHAPEDESCRIPTION(romClass), index)) {
 		case J9CPTYPE_CLASS:
@@ -416,6 +417,14 @@ pushLdcType(J9ROMClass * romClass, UDATA index, UDATA * stackTop)
 			break;
 		case J9CPTYPE_METHODHANDLE:
 			PUSH(BCV_JAVA_LANG_INVOKE_METHODHANDLE_INDEX << BCV_CLASS_INDEX_SHIFT);
+			break;
+		case J9CPTYPE_CONSTANT_DYNAMIC:
+			{
+				J9ROMConstantDynamicRef* romConstantDynamicRef = (J9ROMConstantDynamicRef *)(J9_ROM_CP_FROM_ROM_CLASS(romClass) + index);
+				J9UTF8 *signature = J9ROMNAMEANDSIGNATURE_SIGNATURE(J9ROMCONSTANTDYNAMICREF_NAMEANDSIGNATURE(romConstantDynamicRef));
+				/* The signature referenced by a ConstantDynamic entry is a field descriptor */
+				stackTop = pushType(verifyData, J9UTF8_DATA(signature), stackTop);
+			}
 			break;
 	}
 
@@ -446,6 +455,9 @@ isClassCompatible(J9BytecodeVerificationData *verifyData, UDATA sourceClass, UDA
 	IDATA rc;
 	U_8 *sourceName, *targetName;
 	UDATA sourceLength, targetLength;
+
+	/* Record class relationship if -XX:+ClassRelationshipVerifier is used */
+	BOOLEAN classRelationshipVerifierEnabled = J9_ARE_ANY_BITS_SET(verifyData->vmStruct->javaVM->extendedRuntimeFlags2, J9_EXTENDED_RUNTIME2_ENABLE_CLASS_RELATIONSHIP_VERIFIER);
 
 	*reasonCode = 0;
 
@@ -522,16 +534,19 @@ isClassCompatible(J9BytecodeVerificationData *verifyData, UDATA sourceClass, UDA
 		 *    except Object (already checked above), java/lang/Cloneable and java/io/Serializable,
 		 *    which means targetClass must be one/array of Object, java/lang/Cloneable and java/io/Serializable.
 		 */
-		if ((IDATA) TRUE == isInterfaceClass(verifyData, targetName, targetLength, reasonCode)) {
-			/* targetClass must be either java/lang/Cloneable or java/io/Serializable
-			 * in the case when sourceClass is an arary type (sourceArity > 0).
-			 */
-			if (((CLONEABLE_CLASS_NAME_LENGTH == targetLength) && ((0 == strncmp((const char*)targetName, CLONEABLE_CLASS_NAME, CLONEABLE_CLASS_NAME_LENGTH))))
-			|| ((SERIALIZEABLE_CLASS_NAME_LENGTH == targetLength) && (0 == strncmp((const char*)targetName, SERIALIZEABLE_CLASS_NAME, SERIALIZEABLE_CLASS_NAME_LENGTH)))
-			) {
-				return (IDATA) TRUE;
+		if (J9UTF8_DATA_EQUALS(targetName, targetLength, CLONEABLE_CLASS_NAME, CLONEABLE_CLASS_NAME_LENGTH)
+		||  J9UTF8_DATA_EQUALS(targetName, targetLength, SERIALIZEABLE_CLASS_NAME, SERIALIZEABLE_CLASS_NAME_LENGTH)
+		) {
+			rc = isInterfaceClass(verifyData, targetName, targetLength, reasonCode);
+
+			if ((classRelationshipVerifierEnabled) && (BCV_ERR_CLASS_RELATIONSHIP_RECORD_REQUIRED == *reasonCode)) {
+				getNameAndLengthFromClassNameList (verifyData, sourceIndex, &sourceName, &sourceLength);
+				rc = j9bcv_recordClassRelationship (verifyData->vmStruct, verifyData->classLoader, sourceName, sourceLength, targetName, targetLength, reasonCode);
 			}
+
+			return rc;
 		}
+
 		return (IDATA) FALSE;
 	}
 
@@ -549,17 +564,43 @@ isClassCompatible(J9BytecodeVerificationData *verifyData, UDATA sourceClass, UDA
 
 	/* if the target is an interface, be permissive */
 	rc = isInterfaceClass(verifyData, targetName, targetLength, reasonCode);
-	if (rc != (IDATA) FALSE) {
+
+	getNameAndLengthFromClassNameList (verifyData, sourceIndex, &sourceName, &sourceLength);
+
+	/* classRelationshipVerifierEnabled and target not already loaded, so record the class relationship */
+	if ((classRelationshipVerifierEnabled) && (BCV_ERR_CLASS_RELATIONSHIP_RECORD_REQUIRED == *reasonCode)) {
+		rc = j9bcv_recordClassRelationship(verifyData->vmStruct, verifyData->classLoader, sourceName, sourceLength, targetName, targetLength, reasonCode);
+	}
+
+	if ((IDATA) FALSE != rc) {
 		return rc;
 	}
 
 	if (NULL != verifyData->vmStruct->currentException) {
 		return (IDATA) FALSE;
 	}
+	
+	if (J9ROMCLASS_IS_HIDDEN(verifyData->romClass)) {	
+		J9UTF8* className = J9ROMCLASS_CLASSNAME(verifyData->romClass);
+		if (J9UTF8_DATA_EQUALS(J9UTF8_DATA(className),  J9UTF8_LENGTH(className), sourceName, sourceLength)) {
+			/* isRAMClassCompatible() cannot find ram class of a hidden class, we are testing if 
+			 * the source class is the subclass of target class. We can use superclass of source class instead here. 
+			 * A hidden class can not be super class of another class, the hidden class name it is not findable and its name is generated at runtime. 
+			 */
+			J9UTF8* superClassName = J9ROMCLASS_SUPERCLASSNAME(verifyData->romClass);
+			sourceLength = J9UTF8_LENGTH(superClassName);
+			sourceName = J9UTF8_DATA(superClassName);
+		}
+	}
 
-	getNameAndLengthFromClassNameList (verifyData, sourceIndex, &sourceName, &sourceLength);
+	rc = isRAMClassCompatible(verifyData, targetName, targetLength , sourceName, sourceLength, reasonCode);
 
-	return isRAMClassCompatible(verifyData, targetName, targetLength , sourceName, sourceLength, reasonCode);
+	/* classRelationshipVerifierEnabled and source and/or target not already loaded, so record the class relationship */
+	if ((classRelationshipVerifierEnabled) && (BCV_ERR_CLASS_RELATIONSHIP_RECORD_REQUIRED == *reasonCode)) {
+		rc = j9bcv_recordClassRelationship(verifyData->vmStruct, verifyData->classLoader, sourceName, sourceLength, targetName, targetLength, reasonCode);
+	}
+
+	return rc;
 }
 
 /*
@@ -753,7 +794,7 @@ j9bcv_createVerifyErrorString(J9PortLibrary * portLib, J9BytecodeVerificationDat
 
 	if ((IDATA) error->errorPC == -1) {
 		/* J9NLS_BCV_ERROR_TEMPLATE_NO_PC=%1$s; class=%3$.*2$s, method=%5$.*4$s%7$.*6$s */
-		formatString = j9nls_lookup_message(J9NLS_DO_NOT_PRINT_MESSAGE_TAG | J9NLS_DO_NOT_APPEND_NEWLINE, J9NLS_BCV_ERROR_TEMPLATE_NO_PC, "%s;%.*s,%.*s%.*s");
+		formatString = j9nls_lookup_message(J9NLS_DO_NOT_PRINT_MESSAGE_TAG | J9NLS_DO_NOT_APPEND_NEWLINE, J9NLS_BCV_ERROR_TEMPLATE_NO_PC, "%s; class=%.*s, method=%.*s%.*s");
 	} else {
 		/* Jazz 82615: Generate the error message framework by default.
 		 * The error message framework is not required when the -XX:-VerifyErrorDetails option is specified.
@@ -761,7 +802,7 @@ j9bcv_createVerifyErrorString(J9PortLibrary * portLib, J9BytecodeVerificationDat
 		if (J9_ARE_ALL_BITS_SET(error->verificationFlags, J9_VERIFY_ERROR_DETAILS)
 		&& (0 != error->errorDetailCode)
 		) {
-			/* Jazz 82615: The value of detailedErrMsg may change if the inital byteArray is insufficient to contain the error message framework.
+			/* Jazz 82615: The value of detailedErrMsg may change if the initial byteArray is insufficient to contain the error message framework.
 			 * Under such circumstances, it points to the address of newly allocated memory.
 			 */
 			detailedErrMsg = byteArray;
@@ -776,10 +817,11 @@ j9bcv_createVerifyErrorString(J9PortLibrary * portLib, J9BytecodeVerificationDat
 		/*Jazz 82615: fetch the corresponding NLS message when type mismatch error is detected */
 		if (NULL == error->errorSignatureString) {
 			/* J9NLS_BCV_ERROR_TEMPLATE_WITH_PC=%1$s; class=%3$.*2$s, method=%5$.*4$s%7$.*6$s, pc=%8$u */
-			formatString = j9nls_lookup_message(J9NLS_DO_NOT_PRINT_MESSAGE_TAG | J9NLS_DO_NOT_APPEND_NEWLINE, J9NLS_BCV_ERROR_TEMPLATE_WITH_PC, "%s;%.*s,%.*s%.*s,%u");
+			formatString = j9nls_lookup_message(J9NLS_DO_NOT_PRINT_MESSAGE_TAG | J9NLS_DO_NOT_APPEND_NEWLINE, J9NLS_BCV_ERROR_TEMPLATE_WITH_PC, "%s; class=%.*s, method=%.*s%.*s, pc=%u");
 		} else {
-			/*Jazz 82615: J9NLS_BCV_ERROR_TEMPLATE_TYPE_MISMATCH=%1$s; class=%3$.*2$s, method=%5$.*4$s%7$.*6$s, pc=%8$u; Mismatch, argument %9$d in signature %11$.*10$s.%13$.*12$s:%15$.*14$s does not match */
-			formatString = j9nls_lookup_message(J9NLS_DO_NOT_PRINT_MESSAGE_TAG | J9NLS_DO_NOT_APPEND_NEWLINE, J9NLS_BCV_ERROR_TEMPLATE_TYPE_MISMATCH, "%s;%.*s,%.*s%.*s,%u;,%d%.*s.%.*s:%.*s");
+			/*Jazz 82615: J9NLS_BCV_ERROR_TEMPLATE_TYPE_MISMATCH=%1$s; class=%3$.*2$s, method=%5$.*4$s%7$.*6$s, pc=%8$u; Type Mismatch, argument %9$d in signature %11$.*10$s.%13$.*12$s:%15$.*14$s does not match */
+			formatString = j9nls_lookup_message(J9NLS_DO_NOT_PRINT_MESSAGE_TAG | J9NLS_DO_NOT_APPEND_NEWLINE, J9NLS_BCV_ERROR_TEMPLATE_TYPE_MISMATCH,
+					"%s; class=%.*s, method=%.*s%.*s, pc=%u; Type Mismatch, argument %d in signature %.*s.%.*s:%.*s does not match");
 		}
 	}
 
@@ -788,8 +830,8 @@ j9bcv_createVerifyErrorString(J9PortLibrary * portLib, J9BytecodeVerificationDat
 	stringLength = strlen(errorString);
 
 	stringLength += J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(error->romClass));
-	stringLength += J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(error->romClass, error->romMethod));
-	stringLength += J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(error->romClass, error->romMethod));
+	stringLength += J9UTF8_LENGTH(J9ROMMETHOD_NAME(error->romMethod));
+	stringLength += J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(error->romMethod));
 	stringLength += 10; /* for the PC */
 	if (NULL != error->errorSignatureString) {
 		stringLength += 10;  /* for the argument index */
@@ -804,8 +846,8 @@ j9bcv_createVerifyErrorString(J9PortLibrary * portLib, J9BytecodeVerificationDat
 	if (NULL != verifyError) {
 		UDATA errStrLength = 0;
 		J9UTF8 * romClassName = J9ROMCLASS_CLASSNAME(error->romClass);
-		J9UTF8 * romMethodName = J9ROMMETHOD_GET_NAME(error->romClass, error->romMethod);
-		J9UTF8 * romMethodSignatureString = J9ROMMETHOD_GET_SIGNATURE(error->romClass, error->romMethod);
+		J9UTF8 * romMethodName = J9ROMMETHOD_NAME(error->romMethod);
+		J9UTF8 * romMethodSignatureString = J9ROMMETHOD_SIGNATURE(error->romMethod);
 
 		if (NULL == error->errorSignatureString) {
 			errStrLength = j9str_printf(PORTLIB, (char*) verifyError, stringLength, formatString, errorString,
@@ -923,8 +965,17 @@ isProtectedAccessPermitted(J9BytecodeVerificationData *verifyData, J9UTF8* decla
 
 		/* Short circuit if the classes are the same */
 		currentClassName = J9ROMCLASS_CLASSNAME(romClass);
-		if (compareTwoUTF8s(declaringClassName, currentClassName)) return TRUE;
-
+		if (compareTwoUTF8s(declaringClassName, currentClassName)) {
+			return TRUE;
+		}
+		if (J9ROMCLASS_IS_HIDDEN(romClass)) {
+			/* j9rtv_verifierGetRAMClass won't find hidden classes. We are checking if the current class has access to
+			 * proected memeber of declaringClass. We can use the superclass of current class instead here. */
+			currentClassName = J9ROMCLASS_SUPERCLASSNAME(romClass);
+			if (compareTwoUTF8s(declaringClassName, currentClassName)) {
+				return TRUE;
+			}
+		}
 		/* Get the ram classes for the current and defining classes */
 		currentRamClass = j9rtv_verifierGetRAMClass (verifyData, verifyData->classLoader, J9UTF8_DATA(currentClassName), J9UTF8_LENGTH(currentClassName), reasonCode);
 		if ((NULL == currentRamClass) && (BCV_ERR_INSUFFICIENT_MEMORY == *reasonCode)) {
@@ -973,25 +1024,33 @@ isProtectedAccessPermitted(J9BytecodeVerificationData *verifyData, J9UTF8* decla
 		if (currentRamClass->packageID == definingRamClass->packageID) return TRUE;
 
 		/* Determine if the defining class is the same class or a super class of current class */
-		if (isSameOrSuperClassOf (definingRamClass, currentRamClass)) {
-			U_8 * targetClassName;
-			UDATA targetClassLength;
-			J9Class * targetRamClass;
+		if (isSameOrSuperClassOf(definingRamClass, currentRamClass)) {
+			U_8 * targetClassName = NULL;
+			UDATA targetClassLength = 0;
+			J9Class * targetRamClass = NULL;
 
 			/* NULL is compatible */
 			if (targetClass != BCV_BASE_TYPE_NULL) {
 				/* Get the targetRamClass */
-				getNameAndLengthFromClassNameList (verifyData, J9CLASS_INDEX_FROM_CLASS_ENTRY(targetClass), &targetClassName, &targetClassLength);
-				targetRamClass = j9rtv_verifierGetRAMClass (verifyData, verifyData->classLoader, targetClassName, targetClassLength, reasonCode);
+				getNameAndLengthFromClassNameList(verifyData, J9CLASS_INDEX_FROM_CLASS_ENTRY(targetClass), &targetClassName, &targetClassLength);
+				targetRamClass = j9rtv_verifierGetRAMClass(verifyData, verifyData->classLoader, targetClassName, targetClassLength, reasonCode);
 				if (NULL == targetRamClass) {
 					return FALSE;
 				}
 
 				/* Determine if the targetRamClass is the same class or a sub class of the current class */
 				/* flipped logic - currentRamClass is the same class or a super class of the target class */
-				if (!isSameOrSuperClassOf (currentRamClass, targetRamClass)) {
-					/* fail */
-					return FALSE;
+				if (J9ROMCLASS_IS_HIDDEN(romClass)) {
+					currentClassName = J9ROMCLASS_CLASSNAME(romClass);
+					if (!J9UTF8_DATA_EQUALS(targetClassName, targetClassLength, J9UTF8_DATA(currentClassName), J9UTF8_LENGTH(currentClassName))) {
+						/* fail if current class and target class are not the same */
+						return FALSE;
+					}
+				} else {
+					if (!isSameOrSuperClassOf(currentRamClass, targetRamClass)) {
+						/* fail */
+						return FALSE;
+					}
 				}
 			}
 		}
@@ -1004,12 +1063,7 @@ isProtectedAccessPermitted(J9BytecodeVerificationData *verifyData, J9UTF8* decla
 /* return TRUE if identical, FALSE otherwise */
 static UDATA compareTwoUTF8s(J9UTF8 * first, J9UTF8 * second)
 {
-	U_8 * f = J9UTF8_DATA(first);
-	U_8 * s = J9UTF8_DATA(second);
-
-	if (J9UTF8_LENGTH(first) != J9UTF8_LENGTH(second)) return 0;
-
-	return (memcmp(f, s, J9UTF8_LENGTH(first)) == 0);
+	return J9UTF8_EQUALS(first, second);
 }
 
 
@@ -1029,7 +1083,7 @@ static void getNameAndLengthFromClassNameList (J9BytecodeVerificationData *verif
 }
 
 /* return BCV_SUCCESS if field is found
- * retrun BCV_NOT_FOUND if field is not found
+ * return BCV_NOT_FOUND if field is not found
  * return BCV_FAIL otherwise
  */
 
@@ -1061,7 +1115,7 @@ static IDATA findFieldFromRamClass (J9Class ** ramClass, J9ROMFieldRef * field, 
 }
 
 /* return BCV_SUCCESS if method is found
- * retrun BCV_NOT_FOUND if method is not found
+ * return BCV_NOT_FOUND if method is not found
  * return BCV_FAIL otherwise
  */
 static IDATA 

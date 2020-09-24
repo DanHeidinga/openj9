@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -40,6 +40,7 @@
 #if defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING)
 static void verboseHandlerClassUnloadingEnd(J9HookInterface** hook, UDATA eventNum, void* eventData, void* userData);
 #endif /* defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING) */
+static void verboseHandlerSlowExclusive(J9HookInterface **hook, UDATA eventNum, void *eventData, void *userData);
 
 MM_VerboseHandlerOutput *
 MM_VerboseHandlerOutputStandardJava::newInstance(MM_EnvironmentBase *env, MM_VerboseManager *manager)
@@ -62,6 +63,8 @@ MM_VerboseHandlerOutputStandardJava::initialize(MM_EnvironmentBase *env, MM_Verb
 {
 	bool initSuccess = MM_VerboseHandlerOutputStandard::initialize(env, manager);
 	_mmHooks = J9_HOOK_INTERFACE(MM_GCExtensions::getExtensions(_extensions)->hookInterface);
+	J9JavaVM *javaVM = (J9JavaVM *)env->getOmrVM()->_language_vm;
+	_vmHooks = J9_HOOK_INTERFACE(javaVM->hookInterface);
 
 	return initSuccess;
 }
@@ -86,6 +89,7 @@ MM_VerboseHandlerOutputStandardJava::enableVerbose()
 #if defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING)
 	(*_mmHooks)->J9HookRegisterWithCallSite(_mmHooks, J9HOOK_MM_CLASS_UNLOADING_END, verboseHandlerClassUnloadingEnd, OMR_GET_CALLSITE(), (void *)this);
 #endif /* defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING) */
+	(*_vmHooks)->J9HookRegisterWithCallSite(_vmHooks, J9HOOK_VM_SLOW_EXCLUSIVE, verboseHandlerSlowExclusive, OMR_GET_CALLSITE(), (void *)this);
 
 }
 
@@ -97,6 +101,7 @@ MM_VerboseHandlerOutputStandardJava::disableVerbose()
 #if defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING)
 	(*_mmHooks)->J9HookUnregister(_mmHooks, J9HOOK_MM_CLASS_UNLOADING_END, verboseHandlerClassUnloadingEnd, NULL);
 #endif /* defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING) */
+	(*_vmHooks)->J9HookUnregister(_vmHooks, J9HOOK_VM_SLOW_EXCLUSIVE, verboseHandlerSlowExclusive, NULL);
 
 }
 
@@ -158,11 +163,30 @@ MM_VerboseHandlerOutputStandardJava::handleMarkEndInternal(MM_EnvironmentBase* e
 	outputReferenceInfo(env, 1, "phantom", &markJavaStats->_phantomReferenceStats, 0, 0);
 
 	outputStringConstantInfo(env, 1, markJavaStats->_stringConstantsCandidates, markJavaStats->_stringConstantsCleared);
+	outputMonitorReferenceInfo(env, 1, markJavaStats->_monitorReferenceCandidates, markJavaStats->_monitorReferenceCleared);
 
 	if (workPacketStats->getSTWWorkStackOverflowOccured()) {
 		_manager->getWriterChain()->formatAndOutput(env, 1, "<warning details=\"work packet overflow\" count=\"%zu\" packetcount=\"%zu\" />",
 				workPacketStats->getSTWWorkStackOverflowCount(), workPacketStats->getSTWWorkpacketCountAtOverflow());
 	}
+}
+
+void
+MM_VerboseHandlerOutputStandardJava::handleSlowExclusive(J9HookInterface **hook, UDATA eventNum, void *eventData)
+{
+	J9VMSlowExclusiveEvent *event = (J9VMSlowExclusiveEvent *) eventData;
+	MM_EnvironmentBase *env = MM_EnvironmentBase::getEnvironment(event->currentThread->omrVMThread);
+	MM_VerboseManager *manager = getManager();
+	MM_VerboseWriterChain *writer = manager->getWriterChain();
+
+	char threadName[64];
+	getThreadName(threadName,sizeof(threadName),event->currentThread->omrVMThread);
+
+	enterAtomicReportingBlock();
+	writer->formatAndOutput(env, 0,"<warning details=\"slow exclusive request due to %s\" threadname=\"%s\" timems=\"%zu\" />", (event->reason == 1)?"JNICritical":"Exclusive Access", threadName, event->timeTaken);
+	writer->flush(env);
+	exitAtomicReportingBlock();
+
 }
 
 #if defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING)
@@ -220,6 +244,8 @@ MM_VerboseHandlerOutputStandardJava::handleScavengeEndInternal(MM_EnvironmentBas
 		outputReferenceInfo(env, 1, "soft", &scavengerJavaStats->_softReferenceStats, extensions->getDynamicMaxSoftReferenceAge(), extensions->getMaxSoftReferenceAge());
 		outputReferenceInfo(env, 1, "weak", &scavengerJavaStats->_weakReferenceStats, 0, 0);
 		outputReferenceInfo(env, 1, "phantom", &scavengerJavaStats->_phantomReferenceStats, 0, 0);
+
+		outputMonitorReferenceInfo(env, 1, scavengerJavaStats->_monitorReferenceCandidates, scavengerJavaStats->_monitorReferenceCleared);
 	}
 }
 #endif /*defined(J9VM_GC_MODRON_SCAVENGER) */
@@ -298,3 +324,8 @@ verboseHandlerClassUnloadingEnd(J9HookInterface** hook, UDATA eventNum, void* ev
 }
 #endif /* defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING) */
 
+void
+verboseHandlerSlowExclusive(J9HookInterface **hook, UDATA eventNum, void *eventData, void *userData)
+{
+	((MM_VerboseHandlerOutputStandardJava *)userData)->handleSlowExclusive(hook, eventNum, eventData);
+}

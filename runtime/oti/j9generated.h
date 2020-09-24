@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2015 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -27,7 +27,7 @@
 extern "C" {
 #endif
 
-#include "j9port.h" /* for definition of struct J9RIParamters */
+#include "j9port.h" /* for definition of struct J9RIParameters */
 #include "jithook_internal.h" /* for definition of struct J9JITHookInterface */
 
 #define J9_LOWEST_STACK_SLOT(vmThread) ((UDATA *) ((vmThread)->stackObject + 1))

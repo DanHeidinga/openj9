@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2016 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -26,15 +26,22 @@ import java.util.NoSuchElementException;
 
 import com.ibm.j9ddr.CorruptDataException;
 import com.ibm.j9ddr.vm29.j9.AlgorithmVersion;
+import com.ibm.j9ddr.vm29.j9.DataType;
+import com.ibm.j9ddr.vm29.j9.J9ConstantHelper;
 import com.ibm.j9ddr.vm29.j9.J9ObjectFieldOffset;
 import com.ibm.j9ddr.vm29.j9.ObjectModel;
 import com.ibm.j9ddr.vm29.pointer.I32Pointer;
 import com.ibm.j9ddr.vm29.pointer.I64Pointer;
 import com.ibm.j9ddr.vm29.pointer.ObjectReferencePointer;
 import com.ibm.j9ddr.vm29.pointer.UDATAPointer;
+import com.ibm.j9ddr.vm29.pointer.generated.J9JavaVMPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.*;
 import com.ibm.j9ddr.vm29.structure.J9Consts;
+import com.ibm.j9ddr.vm29.structure.J9Object;
+import com.ibm.j9ddr.vm29.structure.J9ObjectCompressed;
+import com.ibm.j9ddr.vm29.structure.J9ObjectFull;
 import com.ibm.j9ddr.vm29.types.*;
+import static com.ibm.j9ddr.vm29.structure.J9Consts.*;
 
 public class J9ObjectHelper 
 {
@@ -44,14 +51,27 @@ public class J9ObjectHelper
 	private static int[] counts;
 	private static long probes;
 	private static long hits;
-	
+	public static final boolean mixedReferenceMode;
+	public static final boolean compressObjectReferences;
+
 	/**
 	 * Determines whether java/lang/String is backed by a byte[] array if true or char[] if false.
 	 */
 	private static Boolean isStringBackedByByteArray = null;
-	
+
 	static {
 		initializeCache();
+		try {
+			mixedReferenceMode = AlgorithmVersion.getVersionOf(AlgorithmVersion.MIXED_REFERENCE_MODE).getAlgorithmVersion() > 0;
+			if (mixedReferenceMode) {
+				J9JavaVMPointer vm = J9RASHelper.getVM(DataType.getJ9RASPointer());
+				compressObjectReferences = vm.extendedRuntimeFlags2().anyBitsIn(J9_EXTENDED_RUNTIME2_COMPRESS_OBJECT_REFERENCES);
+			} else {
+				compressObjectReferences = J9BuildFlags.gc_compressedPointers;
+			}
+		} catch (CorruptDataException e) {
+			throw new RuntimeException(e);
+		}
 	}
 	
 	/**
@@ -67,28 +87,41 @@ public class J9ObjectHelper
 	
 	public static U32 flags(J9ObjectPointer objPointer) throws CorruptDataException
 	{		
-		if(J9BuildFlags.interp_flagsInClassSlot) {
-			long bitmask = (J9Consts.J9_REQUIRED_CLASS_ALIGNMENT - 1);
-			J9ClassPointer clazz = objPointer.clazz();
-			
-			return new U32(UDATA.cast(clazz).bitAnd(bitmask));
-		} else {
-			throw new UnsupportedOperationException("Only builds with interp_flagsInClassSlot currently supported.");
+		long bitmask = J9Consts.J9_REQUIRED_CLASS_ALIGNMENT - 1;
+		UDATA clazz = rawClazz(objPointer);
+		
+		return new U32(clazz.bitAnd(bitmask));
+	}
+
+	public static long headerSize()
+	{
+		if (mixedReferenceMode) {
+			if (compressObjectReferences) {
+				return J9ObjectCompressed.SIZEOF;
+			}
+			return J9ObjectFull.SIZEOF;
 		}
+		return J9Object.SIZEOF;
+	}
+
+	public static UDATA rawClazz(J9ObjectPointer objPointer) throws CorruptDataException
+	{
+		if (mixedReferenceMode) {
+			if (compressObjectReferences) {
+				return J9ObjectCompressedPointer.cast(objPointer).clazz();
+			}
+			return J9ObjectFullPointer.cast(objPointer).clazz();
+		}
+		return UDATA.cast(objPointer.clazz());
 	}
 
 	public static J9ClassPointer clazz(J9ObjectPointer objPointer) throws CorruptDataException
 	{
 		J9ClassPointer classPointer = checkClassCache(objPointer);
 		if(null == classPointer) {
-			if(J9BuildFlags.interp_flagsInClassSlot) {
-				long bitmask = (~(J9Consts.J9_REQUIRED_CLASS_ALIGNMENT - 1));
-				UDATA clazz = UDATA.cast(objPointer.clazz());
-				
-				classPointer = J9ClassPointer.cast(clazz.bitAnd(bitmask));
-			} else {
-				classPointer = objPointer.clazz();
-			}
+			long bitmask = ~(J9Consts.J9_REQUIRED_CLASS_ALIGNMENT - 1);
+			UDATA clazz = rawClazz(objPointer);
+			classPointer = J9ClassPointer.cast(clazz.bitAnd(bitmask));
 			setClassCache(objPointer, classPointer);
 		}
 		return classPointer;
@@ -97,14 +130,8 @@ public class J9ObjectHelper
 	
 	public static UDATA monitor(J9ObjectPointer objPointer) throws CorruptDataException 
 	{
-		if(J9BuildFlags.thr_lockNursery) {
-			// TODO : lockNursery support
-			throw new UnsupportedOperationException("lockNursery not supported yet");			
-		} else {
-			// TODO : non-lockNursery support
-			throw new UnsupportedOperationException("need a non-lockNursery blob");
-			//return new UDATA(getUDATAAtOffset(J9Object._monitorOffset_));
-		}
+		// TODO : lockNursery support
+		throw new UnsupportedOperationException("lockNursery not supported yet");			
 	}
 	
 	/**
@@ -123,7 +150,7 @@ public class J9ObjectHelper
 
 	public static String stringValue(J9ObjectPointer objPointer) throws CorruptDataException 
 	{
-		if(!J9ObjectHelper.getClassName(objPointer).equals("java/lang/String")) {
+		if (!J9ObjectHelper.getClassName(objPointer).equals("java/lang/String")) {
 			throw new IllegalArgumentException();
 		}
 		
@@ -149,44 +176,45 @@ public class J9ObjectHelper
 			return "<Uninitialized String>";
 		}
 		
-		int offset = 0;
-		int count = getIntField(objPointer, getFieldOffset(objPointer, "count","I"));
+		int stringLength = 0;
 		
 		boolean isStringCompressed = false;
-		
-		AlgorithmVersion version = AlgorithmVersion.getVersionOf(AlgorithmVersion.STRING_COMPRESSION_VERSION);
-		
-		switch (version.getAlgorithmVersion()) {
-			case 1:
-				boolean enableCompression = getBooleanField(objPointer, getFieldOffset(objPointer, "enableCompression", "Z"));
-				
-				if (enableCompression) {
-					if (count >= 0) {
-						isStringCompressed = true;
-					} else {
-						count = count & 0x7FFFFFFF;
-					}
-				}
-				break;
-			
-			default:
-				offset = getIntField(objPointer, getFieldOffset(objPointer, "offset", "I"));
-				break;
-		}
-		
-		char[] charValue = new char[count];
-		
+
 		J9IndexableObjectPointer valueArray = J9IndexableObjectPointer.cast(valueObject);
 		
 		if (isStringBackedByByteArray.booleanValue()) {
+			byte coder = getByteField(objPointer, getFieldOffset(objPointer, "coder", "B"));
+
+			isStringCompressed = coder == 0;
+
 			byte[] value = (byte[]) J9IndexableObjectHelper.getData(valueArray);
-			
+
+			stringLength = value.length >> coder;
+		} else {
+			stringLength = getIntField(objPointer, getFieldOffset(objPointer, "count", "I"));
+
+			boolean enableCompression = getBooleanField(objPointer, getFieldOffset(objPointer, "enableCompression", "Z"));
+
+			if (enableCompression) {
+				if (stringLength >= 0) {
+					isStringCompressed = true;
+				} else {
+					stringLength = stringLength & 0x7FFFFFFF;
+				}
+			}
+		}
+
+		char[] charValue = new char[stringLength];
+		
+		if (isStringBackedByByteArray.booleanValue()) {
+			byte[] value = (byte[]) J9IndexableObjectHelper.getData(valueArray);
+
 			if (isStringCompressed) {
-				for (int i = 0; i < count; ++i) {
+				for (int i = 0; i < stringLength; ++i) {
 					charValue[i] = byteToCharUnsigned(getByteFromArrayByIndex(value, i));
 				}
 			} else {
-				for (int i = 0; i < count; ++i) {
+				for (int i = 0; i < stringLength; ++i) {
 					charValue[i] = getCharFromArrayByIndex(value, i);
 				}
 			}
@@ -194,17 +222,17 @@ public class J9ObjectHelper
 			char[] value = (char[]) J9IndexableObjectHelper.getData(valueArray);
 			
 			if (isStringCompressed) {
-				for (int i = 0; i < count; ++i) {
+				for (int i = 0; i < stringLength; ++i) {
 					charValue[i] = byteToCharUnsigned(getByteFromArrayByIndex(value, i));
 				}
 			} else {
-				for (int i = 0; i < count; ++i) {
+				for (int i = 0; i < stringLength; ++i) {
 					charValue[i] = getCharFromArrayByIndex(value, i);
 				}
 			}
 		}
 		
-		return new String(charValue, offset, count);		
+		return new String(charValue);		
 	}
 	
 	/**

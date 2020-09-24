@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -82,6 +82,36 @@ setCurrentExceptionNLS(J9VMThread * vmThread, UDATA exceptionNumber, U_32 module
 	setCurrentExceptionUTF(vmThread, exceptionNumber, msg);
 }
 
+void
+prepareExceptionUsingClassName(J9VMThread *vmThread, const char *exceptionClassName)
+{
+	J9Class *exceptionClass = NULL;
+	j9object_t exception = NULL;
+
+	prepareForExceptionThrow(vmThread);
+
+	exceptionClass = internalFindClassUTF8(
+			vmThread,
+			(U_8 *)exceptionClassName,
+			strlen(exceptionClassName),
+			vmThread->javaVM->systemClassLoader,
+			J9_FINDCLASS_FLAG_THROW_ON_FAIL);
+
+	/* internalFindClassUTF8 will set an exception on failure. */
+	if (J9_EXPECTED(NULL != exceptionClass)) {
+		exception = vmThread->javaVM->memoryManagerFunctions->J9AllocateObject(
+				vmThread,
+				exceptionClass,
+				J9_GC_ALLOCATE_OBJECT_NON_INSTRUMENTABLE);
+
+		if (J9_UNEXPECTED(NULL == exception)) {
+			setHeapOutOfMemoryError(vmThread);
+		} else {
+			vmThread->currentException = exception;
+			vmThread->privateFlags |= J9_PRIVATE_FLAGS_REPORT_EXCEPTION_THROW;
+		}
+	}
+}
 
 /**
  * Creates exception with nls message; substitutes string values into error message.
@@ -383,7 +413,7 @@ exceptionHandlerSearch(J9VMThread *currentThread, J9StackWalkState *walkState)
 
 #ifdef J9VM_INTERP_NATIVE_SUPPORT
 					if (walkState->jitInfo != NULL) {
-						if (romMethod->modifiers & J9_JAVA_STATIC) {
+						if (romMethod->modifiers & J9AccStatic) {
 							J9Class *syncClass = walkState->constantPool->ramClass;
 
 							syncObject = J9VM_J9CLASS_TO_HEAPCLASS(syncClass);
@@ -501,12 +531,12 @@ setCurrentException(J9VMThread *currentThread, UDATA exceptionNumber, UDATA *det
 static void
 internalSetCurrentExceptionWithCause(J9VMThread *currentThread, UDATA exceptionNumber, UDATA *detailMessage, const char *utfMessage, j9object_t cause)
 {
-	UDATA index;
-	UDATA * preservedMessage;
-	UDATA resetOutOfMemory;
-	j9object_t exception;
-	J9Class * exceptionClass;
-	UDATA constructorIndex;
+	UDATA index = 0;
+	UDATA * preservedMessage = NULL;
+	UDATA resetOutOfMemory = 0;
+	j9object_t exception = NULL;
+	J9Class * exceptionClass = NULL;
+	UDATA constructorIndex = 0;
 	UDATA exceptionFlags = 0;
 
 	index = exceptionNumber & J9_EXCEPTION_INDEX_MASK;
@@ -535,6 +565,16 @@ internalSetCurrentExceptionWithCause(J9VMThread *currentThread, UDATA exceptionN
 			break;
 	}
 	PUSH_OBJECT_IN_SPECIAL_FRAME(currentThread, (j9object_t) preservedMessage);
+
+	if (J9VMCONSTANTPOOL_JAVALANGUNSUPPORTEDCLASSVERSIONERROR == index) {
+		J9JavaVM *vm = currentThread->javaVM;
+		if (J9_ARE_NO_BITS_SET(vm->extendedRuntimeFlags, J9_EXTENDED_RUNTIME_CLASS_OBJECT_ASSIGNED)) {
+			/* This is JVM startup stage, exit with message now. */
+			PORT_ACCESS_FROM_JAVAVM(vm);
+			j9tty_err_printf(PORTLIB, "%s\n", utfMessage);
+			goto done;
+		}
+	}
 
 #ifdef J9VM_INTERP_GROWABLE_STACKS
 	/*  If we are throwing StackOverflowError for the first time in this thread, grow the stack once more */
@@ -691,7 +731,7 @@ sendConstructor:
 	cause = POP_OBJECT_IN_SPECIAL_FRAME(currentThread); /* cause */
 	if (currentThread->currentException == NULL) {
 		if (cause != NULL) {
-			sendInitCause(currentThread, (j9object_t) exception, cause, 0, 0);
+			sendInitCause(currentThread, (j9object_t) exception, cause);
 			exception = (j9object_t) currentThread->returnValue; /* initCause returns the receiver */
 		}
 	} else {
@@ -991,7 +1031,8 @@ setClassLoadingConstraintOverrideError(J9VMThread *currentThread, J9UTF8 *newCla
 				 loader1ClassNameLength, loader1ClassName, loader1Hash,
 				 class1ClassNameLength, class1ClassName,
 				 loader2ClassNameLength, loader2ClassName, loader2Hash,
-				 class2ClassNameLength, class2ClassName
+				 class2ClassNameLength, class2ClassName,
+				 newClassNameLength, newClassName
 			);
 	}
 

@@ -1,4 +1,4 @@
-# Copyright (c) 1998, 2018 IBM Corp. and others
+# Copyright (c) 1998, 2020 IBM Corp. and others
 #
 # This program and the accompanying materials are made available under
 # the terms of the Eclipse Public License 2.0 which accompanies this
@@ -24,8 +24,7 @@
 </#list>
 
 # Define the Java Version we are compiling
-VERSION_MAJOR?=9
-export VERSION_MAJOR
+export VERSION_MAJOR := ${uma.spec.properties.JAVA_SPEC_VERSION.value}
 
 # Define a default target of the root directory for all targets.
 ifndef UMA_TARGET_PATH
@@ -33,50 +32,31 @@ ifndef UMA_TARGET_PATH
 endif
 
 # Define all the tool used for compilation and linking.
-<#if uma.spec.tools.interp_gcc.needed>
-ifneq (default,$(origin CC))
-  ifndef INTERP_GCC
-    # If the user has overridden CC we'll want to let them know that INTERP_GCC exists.
-    ifndef PRINT_ONCE_INTERP_GCC
-      $(info ****************)
-      $(info *)
-      $(info * CC=$(CC) (overridden), note that this build will also invoke another compiler that can be overridden: INTERP_GCC=${uma.spec.tools.interp_gcc.name})
-      $(info *)
-      $(info ****************)
-      export PRINT_ONCE_INTERP_GCC=1
-    endif
-  endif
-endif
-INTERP_GCC?=${uma.spec.tools.interp_gcc.name}
-<#else>
-#INTERP_GCC not used
-</#if>
-
 <#if uma.spec.type.windows>
 <#if uma.spec.flags.build_VS12AndHigher.enabled>
 VS12AndHigher:=1
 </#if>
-ifndef NO_USE_MINGW
-USE_MINGW:=1
+ifndef NO_USE_CLANG
+USE_CLANG:=1
 endif
-ifdef USE_MINGW
-<#if uma.spec.tools.mingw_cxx.needed>
+ifdef USE_CLANG
+<#if uma.spec.tools.clang_cxx.needed>
 ifneq (default,$(origin CXX))
-  ifndef MINGW_CXX
-    # If the user has overridden CXX we'll want to let them know that MINGW_CXX exists.
-    ifndef PRINT_ONCE_MINGW_CXX
+  ifndef CLANG_CXX
+    # If the user has overridden CXX we'll want to let them know that CLANG_CXX exists.
+    ifndef PRINT_ONCE_CLANG_CXX
       $(info ****************)
       $(info *)
-      $(info * CXX=$(CXX) (overridden), note that this build will also invoke another compiler that can be overridden: MINGW_CXX=${uma.spec.tools.mingw_cxx.name})
+      $(info * CXX=$(CXX) (overridden), note that this build will also invoke another compiler that can be overridden: CLANG_CXX=${uma.spec.tools.clang_cxx.name})
       $(info *)
       $(info ****************)
-      export PRINT_ONCE_MINGW_CXX=1
+      export PRINT_ONCE_CLANG_CXX=1
     endif
   endif
 endif
-MINGW_CXX?=${uma.spec.tools.mingw_cxx.name}
+CLANG_CXX?=${uma.spec.tools.clang_cxx.name}
 <#else>
-# MINGW_CXX not used
+# CLANG_CXX not used
 </#if>
 endif
 </#if>
@@ -168,8 +148,12 @@ endif
 TR_HOST=TR_HOST_X86
 <#elseif uma.spec.processor.arm>
 TR_HOST=TR_HOST_ARM
+<#elseif uma.spec.processor.aarch64>
+TR_HOST=TR_HOST_ARM64
 <#elseif uma.spec.processor.ppc>
 TR_HOST=TR_HOST_POWER
+<#elseif uma.spec.processor.riscv64>
+TR_HOST=TR_HOST_RISCV
 <#elseif uma.spec.processor.s390>
 TR_HOST=TR_HOST_S390
 </#if>
@@ -195,15 +179,9 @@ TR_HOST=TR_HOST_S390
 </#if>
 </#if>
 
-<#if uma.spec.properties.use_ld_to_link.defined>
-ifndef UMA_IS_C_PLUS_PLUS
-  UMA_USING_LD_TO_LINK=1
-endif
-</#if>
-
 <#if uma.spec.type.windows>
 # definitions for UMA_CPU
-# can be overriden by makefile including this one.
+# can be overridden by makefile including this one.
 ifndef UMA_CPU
 <#if uma.spec.processor.amd64>
   UMA_CPU:=AMD64
@@ -233,6 +211,15 @@ UMA_DOT_EXE=.exe
 UMA_DOT_EXE=
 </#if>
 
+# define the shared library extension
+<#if uma.spec.type.osx>
+UMA_DOT_DLL := .dylib
+<#elseif uma.spec.type.windows>
+UMA_DOT_DLL := .dll
+<#else>
+UMA_DOT_DLL := .so
+</#if>
+
 # define the object extension
 <#if uma.spec.type.windows>
 UMA_DOT_O=.obj
@@ -240,7 +227,7 @@ UMA_DOT_O=.obj
 UMA_DOT_O=.o
 </#if>
 
-# gather all the object files together, this can be overriden by a module
+# gather all the object files together, this can be overridden by a module
 #
 UMA_OBJECTS:=$(foreach suffix,$(UMA_SOURCE_SUFFIX_LIST),$(patsubst %$(suffix),%$(UMA_DOT_O),$(wildcard *$(suffix))))
 # Remove XXXexp.o from the object list.  Will be added, if needed, by the appropriate makefile.
@@ -266,4 +253,21 @@ UMA_OBJECTS+=$(patsubst %.mc,%.res,$(wildcard *.mc))
 
 <#if uma.spec.type.windows>
 UMA_WINDOWS_PARRALLEL_HACK=-j $(NUMBER_OF_PROCESSORS)
+</#if>
+
+# On z/OS, some generated files must be converted to EBCDIC for consistency.
+# This macro is intended to be used in a rule where the target is initially
+# created with ASCII encoding and must be converted to EBCDIC, for example:
+#     m4 < input.m4 > output $(call CONVERT_ASCII_TO_NATIVE, output)
+<#if uma.spec.type.zos>
+ifeq ($(OPENJ9_BUILD),true)
+CONVERT_ASCII_TO_NATIVE = \
+	&& iconv -f ISO8859-1 -t IBM-1047 < $1 > $(strip $1).tmp \
+	&& mv -f $(strip $1).tmp $1 \
+	&& chtag -t -c IBM-1047 $1
+else
+CONVERT_ASCII_TO_NATIVE =
+endif
+<#else>
+CONVERT_ASCII_TO_NATIVE =
 </#if>

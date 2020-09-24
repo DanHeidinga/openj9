@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -27,11 +27,11 @@
 #include "CollectorLanguageInterfaceImpl.hpp"
 #include "EnvironmentStandard.hpp"
 #include "Debug.hpp"
-#include "Dispatcher.hpp"
 #include "HeapRegionIteratorStandard.hpp"
 #include "MixedObjectIterator.hpp"
 #include "ObjectAccessBarrier.hpp"
 #include "OwnableSynchronizerObjectBuffer.hpp"
+#include "ParallelDispatcher.hpp"
 #include "PointerContiguousArrayIterator.hpp"
 #include "Task.hpp"
 
@@ -60,7 +60,7 @@ MM_CompactSchemeFixupObject::fixupArrayObject(omrobjectptr_t objectPtr)
 MMINLINE void
 MM_CompactSchemeFixupObject::addOwnableSynchronizerObjectInList(MM_EnvironmentBase *env, omrobjectptr_t objectPtr)
 {
-	/* if isObjectInOwnableSynchronizerList() return NULL, it means the object isn't in OwanbleSynchronizerList,
+	/* if isObjectInOwnableSynchronizerList() return NULL, it means the object isn't in OwnableSynchronizerList,
 	 * it could be the constructing object which would be added in the list after the construction finish later. ignore the object to avoid duplicated reference in the list. */
 	if (NULL != _extensions->accessBarrier->isObjectInOwnableSynchronizerList(objectPtr)) {
 		env->getGCEnvironment()->_ownableSynchronizerObjectBuffer->add(env, objectPtr);
@@ -71,6 +71,7 @@ void
 MM_CompactSchemeFixupObject::fixupObject(MM_EnvironmentStandard *env, omrobjectptr_t objectPtr)
 {
 	switch(env->getExtensions()->objectModel.getScanType(objectPtr)) {
+	case GC_ObjectModel::SCAN_MIXED_OBJECT_LINKED:
 	case GC_ObjectModel::SCAN_ATOMIC_MARKABLE_REFERENCE_OBJECT:
 	case GC_ObjectModel::SCAN_MIXED_OBJECT:
 	case GC_ObjectModel::SCAN_CLASS_OBJECT:
@@ -102,5 +103,5 @@ void
 MM_CompactSchemeFixupObject::verifyForwardingPtr(omrobjectptr_t objectPtr, omrobjectptr_t forwardingPtr)
 {
 	assume0(forwardingPtr <= objectPtr);
-	assume0(J9GC_J9OBJECT_CLAZZ(forwardingPtr) && ((UDATA)J9GC_J9OBJECT_CLAZZ(forwardingPtr) & 0x3) == 0);
+	assume0(J9GC_J9OBJECT_CLAZZ(forwardingPtr, _extensions) && ((UDATA)J9GC_J9OBJECT_CLAZZ(forwardingPtr, _extensions) & 0x3) == 0);
 }

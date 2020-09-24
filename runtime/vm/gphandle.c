@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -150,10 +150,16 @@ static void printBacktrace(struct J9JavaVM *vm, void* gpInfo);
 #elif defined(S390) && defined(LINUX)
 /* The target register is GPR2 */
 #define UNSAFE_TARGET_REGISTER 2
+#elif defined(J9VM_ARCH_RISCV)
+/* The target register is GPR1 */
+#define UNSAFE_TARGET_REGISTER 1
 #elif defined(J9ZOS390)
 /* The target register is GPR1 */
 #define UNSAFE_TARGET_REGISTER 1
 #elif defined(J9VM_ARCH_ARM) && defined(LINUX)
+/* The target register is GPR0 */
+#define UNSAFE_TARGET_REGISTER 0
+#elif defined(J9VM_ARCH_AARCH64)
 /* The target register is GPR0 */
 #define UNSAFE_TARGET_REGISTER 0
 #endif /* defined(J9VM_ARCH_X86) && defined(J9VM_ENV_DATA64) */
@@ -466,7 +472,7 @@ prepareToResumeBackInJava(struct J9PortLibrary* portLibrary, J9VMThread *vmThrea
 	}
 
 	infoType = j9sig_info(sigInfo, J9PORT_SIG_CONTROL, J9PORT_SIG_CONTROL_S390_FPC, &infoName, &infoValue);
-	if (infoType != J9PORT_SIG_VALUE_ADDRESS) {
+	if (infoType != J9PORT_SIG_VALUE_32) {
 		return K8ZOS_GO_DOWN;
 	}
 	*(U_32 *)infoValue = *((U_32 *)vmThread->entryLocalStorage->ceehdlrFPCLocation);
@@ -1042,8 +1048,8 @@ writeJITInfo(J9VMThread* vmThread, char* s, UDATA length, void* gpInfo)
 			J9Method *ramMethod = vmThread->jitMethodToBeCompiled;
 			J9Class *clazz = J9_CLASS_FROM_METHOD(ramMethod);
 			J9ROMMethod *romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(ramMethod);
-			J9UTF8 *methName = J9ROMMETHOD_GET_NAME(clazz->romClass, romMethod);
-			J9UTF8 *methSig = J9ROMMETHOD_GET_SIGNATURE(clazz->romClass, romMethod);
+			J9UTF8 *methName = J9ROMMETHOD_NAME(romMethod);
+			J9UTF8 *methSig = J9ROMMETHOD_SIGNATURE(romMethod);
 			J9UTF8 *className = J9ROMCLASS_CLASSNAME(clazz->romClass);
 
 			n = j9str_printf(PORTLIB, s, length, "\nMethod_being_compiled=%.*s.%.*s%.*s\n",
@@ -1074,8 +1080,8 @@ writeJITInfo(J9VMThread* vmThread, char* s, UDATA length, void* gpInfo)
 			J9Class *clazz = J9_CLASS_FROM_METHOD(ramMethod);
 			J9ROMMethod *romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(ramMethod);
 			J9ROMClass *romClass = clazz->romClass;
-			J9UTF8 *methName = J9ROMMETHOD_GET_NAME(romClass, romMethod);
-			J9UTF8 *methSig = J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod);
+			J9UTF8 *methName = J9ROMMETHOD_NAME(romMethod);
+			J9UTF8 *methSig = J9ROMMETHOD_SIGNATURE(romMethod);
 			J9UTF8 *className = J9ROMCLASS_CLASSNAME(romClass);
 
 			n = j9str_printf(PORTLIB, s, length, "\nCompiled_method=%.*s.%.*s%.*s\n",

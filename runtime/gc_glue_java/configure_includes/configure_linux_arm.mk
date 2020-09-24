@@ -1,5 +1,5 @@
 ###############################################################################
-# Copyright (c) 2016, 2018 IBM Corp. and others
+# Copyright (c) 2016, 2020 IBM Corp. and others
 #
 # This program and the accompanying materials are made available under
 # the terms of the Eclipse Public License 2.0 which accompanies this
@@ -37,20 +37,21 @@ ifneq (,$(findstring linux_arm, $(SPEC)))
 		--enable-OMR_ARCH_ARM \
 		--enable-OMR_ENV_LITTLE_ENDIAN \
 		--enable-OMR_GC_TLH_PREFETCH_FTA \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS
+		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS \
+		OMR_GC_POINTER_MODE=full
 endif
 
 ifeq (default,$(origin AS))
-	AS=$(OPENJ9_CC_PREFIX)-as
+	AS = $(OPENJ9_CC_PREFIX)-as
 endif
 ifeq (default,$(origin CC))
-	CC=$(OPENJ9_CC_PREFIX)-gcc
+	CC = $(OPENJ9_CC_PREFIX)-gcc
 endif
 ifeq (default,$(origin CXX))
-	CXX=$(OPENJ9_CC_PREFIX)-g++
+	CXX = $(OPENJ9_CC_PREFIX)-g++
 endif
 ifeq (default,$(origin AR))
-	AR=$(OPENJ9_CC_PREFIX)-ar
+	AR = $(OPENJ9_CC_PREFIX)-ar
 endif
 
 CONFIGURE_ARGS += 'AS=$(AS)'
@@ -72,3 +73,13 @@ CONFIGURE_ARGS += 'OMR_HOST_OS=linux'
 CONFIGURE_ARGS += 'OMR_HOST_ARCH=arm'
 CONFIGURE_ARGS += 'OMR_TARGET_DATASIZE=$(TEMP_TARGET_DATASIZE)'
 CONFIGURE_ARGS += 'OMR_TOOLCHAIN=gcc'
+
+ifeq (OMR_CROSS_CONFIGURE=yes,$(findstring OMR_CROSS_CONFIGURE=yes,$(CONFIGURE_ARGS)))
+CONFIGURE_ARGS += 'OMR_TOOLS_CC=gcc'
+CONFIGURE_ARGS += 'OMR_TOOLS_CXX=g++'
+CONFIGURE_ARGS += 'OMR_BUILD_DATASIZE=64'
+CONFIGURE_ARGS += 'OMR_BUILD_TOOLCHAIN=gcc'
+endif
+
+CONFIGURE_ARGS+= 'GLOBAL_CFLAGS=-fstack-protector'
+CONFIGURE_ARGS+= 'GLOBAL_CXXFLAGS=-fstack-protector'

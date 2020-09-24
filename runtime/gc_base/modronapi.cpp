@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -31,7 +31,6 @@
 #include "modronapi.hpp"
 #include "modronopt.h"
 
-#include "Dispatcher.hpp"
 #include "EnvironmentBase.hpp"
 #include "GCExtensions.hpp"
 #include "HeapMemorySnapshot.hpp"
@@ -43,6 +42,7 @@
 #include "ObjectAllocationInterface.hpp"
 #include "ObjectModel.hpp"
 #include "OwnableSynchronizerObjectBuffer.hpp"
+#include "ParallelDispatcher.hpp"
 #include "MemorySpace.hpp"
 #include "MemorySubSpace.hpp"
 #include "MemoryPoolLargeObjects.hpp"
@@ -65,9 +65,9 @@ j9gc_modron_global_collect(J9VMThread *vmThread)
  * <ul>
  * 	<li>J9MMCONSTANT_IMPLICIT_GC_DEFAULT - collect due to normal GC activity</li>
  *  <li>J9MMCONSTANT_IMPLICIT_GC_AGGRESSIVE - second collect since first collect was insufficient</li>
- * 	<li>J9MMCONSTANT_IMPLICIT_GC_PERCOLATE - collect due to scavanger percolate</li>
- * 	<li>J9MMCONSTANT_IMPLICIT_GC_PERCOLATE_UNLOADING_CLASSES - collect due to scavanger percolate (unloading classes)</li>
- * 	<li>J9MMCONSTANT_IMPLICIT_GC_PERCOLATE_AGGRESSIVE - collect due to aggressive scavanger percolate</li>
+ * 	<li>J9MMCONSTANT_IMPLICIT_GC_PERCOLATE - collect due to scavenger percolate</li>
+ * 	<li>J9MMCONSTANT_IMPLICIT_GC_PERCOLATE_UNLOADING_CLASSES - collect due to scavenger percolate (unloading classes)</li>
+ * 	<li>J9MMCONSTANT_IMPLICIT_GC_PERCOLATE_AGGRESSIVE - collect due to aggressive scavenger percolate</li>
  * 	<li>J9MMCONSTANT_EXPLICIT_GC_SYSTEM_GC - Java code has requested a System.gc()</li>
  *  <li>J9MMCONSTANT_EXPLICIT_GC_NOT_AGGRESSIVE - Java code has requested a non-compacting GC via JVM_GCNoCompact</li>
  *  <li>J9MMCONSTANT_EXPLICIT_GC_NATIVE_OUT_OF_MEMORY - a native out of memory has occurred -- attempt to recover as much native memory as possible</li>
@@ -96,7 +96,7 @@ j9gc_modron_local_collect(J9VMThread *vmThread)
 {
 	MM_EnvironmentBase *env = MM_EnvironmentBase::getEnvironment(vmThread->omrVMThread);
 
-	((MM_MemorySpace *)vmThread->omrVMThread->memorySpace)->localGarbageCollect(env);
+	((MM_MemorySpace *)vmThread->omrVMThread->memorySpace)->localGarbageCollect(env, J9MMCONSTANT_IMPLICIT_GC_DEFAULT);
 
 	return 0;
 }
@@ -107,6 +107,16 @@ j9gc_heap_total_memory(J9JavaVM *javaVM)
 	MM_Heap *heap = MM_GCExtensions::getExtensions(javaVM)->getHeap();
 	MM_HeapRegionManager *manager = heap->getHeapRegionManager();
 	return manager->getTotalHeapSize();
+}
+
+UDATA
+j9gc_is_garbagecollection_disabled(J9JavaVM *javaVM)
+{
+	UDATA ret = 0;
+	 if (gc_policy_nogc == MM_GCExtensions::getExtensions(javaVM)->configurationOptions._gcPolicy) {
+		 ret = 1;
+	 }
+	 return ret;
 }
 
 /**
@@ -153,6 +163,9 @@ j9gc_allsupported_memorypools(J9JavaVM *javaVM)
 				memPools |= J9_GC_MANAGEMENT_POOL_TENURED;
 			}
 			break;
+		case J9_GC_POLICY_NOGC :
+			memPools |= J9_GC_MANAGEMENT_POOL_TENURED;
+			break;
 		case J9_GC_POLICY_BALANCED :
 				memPools |= J9_GC_MANAGEMENT_POOL_REGION_OLD;
 				memPools |= J9_GC_MANAGEMENT_POOL_REGION_EDEN;
@@ -190,6 +203,9 @@ j9gc_allsupported_garbagecollectors(J9JavaVM *javaVM)
 	case J9_GC_POLICY_BALANCED :
 		collectors |= J9_GC_MANAGEMENT_COLLECTOR_PGC;
 		collectors |= J9_GC_MANAGEMENT_COLLECTOR_GGC;
+		break;
+	case J9_GC_POLICY_NOGC :
+		collectors |= J9_GC_MANAGEMENT_COLLECTOR_EPSILON;
 		break;
 	default :
 		break;
@@ -256,6 +272,13 @@ j9gc_garbagecollector_name(J9JavaVM *javaVM, UDATA gcID)
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(javaVM);
 	const char *name = NULL;
 	switch (gcID) {
+	case J9_GC_MANAGEMENT_COLLECTOR_EPSILON :
+		if (extensions->_HeapManagementMXBeanBackCompatibilityEnabled) {
+			name = J9_GC_MANAGEMENT_GC_NAME_GLOBAL_OLD;
+		} else {
+			name = J9_GC_MANAGEMENT_GC_NAME_EPSILON;
+		}
+		break;
 	case J9_GC_MANAGEMENT_COLLECTOR_GLOBAL :
 		if (extensions->_HeapManagementMXBeanBackCompatibilityEnabled) {
 			name = J9_GC_MANAGEMENT_GC_NAME_GLOBAL_OLD;
@@ -299,6 +322,10 @@ j9gc_is_managedpool_by_collector(J9JavaVM *javaVM, UDATA gcID, UDATA poolID)
 {
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(javaVM);
 	if (extensions->_HeapManagementMXBeanBackCompatibilityEnabled) {
+		if (J9_GC_MANAGEMENT_COLLECTOR_SCAVENGE == gcID) {
+			/* for BackCompatible mode scavenge does not try to reclaim memory from the whole heap, so we do not mark JavaHeap managed by scavenge */
+			return 0;
+		}
 		return 1;
 	}
 	UDATA managedPools = 0;
@@ -310,6 +337,7 @@ j9gc_is_managedpool_by_collector(J9JavaVM *javaVM, UDATA gcID, UDATA poolID)
 	case J9_GC_MANAGEMENT_COLLECTOR_PGC :
 	case J9_GC_MANAGEMENT_COLLECTOR_GLOBAL :
 	case J9_GC_MANAGEMENT_COLLECTOR_GGC :
+	case J9_GC_MANAGEMENT_COLLECTOR_EPSILON :
 	default:
 		managedPools = j9gc_allsupported_memorypools(javaVM);
 		break;
@@ -417,6 +445,9 @@ j9gc_get_collector_id(OMR_VMThread *omrVMThread)
 	case OMR_GC_CYCLE_TYPE_VLHGC_GLOBAL_GARBAGE_COLLECT :
 		id = J9_GC_MANAGEMENT_COLLECTOR_GGC;
 		break;
+	case OMR_GC_CYCLE_TYPE_EPSILON :
+		id = J9_GC_MANAGEMENT_COLLECTOR_EPSILON;
+		break;
 	default :
 		break;
 	}
@@ -518,7 +549,7 @@ j9gc_pool_maxmemory(J9JavaVM *javaVM, UDATA poolID)
 			MM_MemorySubSpace *tenureMemorySubspace = defaultMemorySpace->getTenureMemorySubSpace();
 			MM_MemoryPoolLargeObjects *memoryPool = (MM_MemoryPoolLargeObjects *) tenureMemorySubspace->getMemoryPool();
 			UDATA loaSize = (UDATA) (memoryPool->getLOARatio() * extensions->maxOldSpaceSize);
-			loaSize = MM_Math::roundToFloor(extensions->heapAlignment, loaSize);
+			loaSize = MM_Math::roundToCeiling(extensions->heapAlignment, loaSize);
 			maxsize = extensions->maxOldSpaceSize - loaSize;
 		}
 		break;
@@ -528,7 +559,7 @@ j9gc_pool_maxmemory(J9JavaVM *javaVM, UDATA poolID)
 			MM_MemorySubSpace *tenureMemorySubspace = defaultMemorySpace->getTenureMemorySubSpace();
 			MM_MemoryPoolLargeObjects *memoryPool = (MM_MemoryPoolLargeObjects *) tenureMemorySubspace->getMemoryPool();
 			UDATA loaSize = (UDATA) (memoryPool->getLOARatio() * extensions->maxOldSpaceSize);
-			loaSize = MM_Math::roundToFloor(extensions->heapAlignment, loaSize);
+			loaSize = MM_Math::roundToCeiling(extensions->heapAlignment, loaSize);
 			maxsize = loaSize;
 		}
 		break;
@@ -570,6 +601,71 @@ j9gc_pool_maxmemory(J9JavaVM *javaVM, UDATA poolID)
 		break;
 	}
 	return maxsize;
+}
+
+/**
+ * retrieve the free, total and maximum memory size for the memory pools
+ * parm[in]  javaVM
+ * parm[in]  poolID the memory pool ID
+ * parm[out] total  total memory size
+ * parm[out] free   free memory size
+ * return           max memory size
+ */
+UDATA
+j9gc_pool_memoryusage(J9JavaVM *javaVM, UDATA poolID, UDATA *free, UDATA *total)
+{
+	MM_GCExtensionsBase *extensions = MM_GCExtensions::getExtensions(javaVM);
+	MM_HeapRegionManager *manager = extensions->getHeap()->getHeapRegionManager();
+	MM_HeapMemorySnapshot snapShot;
+	manager->getHeapMemorySnapshot(extensions, &snapShot, FALSE);
+
+	switch (poolID) {
+	case J9_GC_MANAGEMENT_POOL_TENURED :
+		*total = snapShot._totalTenuredSize;
+		*free = snapShot._freeTenuredSize;
+		break;
+	case J9_GC_MANAGEMENT_POOL_TENURED_SOA :
+		*total = snapShot._totalTenuredSOASize;
+		*free = snapShot._freeTenuredSOASize;
+		break;
+	case J9_GC_MANAGEMENT_POOL_TENURED_LOA :
+		*total = snapShot._totalTenuredLOASize;
+		*free = snapShot._freeTenuredLOASize;
+		break;
+	case J9_GC_MANAGEMENT_POOL_NURSERY_ALLOCATE :
+		*total = snapShot._totalNurseryAllocateSize;
+		*free = snapShot._freeNurseryAllocateSize;
+		break;
+	case J9_GC_MANAGEMENT_POOL_NURSERY_SURVIVOR :
+		*total = snapShot._totalNurserySurvivorSize;
+		*free = snapShot._freeNurserySurvivorSize;
+		break;
+	case J9_GC_MANAGEMENT_POOL_REGION_OLD :
+		*total = snapShot._totalRegionOldSize;
+		*free = snapShot._freeRegionOldSize;
+		break;
+	case J9_GC_MANAGEMENT_POOL_REGION_EDEN :
+		*total = snapShot._totalRegionEdenSize;
+		*free = snapShot._freeRegionEdenSize;
+		break;
+	case J9_GC_MANAGEMENT_POOL_REGION_SURVIVOR :
+		*total = snapShot._totalRegionSurvivorSize;
+		*free = snapShot._freeRegionSurvivorSize;
+		break;
+	case J9_GC_MANAGEMENT_POOL_REGION_RESERVED :
+		*total = snapShot._totalRegionReservedSize;
+		*free = snapShot._freeRegionReservedSize;
+		break;
+	case J9_GC_MANAGEMENT_POOL_JAVAHEAP :
+		*total = snapShot._totalHeapSize;
+		*free = snapShot._freeHeapSize;
+		break;
+	default :
+		*total = 0;
+		*free = 0;
+		break;
+	}
+	return j9gc_pool_maxmemory(javaVM, poolID);
 }
 
 /**
@@ -627,11 +723,14 @@ j9gc_get_gc_cause(OMR_VMThread *omrVMthread)
 		case J9MMCONSTANT_EXPLICIT_GC_RASDUMP_COMPACT :
 			ret = "a dump agent has requested compaction";
 			break;
-#if defined(J9VM_GC_IDLE_HEAP_MANAGER)
+#if defined(OMR_GC_IDLE_HEAP_MANAGER)
 		case J9MMCONSTANT_EXPLICIT_GC_IDLE_GC:
 			ret = "collect due to JVM becomes idle";
 			break;
 #endif
+		case J9MMCONSTANT_IMPLICIT_GC_COMPLETE_CONCURRENT :
+			ret = "concurrent collection must be completed";
+			break;
 		case J9MMCONSTANT_IMPLICIT_GC_PERCOLATE_CRITICAL_REGIONS :
 		default :
 			ret = "unknown";
@@ -643,7 +742,7 @@ j9gc_get_gc_cause(OMR_VMThread *omrVMthread)
 
 /**
  * API for the jit to call to find out the maximum allocation size, including the 
- * object header, that is guarenteed not to overflow the address range.
+ * object header, that is guaranteed not to overflow the address range.
  */
 UDATA
 j9gc_get_overflow_safe_alloc_size(J9JavaVM *javaVM)
@@ -760,6 +859,37 @@ j9gc_allocation_threshold_changed(J9VMThread *currentThread)
 }
 
 /**
+ * Set the allocation sampling interval to trigger a J9HOOK_MM_OBJECT_ALLOCATION_SAMPLING event
+ * 
+ * Examples:
+ * 	To trigger an event whenever 4K objects have been allocated:
+ *		j9gc_set_allocation_sampling_interval(vm, (UDATA)4096);
+ *	To trigger an event for every object allocation:
+ *		j9gc_set_allocation_sampling_interval(vm, (UDATA)0);
+ *	To disable allocation sampling
+ *		j9gc_set_allocation_sampling_interval(vm, UDATA_MAX);
+ * The initial MM_GCExtensionsBase::objectSamplingBytesGranularity value is UDATA_MAX.
+ * 
+ * @parm[in] vm The J9JavaVM
+ * @parm[in] samplingInterval The allocation sampling interval.
+ */
+void 
+j9gc_set_allocation_sampling_interval(J9JavaVM *vm, UDATA samplingInterval)
+{
+	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(vm);
+	if (0 == samplingInterval) {
+		/* avoid (env->_traceAllocationBytes) % 0 which could be undefined. */
+		samplingInterval = 1;
+	}
+
+	if (samplingInterval != extensions->objectSamplingBytesGranularity) {
+		extensions->objectSamplingBytesGranularity = samplingInterval;
+		J9VMThread *currentThread = vm->internalVMFunctions->currentVMThread(vm);
+		j9gc_allocation_threshold_changed(currentThread);
+	}
+}
+
+/**
  * Sets the allocation threshold (VMDESIGN 2006) to trigger a J9HOOK_MM_ALLOCATION_THRESHOLD event
  * whenever an object is allocated on the heap whose is between the lower bound and the upper bound
  * of the allocation threshold range.
@@ -803,51 +933,51 @@ j9gc_get_bytes_allocated_by_thread(J9VMThread *vmThread)
 
 /**
  * Return information about the total CPU time consumed by GC threads, as well
- * as the number of GC threads. The time for the master and slave threads is
- * reported separately, with the slave threads returned as a total.
+ * as the number of GC threads. The time for the main and worker threads is
+ * reported separately, with the worker threads returned as a total.
  * 
  * @parm[in] vm The J9JavaVM
- * @parm[out] masterCpuMillis The amount of CPU time spent in the GC by the master thread, in milliseconds
- * @parm[out] slaveCpuMillis The amount of CPU time spent in the GC by the all slave threads, in milliseconds
- * @parm[out] maxThreads The maximum number of GC slave threads
- * @parm[out] currentThreads The number of GC slave threads that participated in the last collection
+ * @parm[out] mainCpuMillis The amount of CPU time spent in the GC by the main thread, in milliseconds
+ * @parm[out] workerCpuMillis The amount of CPU time spent in the GC by the all worker threads, in milliseconds
+ * @parm[out] maxThreads The maximum number of GC worker threads
+ * @parm[out] currentThreads The number of GC worker threads that participated in the last collection
  */
 void
-j9gc_get_CPU_times(J9JavaVM *javaVM, U_64 *masterCpuMillis, U_64 *slaveCpuMillis, U_32 *maxThreads, U_32 *currentThreads)
+j9gc_get_CPU_times(J9JavaVM *javaVM, U_64 *mainCpuMillis, U_64 *workerCpuMillis, U_32 *maxThreads, U_32 *currentThreads)
 {
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(javaVM);
 	GC_VMThreadListIterator iterator(javaVM);
-	U_64 masterMillis = 0;
-	U_64 slaveMillis = 0;
-	U_64 slaveNanos = 0;
+	U_64 mainMillis = 0;
+	U_64 workerMillis = 0;
+	U_64 workerNanos = 0;
 	J9VMThread *vmThread = iterator.nextVMThread();
 	while(NULL != vmThread) {
 		MM_EnvironmentBase *env = MM_EnvironmentBase::getEnvironment(vmThread->omrVMThread);
-		if(!env->isMasterThread()) {
-			/* For a large number of slave threads and very long runs, a sum of 
+		if(!env->isMainThread()) {
+			/* For a large number of worker threads and very long runs, a sum of 
 			 * nanos might overflow a U_64. Sum the millis and nanos separately.
 			 */
-			slaveMillis += env->_slaveThreadCpuTimeNanos / 1000000;
-			slaveNanos += env->_slaveThreadCpuTimeNanos % 1000000;
+			workerMillis += env->_workerThreadCpuTimeNanos / 1000000;
+			workerNanos += env->_workerThreadCpuTimeNanos % 1000000;
 		}
 		vmThread = iterator.nextVMThread();
 	}
 
 	/* Adjust the total millis by the nanos, rounding up. */
-	slaveMillis += slaveNanos / 1000000;
-	if((slaveNanos % 1000000) > 500000) {
-		slaveMillis += 1;
+	workerMillis += workerNanos / 1000000;
+	if((workerNanos % 1000000) > 500000) {
+		workerMillis += 1;
 	}
 
-	/* Adjust the master millis by the nanos, rounding up. */
-	masterMillis = extensions->_masterThreadCpuTimeNanos / 1000000;
-	if((extensions->_masterThreadCpuTimeNanos % 1000000) > 500000) {
-		masterMillis += 1;
+	/* Adjust the main millis by the nanos, rounding up. */
+	mainMillis = extensions->_mainThreadCpuTimeNanos / 1000000;
+	if((extensions->_mainThreadCpuTimeNanos % 1000000) > 500000) {
+		mainMillis += 1;
 	}
 	
 	/* Store the results */
-	*masterCpuMillis = masterMillis;
-	*slaveCpuMillis = slaveMillis;
+	*mainCpuMillis = mainMillis;
+	*workerCpuMillis = workerMillis;
 	*maxThreads = (U_32)extensions->dispatcher->threadCountMaximum();	
 	*currentThreads = (U_32)extensions->dispatcher->activeThreadCount();
 }
@@ -887,8 +1017,8 @@ j9gc_notifyGCOfClassReplacement(J9VMThread *vmThread, J9Class *oldClass, J9Class
     }
 
 	/* classes should not be unloaded */
-	Assert_MM_true(!J9_ARE_ANY_BITS_SET(oldClass->classDepthAndFlags, J9_JAVA_CLASS_DYING));
-	Assert_MM_true(!J9_ARE_ANY_BITS_SET(newClass->classDepthAndFlags, J9_JAVA_CLASS_DYING));
+	Assert_MM_true(!J9_ARE_ANY_BITS_SET(oldClass->classDepthAndFlags, J9AccClassDying));
+	Assert_MM_true(!J9_ARE_ANY_BITS_SET(newClass->classDepthAndFlags, J9AccClassDying));
 
 	/*
 	 * class->gcLink slot can be not NULL in two cases:

@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -44,10 +44,10 @@
 #include "ParallelTask.hpp"
 
 class MM_AllocateDescription;
-class MM_Dispatcher;
 class MM_MarkMap;
 class MM_MemoryPool;
 class MM_MemorySubSpace;
+class MM_ParallelDispatcher;
 class MM_ParallelSweepChunk;
 class MM_ParallelSweepSchemeVLHGC;
 class MM_SweepHeapSectioning;
@@ -66,25 +66,25 @@ protected:
 	MM_CycleState *_cycleState;  /**< Current cycle state used for tasks dispatched */
 
 public:
-	virtual UDATA getVMStateID() { return J9VMSTATE_GC_SWEEP; };
+	virtual UDATA getVMStateID() { return OMRVMSTATE_GC_SWEEP; };
 	
 	virtual void run(MM_EnvironmentBase *env);
 	virtual void setup(MM_EnvironmentBase *env);
 	virtual void cleanup(MM_EnvironmentBase *env);
 	
-	void masterSetup(MM_EnvironmentBase *env);
-	void masterCleanup(MM_EnvironmentBase *env);
+	void mainSetup(MM_EnvironmentBase *env);
+	void mainCleanup(MM_EnvironmentBase *env);
 
 #if defined(J9MODRON_TGC_PARALLEL_STATISTICS)
 	virtual void synchronizeGCThreads(MM_EnvironmentBase *env, const char *id);
-	virtual bool synchronizeGCThreadsAndReleaseMaster(MM_EnvironmentBase *env, const char *id);
+	virtual bool synchronizeGCThreadsAndReleaseMain(MM_EnvironmentBase *env, const char *id);
 	virtual bool synchronizeGCThreadsAndReleaseSingleThread(MM_EnvironmentBase *env, const char *id);
 #endif /* J9MODRON_TGC_PARALLEL_STATISTICS */
 
 	/**
 	 * Create a ParallelSweepTaskVLHGC object.
 	 */
-	MM_ParallelSweepVLHGCTask(MM_EnvironmentBase *env, MM_Dispatcher *dispatcher, MM_ParallelSweepSchemeVLHGC *sweepScheme, MM_CycleState *cycleState) :
+	MM_ParallelSweepVLHGCTask(MM_EnvironmentBase *env, MM_ParallelDispatcher *dispatcher, MM_ParallelSweepSchemeVLHGC *sweepScheme, MM_CycleState *cycleState) :
 		MM_ParallelTask(env, dispatcher),
 		_sweepScheme(sweepScheme),
 		_cycleState(cycleState)
@@ -105,7 +105,7 @@ class MM_ParallelSweepSchemeVLHGC : public MM_BaseVirtual
 private:
 	UDATA _chunksPrepared; 
 	MM_GCExtensions *_extensions;
-	MM_Dispatcher *_dispatcher;
+	MM_ParallelDispatcher *_dispatcher;
 	MM_CycleState _cycleState;  /**< Current cycle state information used to formulate receiver state for any operations  */
 	U_8 *_currentSweepBits;	/**< The base address of the raw bits used by the _currentMarkMap (sweep knows about this in order to perform some optimized types of map walking) */
 	MM_HeapRegionManager *_regionManager; /**< A cached pointer to the global heap region manager */

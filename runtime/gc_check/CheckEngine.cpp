@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -37,9 +36,7 @@
 #define UT_TRACE_OVERHEAD -1 /* disable assertions and tracepoints since we're not in the GC module proper */
 #endif
 
-#if defined(J9VM_GC_ARRAYLETS)
 #include "ArrayletLeafIterator.hpp"
-#endif /* defined(J9VM_GC_ARRAYLETS) */
 #include "CheckEngine.hpp"
 #include "Base.hpp"
 #include "CheckBase.hpp"
@@ -69,13 +66,6 @@ typedef struct ObjectSlotIteratorCallbackUserData {
 
 static jvmtiIterationControl check_objectSlotsCallback(J9JavaVM *javaVM, J9MM_IterateObjectDescriptor *objectDesc, J9MM_IterateObjectRefDescriptor *refDesc, void *userData);
 static bool isPointerInRegion(void *pointer, J9MM_IterateRegionDescriptor *regionDesc);
-#if defined(J9VM_GC_ARRAYLETS) && !defined(J9VM_GC_HYBRID_ARRAYLETS)
-static bool isPointerInRange(void *pointer, void *start, void *end);
-#endif /* defined(J9VM_GC_ARRAYLETS) && !defined(J9VM_GC_HYBRID_ARRAYLETS) */
-
-#if defined(J9VM_GC_ARRAYLETS) && !defined(J9VM_GC_HYBRID_ARRAYLETS)
-static J9Object* convertPointerFromToken(J9JavaVM *javaVM, fj9object_t token);
-#endif /* J9VM_GC_ARRAYLETS && !J9VM_GC_HYBRID_ARRAYLETS */
 
 /*
  * Define alignment masks for J9Objects:
@@ -97,7 +87,7 @@ static J9Object* convertPointerFromToken(J9JavaVM *javaVM, fj9object_t token);
 #define J9MODRON_GCCHK_J9CLASS_EYECATCHER (UDATA)0x99669966
 
 /**
- * Clear the counts of OwnableSynchronzierObjects
+ * Clear the counts of OwnableSynchronizerObjects
  */
 void
 GC_CheckEngine::clearCountsForOwnableSynchronizerObjects()
@@ -114,13 +104,11 @@ GC_CheckEngine::verifyOwnableSynchronizerObjectCounts()
 {
 	bool ret = true;
 
-	if (!MM_GCExtensions::getExtensions(_javaVM)->isConcurrentScavengerEnabled()) {
-		if ((UNINITIALIZED_SIZE_FOR_OWNABLESYNCHRONIER != _ownableSynchronizerObjectCountOnList) && (UNINITIALIZED_SIZE_FOR_OWNABLESYNCHRONIER != _ownableSynchronizerObjectCountOnHeap)) {
-			if (_ownableSynchronizerObjectCountOnList != _ownableSynchronizerObjectCountOnHeap) {
-				PORT_ACCESS_FROM_PORT(_portLibrary);
-				j9tty_printf(PORTLIB, "  <gc check: found count=%zu of OwnableSynchronizerObjects on Heap doesn't match count=%zu on lists>\n", _ownableSynchronizerObjectCountOnHeap, _ownableSynchronizerObjectCountOnList);
-				ret = false;
-			}
+	if ((UNINITIALIZED_SIZE_FOR_OWNABLESYNCHRONIER != _ownableSynchronizerObjectCountOnList) && (UNINITIALIZED_SIZE_FOR_OWNABLESYNCHRONIER != _ownableSynchronizerObjectCountOnHeap)) {
+		if (_ownableSynchronizerObjectCountOnList != _ownableSynchronizerObjectCountOnHeap) {
+			PORT_ACCESS_FROM_PORT(_portLibrary);
+			j9tty_printf(PORTLIB, "  <gc check: found count=%zu of OwnableSynchronizerObjects on Heap doesn't match count=%zu on lists>\n", _ownableSynchronizerObjectCountOnHeap, _ownableSynchronizerObjectCountOnList);
+			ret = false;
 		}
 	}
 
@@ -274,7 +262,7 @@ GC_CheckEngine::checkJ9ObjectPointer(J9JavaVM *javaVM, J9Object *objectPtr, J9Ob
 			}
 		}
 
-		if (J9MODRON_GCCHK_J9CLASS_EYECATCHER == (UDATA)J9GC_J9OBJECT_CLAZZ_WITH_FLAGS(objectPtr)) {
+		if (J9MODRON_GCCHK_J9CLASS_EYECATCHER == J9GC_J9OBJECT_CLAZZ_WITH_FLAGS_VM(objectPtr, javaVM)) {
 			return J9MODRON_GCCHK_RC_OBJECT_SLOT_POINTS_TO_J9CLASS;
 		}
 
@@ -298,7 +286,7 @@ GC_CheckEngine::checkJ9ObjectPointer(J9JavaVM *javaVM, J9Object *objectPtr, J9Ob
 		if ((regionType & MEMORY_TYPE_NEW) || extensions->isVLHGC()) {
 			// TODO: ideally, we should only check this in the evacuate segment
 			// TODO: do some safety checks first -- is there enough room in the segment?
-			MM_ScavengerForwardedHeader scavengerForwardedHeader(objectPtr);
+			MM_ScavengerForwardedHeader scavengerForwardedHeader(objectPtr, extensions);
 			if (scavengerForwardedHeader.isForwardedPointer()) {
 				*newObjectPtr = scavengerForwardedHeader.getForwardedObject();
 				
@@ -465,7 +453,7 @@ GC_CheckEngine::checkJ9Object(J9JavaVM *javaVM, J9Object* objectPtr, J9MM_Iterat
 
 	if (checkFlags & J9MODRON_GCCHK_VERIFY_CLASS_SLOT) {
 		/* Check that the class pointer points to the class heap, etc. */
-		UDATA ret = checkJ9ClassPointer(javaVM, (J9Class *)J9GC_J9OBJECT_CLAZZ(objectPtr), true);
+		UDATA ret = checkJ9ClassPointer(javaVM, J9GC_J9OBJECT_CLAZZ_VM(objectPtr, javaVM), true);
 
 		if (J9MODRON_GCCHK_RC_OK != ret) {
 			return ret;
@@ -478,12 +466,12 @@ GC_CheckEngine::checkJ9Object(J9JavaVM *javaVM, J9Object* objectPtr, J9MM_Iterat
 		J9MM_IterateObjectDescriptor objectDesc;
 
 		/* Basic check that there is enough room for the object header */
-		if (delta < sizeof(J9Object)) {
+		if (delta < J9JAVAVM_OBJECT_HEADER_SIZE(javaVM)) {
 			return J9MODRON_GCCHK_RC_INVALID_RANGE;
 		}
 
 		/* TODO: find out what the indexable header size should really be */
-		if (extensions->objectModel.isIndexable(objectPtr) && (delta < sizeof(J9IndexableObjectContiguous))) {
+		if (extensions->objectModel.isIndexable(objectPtr) && (delta < J9JAVAVM_CONTIGUOUS_HEADER_SIZE(javaVM))) {
 			return J9MODRON_GCCHK_RC_INVALID_RANGE;
 		}
 
@@ -493,35 +481,6 @@ GC_CheckEngine::checkJ9Object(J9JavaVM *javaVM, J9Object* objectPtr, J9MM_Iterat
 			return J9MODRON_GCCHK_RC_INVALID_RANGE;
 		}
 	}
-
-#if defined(J9VM_GC_ARRAYLETS) && !defined(J9VM_GC_HYBRID_ARRAYLETS)
-	if (extensions->objectModel.isIndexable(objectPtr) && (extensions->indexableObjectModel.isInlineContiguousArraylet((J9IndexableObject *)objectPtr))) {
-		/* only check leaf pointers if array is not zero length */
-		if (0 != extensions->indexableObjectModel.getSizeInElements((J9IndexableObject *)objectPtr)) {
-			GC_ArrayletLeafIterator leafIterator(javaVM, (J9IndexableObject *)objectPtr);
-			GC_SlotObject *currentLeafSlotObject = NULL;
-			void *endOfSpine = leafIterator.getEndOfSpine();
-			while ((currentLeafSlotObject = leafIterator.nextLeafPointer()) != NULL) {
-				fj9object_t *slotAddress = currentLeafSlotObject->readAddressFromSlot();
-				void *currentLeaf = convertPointerFromToken(_javaVM, *slotAddress);
-				if (currentLeaf == endOfSpine) {
-					 /* The last leaf may point immediately past the end of the spine area if it is an empty leaf */
-					if (NULL != leafIterator.nextLeafPointer()) {
-						return J9MODRON_GCCHK_RC_INVALID_RANGE;
-					}
-				} else {
-					/* 1) verify each arraylet leaf pointer is within its region
-					 * 2) verify each arraylet leaf pointer is within the range of the array object
-					 * (assuming an inline contiguous arraylet layout)
-					 */
-					if ((!isPointerInRegion(currentLeaf, regionDesc)) || (!isPointerInRange(currentLeaf, objectPtr, endOfSpine))) {
-						return J9MODRON_GCCHK_RC_INVALID_RANGE;
-					}
-				}
-			}
-		}
-	}
-#endif /*defined(J9VM_GC_ARRAYLETS) && !defined(J9VM_GC_HYBRID_ARRAYLETS) */
 
 	if (checkFlags & J9MODRON_GCCHK_VERIFY_FLAGS) {
 		if (!extensions->objectModel.checkIndexableFlag(objectPtr)) {
@@ -574,7 +533,7 @@ GC_CheckEngine::checkJ9Class(J9JavaVM *javaVM, J9Class *clazzPtr, J9MemorySegmen
 		return J9MODRON_GCCHK_RC_CLASS_POINTER_UNALIGNED;
 	}
 
-	/* Check that the class header containes the expected values */
+	/* Check that the class header contains the expected values */
 	UDATA ret = checkJ9ClassHeader(javaVM, clazzPtr);
 	if (J9MODRON_GCCHK_RC_OK != ret) {
 		return ret;
@@ -629,7 +588,7 @@ GC_CheckEngine::checkJ9ClassIsNotUnloaded(J9JavaVM *javaVM, J9Class *clazz)
 {
 	/* Check to ensure J9Class header has the correct eyecatcher.
 	 */
-	if (0 != (clazz->classDepthAndFlags & J9_JAVA_CLASS_DYING)) {
+	if (0 != (clazz->classDepthAndFlags & J9AccClassDying)) {
 		return  J9MODRON_GCCHK_RC_CLASS_IS_UNLOADED;
 	}
 	return  J9MODRON_GCCHK_RC_OK;
@@ -662,7 +621,7 @@ GC_CheckEngine::checkStackObject(J9JavaVM *javaVM, J9Object *objectPtr)
 
 	if (_cycle->getCheckFlags() & J9MODRON_GCCHK_VERIFY_CLASS_SLOT) {
 		/* Check that the class pointer points to the class heap, etc. */
-		UDATA ret = checkJ9ClassPointer(javaVM, J9GC_J9OBJECT_CLAZZ(objectPtr));
+		UDATA ret = checkJ9ClassPointer(javaVM, J9GC_J9OBJECT_CLAZZ_VM(objectPtr, javaVM));
 		if (J9MODRON_GCCHK_RC_OK != ret) {
 			return ret;
 		}
@@ -918,7 +877,7 @@ GC_CheckEngine::checkClassStatics(J9JavaVM* vm, J9Class* clazz)
 					numberOfReferences += 1;
 
 					/* get address of next field */
-					j9object_t* address = (j9object_t*)vm->internalVMFunctions->staticFieldAddress(currentThread, clazz, J9UTF8_DATA(nameUTF), J9UTF8_LENGTH(nameUTF), J9UTF8_DATA(sigUTF), J9UTF8_LENGTH(sigUTF), NULL, NULL, 0, NULL);
+					j9object_t* address = (j9object_t*)vm->internalVMFunctions->staticFieldAddress(currentThread, clazz, J9UTF8_DATA(nameUTF), J9UTF8_LENGTH(nameUTF), J9UTF8_DATA(sigUTF), J9UTF8_LENGTH(sigUTF), NULL, NULL, J9_LOOK_NO_JAVA, NULL);
 
 					/* an address must be in gc scan range */
 					if (!((address >= sectionStart) && (address < sectionEnd))) {
@@ -948,7 +907,7 @@ GC_CheckEngine::checkClassStatics(J9JavaVM* vm, J9Class* clazz)
 						 * However if class found - it must fit object's class
 						 */
 						if (NULL != classToCast) {
-							if (0 == instanceOfOrCheckCast(J9GC_J9OBJECT_CLAZZ(*address), classToCast)) {
+							if (0 == instanceOfOrCheckCast(J9GC_J9OBJECT_CLAZZ_VM(*address, vm), classToCast)) {
 								result = J9MODRON_GCCHK_RC_CLASS_STATICS_FIELD_POINTS_WRONG_OBJECT;
 								GC_CheckError error(clazz, address, _cycle, _currentCheck, "Class ", result, _cycle->nextErrorCount());
 								_reporter->report(&error);
@@ -1094,7 +1053,7 @@ GC_CheckEngine::checkObjectHeap(J9JavaVM *javaVM, J9MM_IterateObjectDescriptor *
 		return J9MODRON_SLOT_ITERATOR_UNRECOVERABLE_ERROR;
 	}
 
-	clazz = (J9Class*)J9GC_J9OBJECT_CLAZZ(objectDesc->object);
+	clazz = J9GC_J9OBJECT_CLAZZ_VM(objectDesc->object, javaVM);
 	result = checkJ9ClassPointer(javaVM, clazz, true);
 	if (J9MODRON_GCCHK_RC_OK == result) {
 		ObjectSlotIteratorCallbackUserData userData;
@@ -1105,15 +1064,13 @@ GC_CheckEngine::checkObjectHeap(J9JavaVM *javaVM, J9MM_IterateObjectDescriptor *
 		result = userData.result;
 	}
 
-	if (!extensions->isConcurrentScavengerEnabled()) {
-		/* check Ownable Synchronizer Object consistency */
-		if ((OBJECT_HEADER_SHAPE_MIXED == J9GC_CLASS_SHAPE(clazz)) && (0 != (J9CLASS_FLAGS(clazz) & J9_JAVA_CLASS_OWNABLE_SYNCHRONIZER))) {
-			if (NULL == extensions->accessBarrier->isObjectInOwnableSynchronizerList(objectDesc->object)) {
-				PORT_ACCESS_FROM_PORT(_portLibrary);
-				j9tty_printf(PORTLIB, "  <gc check: found Ownable SynchronizerObject %p is not on the list >\n", objectDesc->object);
-			} else {
-				_ownableSynchronizerObjectCountOnHeap += 1;
-			}
+	/* check Ownable Synchronizer Object consistency */
+	if ((OBJECT_HEADER_SHAPE_MIXED == J9GC_CLASS_SHAPE(clazz)) && (0 != (J9CLASS_FLAGS(clazz) & J9AccClassOwnableSynchronizer))) {
+		if (NULL == extensions->accessBarrier->isObjectInOwnableSynchronizerList(objectDesc->object)) {
+			PORT_ACCESS_FROM_PORT(_portLibrary);
+			j9tty_printf(PORTLIB, "  <gc check: found Ownable SynchronizerObject %p is not on the list >\n", objectDesc->object);
+		} else {
+			_ownableSynchronizerObjectCountOnHeap += 1;
 		}
 	}
 
@@ -1298,8 +1255,8 @@ GC_CheckEngine::checkSlotOwnableSynchronizerList(J9JavaVM *javaVM, J9Object **ob
 		GC_CheckError error(currentList, objectIndirect, _cycle, _currentCheck, result, _cycle->nextErrorCount());
 		_reporter->report(&error);
 	} else {
-		J9Class *instanceClass = J9GC_J9OBJECT_CLAZZ(objectPtr);
-		if (0 == (J9CLASS_FLAGS(instanceClass) & J9_JAVA_CLASS_OWNABLE_SYNCHRONIZER)) {
+		J9Class *instanceClass = J9GC_J9OBJECT_CLAZZ_VM(objectPtr, javaVM);
+		if (0 == (J9CLASS_FLAGS(instanceClass) & J9AccClassOwnableSynchronizer)) {
 			GC_CheckError error(currentList, objectIndirect, _cycle, _currentCheck, J9MODRON_GCCHK_RC_INVALID_FLAGS, _cycle->nextErrorCount());
 			_reporter->report(&error);
 		}
@@ -1512,34 +1469,3 @@ isPointerInRegion(void *pointer, J9MM_IterateRegionDescriptor *regionDesc)
 
 	return ((address >= regionStart) && (address < regionEnd));
 }
-
-#if defined(J9VM_GC_ARRAYLETS) && !defined(J9VM_GC_HYBRID_ARRAYLETS)
-static bool
-isPointerInRange(void *pointer, void *start, void *end)
-{
-	UDATA address = (UDATA)pointer;
-	UDATA startAddress = (UDATA)start;
-	UDATA endAddress = (UDATA)end;
-
-	return ((address >= startAddress) && (address < endAddress));
-}
-#endif /* defined(J9VM_GC_ARRAYLETS) && !defined(J9VM_GC_HYBRID_ARRAYLETS) */
-
-#if defined(J9VM_GC_ARRAYLETS) && !defined(J9VM_GC_HYBRID_ARRAYLETS)
-/* TODO we cannot call SlotObject->readReferenceFromSlot() 
- * because it calls j9gc_objaccess_pointerFromToken, which is a 
- * and pulls in additional files to be compiled. This causes linker error on AIX.
- * Eventually we need to have readReferenceFromSlot and writeToSlot call barrier->convert.
- * And this would require MM_ObjectAccessBarrier to be visible to GC_SlotObject -- merging gc_base and gc_modron_base
- */
-static J9Object* 
-convertPointerFromToken(J9JavaVM* vm, fj9object_t token)
-{
-#if defined(J9VM_GC_COMPRESSED_POINTERS)	
-	MM_ObjectAccessBarrier *barrier = MM_GCExtensions::getExtensions(vm)->accessBarrier;
-	return barrier->convertPointerFromToken(token);
-#else 
-	return (J9Object*)token;
-#endif /* J9VM_GC_COMPRESSED_POINTERS */
-}
-#endif /* J9VM_GC_ARRAYLETS && !J9VM_GC_HYBRID_ARRAYLETS */

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-Copyright (c) 2010, 2018 IBM Corp. and others
+Copyright (c) 2010, 2019 IBM Corp. and others
 
 This program and the accompanying materials are made available under
 the terms of the Eclipse Public License 2.0 which accompanies this
@@ -25,9 +25,6 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 	<artifact type="static" name="j9gcautoblob">
 		<include-if condition="spec.flags.module_ddr"/>
 		<exclude-if condition="spec.flags.opt_useOmrDdr"/>
-		<options>
-			<option name="isCPlusPlus"/>
-		</options>
 		<phase>core j2se</phase>
 		<includes>
 			<include path="j9include"/>
@@ -53,9 +50,6 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 			<include path="gc_realtime" type="relativepath">
 				<include-if condition="spec.flags.module_gc_realtime"/>
 			</include>
-			<include path="gc_staccato" type="relativepath">
-				<include-if condition="spec.flags.module_gc_realtime"/>
-			</include>
 			<include path="gc_stats" type="relativepath"/>
 			<include path="omr/gc/stats" type="relativepath"/>
 			<include path="gc_structs" type="relativepath"/>
@@ -65,6 +59,9 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 			<include path="omr/gc/verbose" type="relativepath"/>
 			<include path="gc_verbose_java" type="relativepath"/>
 			<include path="gc_vlhgc" type="relativepath">
+				<include-if condition="spec.flags.gc_vlhgc"/>
+			</include>
+			<include path="omr/gc/base/vlhgc" type="relativepath">
 				<include-if condition="spec.flags.gc_vlhgc"/>
 			</include>
 		</includes>

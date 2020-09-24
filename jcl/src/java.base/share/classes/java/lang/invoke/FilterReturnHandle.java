@@ -1,6 +1,6 @@
-/*[INCLUDE-IF Sidecar17]*/
+/*[INCLUDE-IF Sidecar17 & !OPENJDK_METHODHANDLES]*/
 /*******************************************************************************
- * Copyright (c) 2011, 2011 IBM Corp. and others
+ * Copyright (c) 2011, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -23,6 +23,9 @@
 package java.lang.invoke;
 
 import java.lang.invoke.MethodHandle.FrameIteratorSkip;
+/*[IF Java15]*/
+import java.util.List;
+/*[ENDIF] Java15 */
 
 @VMCONSTANTPOOL_CLASS
 final class FilterReturnHandle extends ConvertHandle {
@@ -67,6 +70,15 @@ final class FilterReturnHandle extends ConvertHandle {
 		return ILGenMacros.invokeExact_X(filter, ILGenMacros.invokeExact(next, argPlaceholder));
 	}
 
+/*[IF Java15]*/
+	@Override
+	boolean addRelatedMHs(List<MethodHandle> relatedMHs) {
+		relatedMHs.add(next);
+		relatedMHs.add(filter);
+		return true;
+	}
+/*[ENDIF] Java15 */
+	
 	// }}} JIT support
 
 	@Override

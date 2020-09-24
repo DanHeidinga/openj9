@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -24,6 +24,7 @@
 #include "dmpsup.h"
 #include "j9dmpnls.h"
 #include "rasdump_internal.h"
+#include "ut_j9dmp.h"
 
 #define DG_SYSTEM_DUMPS  "system+snap+tool"
 
@@ -46,8 +47,12 @@ static const DgDumpCondition dgConditions[] = {
 	/* note that 'ONANYSIGNAL' is handled explicitly in the mapDumpOptions) code below */ 
 };
 
-static const int numDumpConditions = ( sizeof(dgConditions) / sizeof(DgDumpCondition) );
+static const int numDumpConditions = sizeof(dgConditions) / sizeof(dgConditions[0]);
 
+#define HEAP_KIND "heap"
+#define JAVA_KIND "java"
+#define SNAP_KIND "snap"
+#define SYSTEM_KIND "system"
 
 typedef struct DgDumpAction
 {
@@ -57,8 +62,8 @@ typedef struct DgDumpAction
 
 /* Mapping for JAVA_DUMP_OPTS actions */
 static const DgDumpAction dgActions[] = {
-	{ "JAVADUMP",  "java" },
-	{ "HEAPDUMP",  "heap" },
+	{ "JAVADUMP",  JAVA_KIND },
+	{ "HEAPDUMP",  HEAP_KIND },
 	{ "SYSDUMP",   DG_SYSTEM_DUMPS },
 	{ "ALL",       DG_SYSTEM_DUMPS "+heap+java+jit" },
 	{ "NONE",      "none" },
@@ -68,8 +73,10 @@ static const DgDumpAction dgActions[] = {
 #endif
 };
 
-static const int numDumpActions = ( sizeof(dgActions) / sizeof(DgDumpAction) );
+static const int numDumpActions = sizeof(dgActions) / sizeof(dgActions[0]);
 
+/* Filter string used for some default OutOfMemory dump options */
+#define  SYSTHROW_OOM_1_4 "events=systhrow,range=1..4,filter=java/lang/OutOfMemoryError"
 
 typedef struct DgDumpEnvSwitch
 {
@@ -85,33 +92,33 @@ typedef struct DgDumpEnvSwitch
 static const DgDumpEnvSwitch dgSwitches[] = {
 			{
 /* name */		"DISABLE_JAVADUMP",
-/* kind */		"java",
+/* kind */		JAVA_KIND,
 /* on */		"none",
 /* off */		NULL
 			},{
 /* name */		"IBM_HEAPDUMP",
-/* kind */		"heap",
+/* kind */		HEAP_KIND,
 /* on */		"events=user+gpf",
 /* off */		"none"
 			},{
 /* name */		"IBM_HEAP_DUMP",
-/* kind */		"heap",
+/* kind */		HEAP_KIND,
 /* on */		"events=user+gpf",
 /* off */		"none"
 			},{
 /* name */		"IBM_JAVADUMP_OUTOFMEMORY",
-/* kind */		"java",
-/* on */		"events=systhrow,range=1..4,filter=java/lang/OutOfMemoryError",
+/* kind */		JAVA_KIND,
+/* on */		SYSTHROW_OOM_1_4,
 /* off */		"none"
 			},{
 /* name */		"IBM_HEAPDUMP_OUTOFMEMORY",
-/* kind */		"heap",
-/* on */		"events=systhrow,range=1..4,filter=java/lang/OutOfMemoryError",
+/* kind */		HEAP_KIND,
+/* on */		SYSTHROW_OOM_1_4,
 /* off */		"none"
 			},{
 /* name */		"IBM_SNAPDUMP_OUTOFMEMORY",
-/* kind */		"snap",
-/* on */		"events=systhrow,range=1..4,filter=java/lang/OutOfMemoryError",
+/* kind */		SNAP_KIND,
+/* on */		SYSTHROW_OOM_1_4,
 /* off */		"none"
 			},{
 /* name */		"J9NO_DUMPS",
@@ -121,7 +128,33 @@ static const DgDumpEnvSwitch dgSwitches[] = {
 			}
 };
 
-static const int numDumpEnvSwitches = ( sizeof(dgSwitches) / sizeof(DgDumpEnvSwitch) );
+typedef struct OomDefaultSetting
+{
+	const char *typeString;
+	const char *onOpt;
+} OomDefaultSetting;
+
+static const OomDefaultSetting oomDefaultTable[] = {
+	{
+		HEAP_KIND,
+		SYSTHROW_OOM_1_4
+	},
+	{
+		JAVA_KIND,
+		SYSTHROW_OOM_1_4
+	},
+	{
+		SNAP_KIND,
+		SYSTHROW_OOM_1_4
+	},
+	{
+		SYSTEM_KIND,
+		"events=systhrow,range=1..1,filter=java/lang/OutOfMemoryError,request=exclusive+compact+prepwalk"
+	}
+};
+
+static const UDATA numDumpEnvSwitches = sizeof(dgSwitches) / sizeof(dgSwitches[0]);
+static const UDATA numOomSettings = sizeof(oomDefaultTable) / sizeof(oomDefaultTable[0]);
 
 
 typedef struct DgDumpEnvSetting
@@ -154,11 +187,11 @@ typedef struct DgDumpEnvDefault
 static const DgDumpEnvDefault dgDefaults[] = {
 					{
 /* name */		"IBM_JAVA_HEAPDUMP_TEXT",
-/* kind */			"heap",
+/* kind */			HEAP_KIND,
 /* default */		"opts=CLASSIC"
 					},{
 /* name */		"IBM_JAVA_HEAPDUMP_TEST",
-/* kind */			"heap",
+/* kind */			HEAP_KIND,
 /* default */		"opts=PHD+CLASSIC"
 					},
 };
@@ -255,7 +288,7 @@ mapDumpOptions(J9JavaVM *vm, J9RASdumpOption agentOpts[], IDATA *agentNum)
 			
 			/* Loop to map all the supported conditions (for ONANYSIGNAL) */
 			for (i = 0; i < numDumpConditions; i++) {
-				/* Disable any default or earlier envars for this condition */
+				/* Disable any default or earlier envvars for this condition */
 				for (j = 0; j < saveAgentNum; j++) {
 					if (strstr(agentOpts[j].args, dgConditions[i].event)) {
 						agentOpts[j].kind = J9RAS_DUMP_OPT_DISABLED;
@@ -274,13 +307,13 @@ mapDumpOptions(J9JavaVM *vm, J9RASdumpOption agentOpts[], IDATA *agentNum)
 			cursor += strlen(dgConditions[i].name);
 			
 			if ( *cursor == '(' && ( strchr(cursor, ')')) != NULL ) {
-				/* Disable any default or earlier envars for this condition */
+				/* Disable any default or earlier envvars for this condition */
 				for (j = 0; j < saveAgentNum; j++) {
 					if (strstr(agentOpts[j].args, dgConditions[i].event)) {
 						agentOpts[j].kind = J9RAS_DUMP_OPT_DISABLED;
 					}
 				}
-				/* Map any specifed actions for this condition */
+				/* Map any specified actions for this condition */
 				mapDumpActions(vm, agentOpts, agentNum, cursor, i);
 			}
 		}
@@ -348,19 +381,20 @@ mapDumpActions(J9JavaVM *vm, J9RASdumpOption agentOpts[], IDATA *agentNum, char 
 			cursor++;
 
 			if ( countRHS >= cursor && countRHS < actionsRHS) { /* valid dump count found */
+				size_t eventStringLength = strlen(dgConditions[condition].eventString);
 				countChars = countRHS - cursor;
 				/* allocate a string for the mapped event string with the count chars appended */
-				length = strlen(dgConditions[condition].eventString) + countChars;
+				length = eventStringLength + countChars;
 				eventString = j9mem_allocate_memory(length, OMRMEM_CATEGORY_VM);
 				if (NULL == eventString) {
 					j9tty_err_printf(PORTLIB, 
 						"Could not allocate memory to handle JAVA_DUMP_OPTS dump count option, option ignored.\n");
 					countChars = 0;
 				} else {
-					memset(eventString, 0, length);
-					strncpy(eventString, dgConditions[condition].eventString, 
-						strlen(dgConditions[condition].eventString) - 1);
-					strncat(eventString, cursor, countChars);
+					/* eventString ends with "..0"; the '0' is replaced by countChars */
+					memcpy(eventString, dgConditions[condition].eventString, eventStringLength - 1);
+					memcpy(eventString + eventStringLength - 1, cursor, countChars);
+					eventString[length - 1] = '\0';
 				}
 			}
 		}
@@ -413,7 +447,7 @@ mapDumpActions(J9JavaVM *vm, J9RASdumpOption agentOpts[], IDATA *agentNum, char 
 omr_error_t
 mapDumpSwitches(J9JavaVM *vm, J9RASdumpOption agentOpts[], IDATA *agentNum)
 {
-	IDATA i, kind;
+	UDATA i = 0;
 
 	PORT_ACCESS_FROM_JAVAVM(vm);
 
@@ -453,7 +487,7 @@ mapDumpSwitches(J9JavaVM *vm, J9RASdumpOption agentOpts[], IDATA *agentNum)
 			/* The "off" option for these variables should only disable the default dump */
 			/* agents that match the option values. Other agents for the same dump type  */
 			/* should remain untouched.                                                  */
-			int j;
+			IDATA j = 0;
 			IDATA disableKind = scanDumpType(&typeString);
 
 			/* walk through the agentOpts and disable those that match the type and options */
@@ -467,6 +501,7 @@ mapDumpSwitches(J9JavaVM *vm, J9RASdumpOption agentOpts[], IDATA *agentNum)
 				}
 			}
 		} else {
+			IDATA kind = -1;
 			/* set up the dump type and event string for multiple dump actions */
 			while ( optionString && (kind = scanDumpType(&typeString)) >= 0 ) {
 				agentOpts[*agentNum].kind = kind;
@@ -479,6 +514,55 @@ mapDumpSwitches(J9JavaVM *vm, J9RASdumpOption agentOpts[], IDATA *agentNum)
 
 	return OMR_ERROR_NONE;
 }
+
+/**
+ * Fully disable heap, java, snap, and system dumps on out of memory
+ * @param @agentOpts dump agent options
+ * @param agentNum number of agents
+ */
+void
+disableDumpOnOutOfMemoryError(J9RASdumpOption agentOpts[], IDATA agentNum)
+{
+	UDATA kindCursor = 0;
+
+	for (kindCursor = 0; kindCursor < numOomSettings; ++kindCursor) {
+		char *typeString = (char *) oomDefaultTable[kindCursor].typeString;
+		IDATA disableKind = scanDumpType(&typeString);
+		IDATA j = 0;
+		for (j = 0; j < agentNum; j++) {
+			if ((NULL != agentOpts[j].args) 
+					&& (agentOpts[j].kind == disableKind) 
+					&& (strcmp(agentOpts[j].args, oomDefaultTable[kindCursor].onOpt) == 0)) {
+				agentOpts[j].kind = J9RAS_DUMP_OPT_DISABLED;
+			}
+		}
+	}
+}
+
+/**
+ * Fully enable heap, java, snap, and system dumps on out of memory
+ * @param @agentOpts dump agent options
+ * @param agentNum pointer to number of agents, updated by reference
+ */
+void
+enableDumpOnOutOfMemoryError(J9RASdumpOption agentOpts[], IDATA *agentNum)
+{
+	UDATA kindCursor = 0;
+
+	for (kindCursor = 0; kindCursor < numOomSettings; ++kindCursor) {
+		char *typeString = (char *) oomDefaultTable[kindCursor].typeString;
+		IDATA enableKind = scanDumpType(&typeString);
+		if (enableKind < 0) {
+			continue;
+		}
+
+		agentOpts[*agentNum].kind = enableKind;
+		agentOpts[*agentNum].args = (char *) oomDefaultTable[kindCursor].onOpt;
+		agentOpts[*agentNum].flags = J9RAS_DUMP_OPT_ARGS_STATIC;
+		agentOpts[*agentNum].pass = J9RAS_DUMP_OPTS_PASS_ONE;
+		*agentNum += 1;
+	}
+}
 #endif /* J9VM_RAS_DUMP_AGENTS */
 
 
@@ -489,28 +573,28 @@ mapDumpSwitches(J9JavaVM *vm, J9RASdumpOption agentOpts[], IDATA *agentNum)
 omr_error_t
 mapDumpSettings(J9JavaVM *vm, J9RASdumpOption agentOpts[], IDATA *agentNum)
 {
-	IDATA i, kind, len;
-
 	PORT_ACCESS_FROM_JAVAVM(vm);
-
+	IDATA i = 0;
 	char buf[J9_MAX_DUMP_PATH];
-	char *finalArg;
 
 	for (i = 0; i < numDumpEnvSettings; i++) {
-
-		len = strlen(dgSettings[i].prefixOpt);
-		strncpy(buf, dgSettings[i].prefixOpt, len);
+		IDATA len = strlen(dgSettings[i].prefixOpt);
+		Assert_dump_true(len < J9_MAX_DUMP_PATH);
+		memcpy(buf, dgSettings[i].prefixOpt, len);
 
 		/* Tack on user setting */
-		if ( j9sysinfo_get_env(dgSettings[i].name, buf+len, J9_MAX_DUMP_PATH-len) == 0 ) {
-
+		if (j9sysinfo_get_env(dgSettings[i].name, buf + len, J9_MAX_DUMP_PATH - len) == 0) {
 			char *typeString = dgSettings[i].typeString;
-			buf[J9_MAX_DUMP_PATH-1] = '\0';
 
 			/* Handle multiple dump types */
-			while ( (kind = scanDumpType(&typeString)) >= 0 ) {
+			for (;;) {
+				IDATA kind = scanDumpType(&typeString);
+				char *finalArg = NULL;
+				if (kind < 0) {
+					break;
+				}
 				finalArg = j9mem_allocate_memory(strlen(buf) + 1, OMRMEM_CATEGORY_VM);
-				if(!finalArg) {
+				if (NULL == finalArg) {
 					return OMR_ERROR_INTERNAL;
 				}
 				strcpy(finalArg, buf);

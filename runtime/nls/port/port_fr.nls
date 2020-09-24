@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2000, 2017 IBM Corp. and others
+# Copyright (c) 2000, 2020 IBM Corp. and others
 #
 # This program and the accompanying materials are made available under
 # the terms of the Eclipse Public License 2.0 which accompanies this
@@ -31,7 +31,7 @@
 # Note to translators:
 #
 # This file uses printf style substitutions. Sequences such as %s, %.*s, %10d
-# etc. will be subsituted at runtime. The special case of %% is not a substitution.
+# etc. will be substituted at runtime. The special case of %% is not a substitution.
 # It indicates a single percent sign. Please do not modify the format specifiers, or
 # change their order. For instance, in a message like "from %d to %s", %d
 # MUST appear before %s in any translated message, or a run-time crash
@@ -273,7 +273,7 @@ J9NLS_PORT_SHARED_OPENED_STALE_SEM.sample_input_1=dummy.tmp
 J9NLS_PORT_SHARED_OPENED_STALE_SEM.sample_input_2=0001
 # END NON-TRANSLATABLE
 
-J9NLS_PORT_ZOS_64_APPENDING_XDS=Ajout de .X&DS au mod\u00e8le de vidage d\u00e9fini par l'utilisateur pour permettre les vidages mutliparties.
+J9NLS_PORT_ZOS_64_APPENDING_XDS=Ajout de .X&DS au mod\u00e8le de vidage sp\u00e9cifi\u00e9 par l'utilisateur pour permettre les vidages multiparties.
 # START NON-TRANSLATABLE
 J9NLS_PORT_ZOS_64_APPENDING_XDS.explanation=The user has specified a dump template (via -Xdump:system:file= or using the JAVA_DUMP_TDUMP_PATTERN environment variable). The maximum amount of data that can be dumped to a single IEATDUMP file is 2 gigabytes. For address spaces large than 2 gigabyes, zOS generates multiple dump files. To do this, the suffix &DS needs to be in the dump name, it will be replaced with a counter identifying which part of the dump is in the file. If the user does not add it, the JVM appends it to the dump template.
 J9NLS_PORT_ZOS_64_APPENDING_XDS.system_action=The JVM will add .X&DS to the dump template and continue to run.
@@ -281,7 +281,7 @@ J9NLS_PORT_ZOS_64_APPENDING_XDS.user_response=It is safe to ignore this message 
 
 # END NON-TRANSLATABLE
 
-J9NLS_PORT_IEATDUMP_NAME_TOO_LONG=IEATDUMP a \u00e9chou\u00e9, car le mod\u00e8le de vidage d\u00e9fini par l'utilisateur est trop long. Nouvelle tentative de vidage en utilisant le mod\u00e8le par d\u00e9faut.
+J9NLS_PORT_IEATDUMP_NAME_TOO_LONG=IEATDUMP a \u00e9chou\u00e9, car le mod\u00e8le de vidage sp\u00e9cifi\u00e9 par l'utilisateur \u00e9tait trop long. Nouvelle tentative de vidage en utilisant le mod\u00e8le par d\u00e9faut.
 # START NON-TRANSLATABLE
 J9NLS_PORT_IEATDUMP_NAME_TOO_LONG.explanation=The user has specified a dump template (via -Xdump:system:file= or using the JAVA_DUMP_TDUMP_PATTERN environment variable). When the system has tried to take a dump using the template, the IEATDUMP routine returned with return code 0x8 and reason code 0x22, indicating the dump failed because the name was too long.
 J9NLS_PORT_IEATDUMP_NAME_TOO_LONG.system_action=The JVM will try to take the dump again using the default dump template.
@@ -289,7 +289,7 @@ J9NLS_PORT_IEATDUMP_NAME_TOO_LONG.user_response=Specify a shorter dump template.
 
 # END NON-TRANSLATABLE
 
-J9NLS_PORT_IEATDUMP_DISK_FULL=IEATDUMP a \u00e9chou\u00e9, car il a \u00e9t\u00e9 impossible d'affecter le jeu de donn\u00e9es de vidage (v\u00e9rifiez l'espace disque et les autorisations de zone).
+J9NLS_PORT_IEATDUMP_DISK_FULL=IEATDUMP a \u00e9chou\u00e9, car il a \u00e9t\u00e9 impossible d'allouer le jeu de donn\u00e9es de vidage (v\u00e9rifiez l'espace disque et les autorisations de champ).
 # START NON-TRANSLATABLE
 J9NLS_PORT_IEATDUMP_DISK_FULL.explanation=The JVM attempted to take an IEATDUMP, and the dump routine returned with return code 0x8 and reason code 0x26, indicating the dump failed because the dump dataset could not be allocated.
 J9NLS_PORT_IEATDUMP_DISK_FULL.system_action=The JVM will continue running, but will fail to create a dump.
@@ -339,7 +339,7 @@ J9NLS_PORT_MMAP_INVALID_FILE_HANDLE.user_response=Contact your service represent
 
 # END NON-TRANSLATABLE
 
-J9NLS_PORT_LINUXDUMP_PIPE_CORE=Le param\u00e8tre %s \"%s\" indique que le clich\u00e9 du processus core doit \u00eatre dirig\u00e9 vers un programme externe.  Tentative de renommage du processus core ou core.%d.\n
+J9NLS_PORT_LINUXDUMP_PIPE_CORE=Le param\u00e8tre %s \"%s\" indique que le vidage core doit \u00eatre dirig\u00e9 vers un programme externe.  Tentative de renommage du processus core ou core.%d.\n
 # START NON-TRANSLATABLE
 J9NLS_PORT_LINUXDUMP_PIPE_CORE.sample_input_1=/proc/sys/kernel/core_pattern
 J9NLS_PORT_LINUXDUMP_PIPE_CORE.sample_input_2=|/usr/libexec/abrt-hook-ccpp /var/spool/abrt %p %s %u %c
@@ -385,7 +385,7 @@ J9NLS_PORT_ZOS_SHMEM_STORAGE_KEY_MISMATCH.system_action=No action required. This
 J9NLS_PORT_ZOS_SHMEM_STORAGE_KEY_MISMATCH.user_response=Check for other error messages.
 # END NON-TRANSLATABLE
 
-J9NLS_PORT_MALLOC31_FAILURE=__malloc31 n'a pas r\u00e9ussi \u00e0 allouer de la m\u00e9moire tampon sur z/OS
+J9NLS_PORT_MALLOC31_FAILURE=__malloc31 n'a pas r\u00e9ussi \u00e0 allouer de tampon sous z/OS
 # START NON-TRANSLATABLE
 J9NLS_PORT_MALLOC31_FAILURE.explanation=__malloc31 failed to allocate buffer
 J9NLS_PORT_MALLOC31_FAILURE.system_action=The JVM will continue, but no hypervisor related information will be provided.
@@ -409,7 +409,7 @@ J9NLS_PORT_NO_HYPERVISOR.user_response=Refer the documentation for Supported Hyp
 # END NON-TRANSLATABLE
 
 # Note: IBM_JAVA_HYPERVISOR_SETTINGS is an environment variable name and should not be translated
-J9NLS_PORT_MALFORMED_HYPERVISOR_SETTINGS=Valeur incorrecte pour IBM_JAVA_HYPERVISOR_SETTINGS
+J9NLS_PORT_MALFORMED_HYPERVISOR_SETTINGS=Valeur incorrectement form\u00e9e pour IBM_JAVA_HYPERVISOR_SETTINGS
 # START NON-TRANSLATABLE
 J9NLS_PORT_MALFORMED_HYPERVISOR_SETTINGS.explanation=A closing quote character was missing from a quoted token in the IBM_JAVA_HYPERVISOR_SETTINGS environment variable
 J9NLS_PORT_MALFORMED_HYPERVISOR_SETTINGS.system_action=No Hypervisor settings were read, startup failed.JVM will exit.

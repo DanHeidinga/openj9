@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar17]*/
 /*******************************************************************************
- * Copyright (c) 2008, 2017 IBM Corp. and others
+ * Copyright (c) 2008, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -26,6 +26,8 @@ import javax.management.openmbean.CompositeData;
 
 import com.ibm.java.lang.management.internal.ManagementUtils;
 
+import openj9.management.internal.LockInfoBase;
+
 /**
  * This class represents information about locked objects.
  *
@@ -33,16 +35,10 @@ import com.ibm.java.lang.management.internal.ManagementUtils;
  */
 public class LockInfo {
 
-	private final String className;
-
-	private final int identityHashCode;
-
-	/*[IF]*/
-	@SuppressWarnings("unused") /* Used only by native code. */
-	/*[ENDIF]*/
-	private LockInfo(Object object) {
-		this(object.getClass().getName(), System.identityHashCode(object));
-	}
+	/**
+	 * Container for the actual data from the native method
+	 */
+	private final LockInfoBase baseInfo;
 
 	/**
 	 * Creates a new <code>LockInfo</code> instance.
@@ -59,13 +55,15 @@ public class LockInfo {
 	 *             if <code>className</code> is <code>null</code>
 	 */
 	public LockInfo(String className, int identityHashCode) {
-		super();
-		if (className == null) {
-			/*[MSG "K0600", "className cannot be null"]*/
-			throw new NullPointerException(com.ibm.oti.util.Msg.getString("K0600")); //$NON-NLS-1$
-		}
-		this.className = className;
-		this.identityHashCode = identityHashCode;
+		baseInfo = new LockInfoBase(className, identityHashCode);
+	}
+
+	/**
+	 * Constructor for use by subclasses
+	 * @param base base data
+	 */
+	LockInfo(LockInfoBase base) {
+		baseInfo = base;
 	}
 
 	/**
@@ -75,7 +73,7 @@ public class LockInfo {
 	 * @return the associated lock object's class name
 	 */
 	public String getClassName() {
-		return className;
+		return baseInfo.getClassName();
 	}
 
 	/**
@@ -84,25 +82,26 @@ public class LockInfo {
 	 * @return the identity hash code of the lock object
 	 */
 	public int getIdentityHashCode() {
-		return identityHashCode;
+		return baseInfo.getIdentityHashCode();
 	}
 
 	/**
 	 * Returns a {@code LockInfo} object represented by the given
 	 * {@code CompositeData}. The given {@code CompositeData} must contain the
 	 * following attributes: <blockquote>
-	 * <table border summary="The attributes and the types the given CompositeData contains">
+	 * <table>
+	 * <caption>The attributes and the types the given CompositeData contains</caption>
 	 * <tr>
-	 * <th align=left>Attribute Name</th>
-	 * <th align=left>Type</th>
+	 * <th style="float:left">Attribute Name</th>
+	 * <th style="float:left">Type</th>
 	 * </tr>
 	 * <tr>
 	 * <td>className</td>
-	 * <td><tt>java.lang.String</tt></td>
+	 * <td><code>java.lang.String</code></td>
 	 * </tr>
 	 * <tr>
 	 * <td>identityHashCode</td>
-	 * <td><tt>java.lang.Integer</tt></td>
+	 * <td><code>java.lang.Integer</code></td>
 	 * </tr>
 	 * </table>
 	 * </blockquote>
@@ -145,18 +144,18 @@ public class LockInfo {
 	 * The string will hold both the name of the lock object's class and it's
 	 * identity hash code expressed as an unsigned hexadecimal. i.e.<br>
 	 * <p>
-	 * {@link #getClassName()}&nbsp;+&nbsp;&commat;&nbsp;+&nbsp;Integer.toHexString({@link #getIdentityHashCode()})
+	 * {@link #getClassName()} &nbsp;+&nbsp;&#64;&nbsp;+&nbsp;Integer.toHexString({@link #getIdentityHashCode()})
 	 * </p>
 	 *
 	 * @return a string containing the key details of the lock
 	 */
 	@Override
 	public String toString() {
-		StringBuilder sb = new StringBuilder();
-		sb.append(className);
-		sb.append('@');
-		sb.append(Integer.toHexString(identityHashCode));
-		return sb.toString();
+		return baseInfo.toString();
+	}
+
+	LockInfoBase getBaseInfo() {
+		return baseInfo;
 	}
 
 }

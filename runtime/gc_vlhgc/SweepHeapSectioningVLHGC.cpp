@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -26,19 +26,19 @@
 
 #include "SweepHeapSectioningVLHGC.hpp"
 
-#include "Dispatcher.hpp"
 #include "EnvironmentBase.hpp"
 #include "HeapRegionIteratorVLHGC.hpp"
 #include "HeapRegionDescriptorVLHGC.hpp"
 #include "HeapRegionManager.hpp"
 #include "MemorySubSpace.hpp"
+#include "ParallelDispatcher.hpp"
 
 /**
  * Return the expected total sweep chunks that will be used in the system.
  * Called during initialization, this routine looks at the maximum size of the heap and expected
  * configuration (generations, regions, etc) and determines the approximate maximum number of chunks
  * that will be required for a sweep at any given time.  It is safe to underestimate the number of chunks,
- * as the sweep sectioning mechnanism will compensate, but the the expectation is that by having all
+ * as the sweep sectioning mechanism will compensate, but the the expectation is that by having all
  * chunk memory allocated in one go will keep the data localized and fragment system memory less.
  * @return estimated upper bound number of chunks that will be required by the system.
  */

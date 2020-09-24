@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2015 IBM Corp. and others
+ * Copyright (c) 2001, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -224,7 +224,7 @@ class ObjectMonitor_V1 extends ObjectMonitor
 		blockedThreads = new ArrayList<J9VMThreadPointer>();
 		if(isInflated) {
 			if(OmrBuildFlags.OMR_THR_THREE_TIER_LOCKING) {
-				J9ThreadPointer thread = monitor.blocking();
+				J9ThreadPointer thread = J9ThreadMonitorHelper.getBlockingField(monitor);
 				while(thread.notNull()) {
 					J9VMThreadPointer vmThread = J9ThreadHelper.getVMThread(thread);
 					if(vmThread.notNull()) {
@@ -253,19 +253,15 @@ class ObjectMonitor_V1 extends ObjectMonitor
 	{
 		lockword = J9ObjectMonitorPointer.NULL;
 		
-		if(J9BuildFlags.thr_lockNursery) {
-			// TODO : why isn't there a cast UDATA->IDATA?
-			IDATA lockOffset = new IDATA(J9ObjectHelper.clazz(object).lockOffset());
-			// TODO : why isn't there an int/long comparison
-			if(lockOffset.gte(new IDATA(0))) {
-				lockword = ObjectMonitorReferencePointer.cast(object.addOffset(lockOffset.longValue())).at(0);			
-			} else {
-				if (j9objectMonitor.notNull()) {
-					lockword = j9objectMonitor.alternateLockword();
-				}
-			}
+		// TODO : why isn't there a cast UDATA->IDATA?
+		IDATA lockOffset = new IDATA(J9ObjectHelper.clazz(object).lockOffset());
+		// TODO : why isn't there an int/long comparison
+		if(lockOffset.gte(new IDATA(0))) {
+			lockword = ObjectMonitorReferencePointer.cast(object.addOffset(lockOffset.longValue())).at(0);			
 		} else {
-			lockword = J9ObjectMonitorPointer.cast(J9ObjectHelper.monitor(object));
+			if (j9objectMonitor.notNull()) {
+				lockword = j9objectMonitor.alternateLockword();
+			}
 		}
 		
 		if(lockword.notNull()) {

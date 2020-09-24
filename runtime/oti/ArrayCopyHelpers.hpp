@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -28,6 +28,16 @@
 #if defined(TYPESTUBS_H)
 #define ARRAYCOPYHELPERS_STUB
 #endif /* defined(TYPESTUBS_H) */
+
+#include "j9cfg.h"
+
+#if defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES)
+#if OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES
+#define VM_ArrayCopyHelpers VM_ArrayCopyHelpersCompressed
+#else /* OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES */
+#define VM_ArrayCopyHelpers VM_ArrayCopyHelpersFull
+#endif /* OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES */
+#endif /* OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES */
 
 #include "j9.h"
 #include "j9protos.h"
@@ -161,7 +171,7 @@ private:
 	static VMINLINE void
 	copyForwardU8(U_8 *dest, U_8 *source, UDATA count)
 	{
-		/* Use memmove instead of memcpy becuase memcpy does not work on Ubuntu 10.04 */
+		/* Use memmove instead of memcpy because memcpy does not work on Ubuntu 10.04 */
 		memmove((void *)dest, (void *)source, count);
 	}
 	

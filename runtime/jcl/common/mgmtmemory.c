@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1998, 2016 IBM Corp. and others
+ * Copyright (c) 1998, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -117,8 +117,24 @@ Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_getNonHeapMemoryUsag
 		omrthread_monitor_enter(segList->segmentMutex);
 
 		MEMORY_SEGMENT_LIST_DO(segList, seg)
-			used += seg->heapAlloc - seg->heapBase;
+		{
+			/* Set default values for warmAlloc and coldAlloc pointers */
+			UDATA warmAlloc = (UDATA)seg->heapBase;
+			UDATA coldAlloc = (UDATA)seg->heapTop;
+
+			/* The JIT code cache grows from both ends of the segment: the warmAlloc pointer upwards from the start of the segment
+			 * and the coldAlloc pointer downwards from the end of the segment. The free space in a JIT code cache segment is the
+			 * space between the warmAlloc and coldAlloc pointers. See compiler/runtime/OMRCodeCache.hpp, the contract with the JVM is
+			 * that the address of the TR::CodeCache structure is stored at the beginning of the segment.
+			 */
+			UDATA *mccCodeCache = *((UDATA**)seg->heapBase);
+			if (mccCodeCache) {
+				warmAlloc = (UDATA)javaVM->jitConfig->codeCacheWarmAlloc(mccCodeCache);
+				coldAlloc = (UDATA)javaVM->jitConfig->codeCacheColdAlloc(mccCodeCache);
+			}
+			used += seg->size - (coldAlloc - warmAlloc);
 			committed += seg->size;
+		}
 		END_MEMORY_SEGMENT_LIST_DO(seg)
 
 		omrthread_monitor_exit(segList->segmentMutex);
@@ -249,20 +265,6 @@ Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_createMemoryPools(JN
 		return;
 	}
 
-	/* NonHeap Memory Pools */
-	for (idx = 0; idx < mgmt->supportedNonHeapMemoryPools; ++idx) {
-		id = (jint) mgmt->nonHeapMemoryPools[idx].id;
-		childName = (*env)->NewStringUTF(env, mgmt->nonHeapMemoryPools[idx].name);
-		if (NULL == childName) {
-			return;
-		}
-
-		(*env)->CallVoidMethod(env, beanInstance, helperID, childName, id, JNI_FALSE);
-		if ((*env)->ExceptionCheck(env)) {
-			return;
-		}
-	}
-
 	/* Heap Memory Pools */
 	for (idx = 0; idx < mgmt->supportedMemoryPools; ++idx) {
 		id = (jint) mgmt->memoryPools[idx].id;
@@ -272,6 +274,20 @@ Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_createMemoryPools(JN
 		}
 
 		(*env)->CallVoidMethod(env, beanInstance, helperID, childName, id, JNI_TRUE);
+		if ((*env)->ExceptionCheck(env)) {
+			return;
+		}
+	}
+
+	/* NonHeap Memory Pools */
+	for (idx = 0; idx < mgmt->supportedNonHeapMemoryPools; ++idx) {
+		id = (jint) mgmt->nonHeapMemoryPools[idx].id;
+		childName = (*env)->NewStringUTF(env, mgmt->nonHeapMemoryPools[idx].name);
+		if (NULL == childName) {
+			return;
+		}
+
+		(*env)->CallVoidMethod(env, beanInstance, helperID, childName, id, JNI_FALSE);
 		if ((*env)->ExceptionCheck(env)) {
 			return;
 		}
@@ -465,28 +481,28 @@ Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_getGCModeImpl(JNIEnv
 }
 
 jlong JNICALL
-Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_getGCMasterThreadCpuUsedImpl(JNIEnv *env, jobject beanInstance)
+Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_getGCMainThreadCpuUsedImpl(JNIEnv *env, jobject beanInstance)
 {
 	J9JavaVM *javaVM = ((J9VMThread *) env)->javaVM;
 	J9JavaLangManagementData *mgmt = javaVM->managementData;
 	jlong result = 0;
 
 	omrthread_rwmutex_enter_read(mgmt->managementDataLock);
-	result = (jlong)mgmt->gcMasterCpuTime;
+	result = (jlong)mgmt->gcMainCpuTime;
 	omrthread_rwmutex_exit_read(mgmt->managementDataLock);
 
 	return result;
 }
 
 jlong JNICALL
-Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_getGCSlaveThreadsCpuUsedImpl(JNIEnv *env, jobject beanInstance)
+Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_getGCWorkerThreadsCpuUsedImpl(JNIEnv *env, jobject beanInstance)
 {
 	J9JavaVM *javaVM = ((J9VMThread *) env)->javaVM;
 	J9JavaLangManagementData *mgmt = javaVM->managementData;
 	jlong result = 0;
 
 	omrthread_rwmutex_enter_read(mgmt->managementDataLock);
-	result = (jlong) mgmt->gcSlaveCpuTime;
+	result = (jlong) mgmt->gcWorkerCpuTime;
 	omrthread_rwmutex_exit_read(mgmt->managementDataLock);
 
 	return result;
@@ -535,7 +551,7 @@ Java_com_ibm_lang_management_internal_MemoryNotificationThread_processNotificati
 	jstring poolName = NULL;
 	jstring gcName = NULL;
 	U_32 idx = 0;
-	jstring poolNames[J9VM_MAX_HEAP_MEMORYPOOL_COUNT + J9VM_MAX_NONHEAP_MEMORYPOOL_COUNT];
+	jstring poolNames[J9VM_MAX_HEAP_MEMORYPOOL_COUNT];
 	jstring gcNames[J9_GC_MANAGEMENT_MAX_COLLECTOR];
 	J9MemoryNotification *notification = NULL;
 
@@ -544,13 +560,6 @@ Java_com_ibm_lang_management_internal_MemoryNotificationThread_processNotificati
 	/* cache poolNames and gcNames */
 	for (idx = 0; idx < mgmt->supportedMemoryPools; ++idx) {
 		poolNames[idx] = (*env)->NewStringUTF(env, mgmt->memoryPools[idx].name);
-		if (NULL == poolNames[idx]) {
-			return;
-		}
-	}
-
-	for (; idx < (mgmt->supportedMemoryPools + mgmt->supportedNonHeapMemoryPools); ++idx) {
-		poolNames[idx] = (*env)->NewStringUTF(env, mgmt->nonHeapMemoryPools[idx - mgmt->supportedMemoryPools].name);
 		if (NULL == poolNames[idx]) {
 			return;
 		}
@@ -579,7 +588,7 @@ Java_com_ibm_lang_management_internal_MemoryNotificationThread_processNotificati
 		return;
 	}
 
-	helperGCID = (*env)->GetMethodID(env, threadClass, "dispatchGCNotificationHelper", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JJJ[Ljava/lang/String;[J[J[J[J[J[J[JJ)V");
+	helperGCID = (*env)->GetMethodID(env, threadClass, "dispatchGCNotificationHelper", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JJJ[J[J[J[J[J[J[JJ)V");
 	if (NULL == helperGCID) {
 		return;
 	}
@@ -621,7 +630,6 @@ Java_com_ibm_lang_management_internal_MemoryNotificationThread_processNotificati
 			jlongArray postUsedArray = NULL;
 			jlongArray postCommittedArray = NULL;
 			jlongArray postMaxArray = NULL;
-			jobjectArray poolNamesArray = NULL;
 
 			initialArray = (*env)->NewLongArray(env, gcInfo->arraySize);
 			if (NULL == initialArray) {
@@ -649,10 +657,6 @@ Java_com_ibm_lang_management_internal_MemoryNotificationThread_processNotificati
 			}
 			postMaxArray = (*env)->NewLongArray(env, gcInfo->arraySize);
 			if (NULL == postMaxArray) {
-				return;
-			}
-			poolNamesArray = (jobjectArray)(*env)->NewObjectArray(env, gcInfo->arraySize, stringClass, NULL);
-			if (NULL == poolNamesArray) {
 				return;
 			}
 
@@ -697,17 +701,10 @@ Java_com_ibm_lang_management_internal_MemoryNotificationThread_processNotificati
 			if ((*env)->ExceptionCheck(env)) {
 				return;
 			}
-			for (idx = 0; idx < gcInfo->arraySize; ++idx) {
-				(*env)->SetObjectArrayElement(env, poolNamesArray, idx, poolNames[idx]);
-				if ((*env)->ExceptionCheck(env)) {
-					return;
-				}
-			}
 
 			(*env)->CallVoidMethod(env, threadInstance, helperGCID,
 					gcName, gcAction, gcCause,
 					(jlong)gcInfo->index, (jlong)gcInfo->startTime, (jlong)gcInfo->endTime,
-					poolNamesArray,
 					initialArray,
 					preUsedArray,
 					preCommittedArray,
@@ -777,7 +774,7 @@ Java_com_ibm_lang_management_internal_MemoryNotificationThread_processNotificati
 void JNICALL
 Java_com_ibm_lang_management_internal_MemoryNotificationThreadShutdown_sendShutdownNotification(JNIEnv *env, jobject instance)
 {
-	/* currently, the only queue is the heap usage notfication queue */
+	/* currently, the only queue is the heap usage notification queue */
 	J9JavaVM *javaVM = ((J9VMThread *) env)->javaVM;
 	J9JavaLangManagementData *mgmt = javaVM->managementData;
 	J9MemoryNotification *notification = NULL;

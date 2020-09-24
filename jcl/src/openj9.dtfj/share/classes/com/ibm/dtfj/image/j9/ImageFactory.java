@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar18-SE]*/
 /*******************************************************************************
- * Copyright (c) 2004, 2018 IBM Corp. and others
+ * Copyright (c) 2004, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -52,6 +52,10 @@ import com.ibm.dtfj.utils.file.J9FileImageInputStream;
 import com.ibm.dtfj.utils.file.ManagedImageSource;
 import com.ibm.dtfj.utils.file.MultipleCandidateException;
 
+/*[IF Sidecar19-SE]*/
+import jdk.internal.module.Modules;
+/*[ENDIF] Sidecar19-SE*/
+
 public class ImageFactory implements com.ibm.dtfj.image.ImageFactory {
 
 	static final class ImageReference {
@@ -66,6 +70,7 @@ public class ImageFactory implements com.ibm.dtfj.image.ImageFactory {
 	private ClassLoader imageFactoryClassLoader;
 	private File tmpdir = null; // the directory which holds any extracted files
 
+	/*[IF Sidecar19-SE]*/
 	static {
 		/* 
 		 * Even though j9ddr.jar is a resource within the module openj9.dtfj,
@@ -75,33 +80,21 @@ public class ImageFactory implements com.ibm.dtfj.image.ImageFactory {
 		 * module via reflection APIs for use by j9ddr.jar.
 		 */
 		try {
-			Class<?> modulesClass = Class.forName("jdk.internal.module.Modules"); //$NON-NLS-1$
-			Class<?> moduleClass;
+			Module baseModule = String.class.getModule();
 
-			try {
-				moduleClass = Class.forName("java.lang.Module"); //$NON-NLS-1$
-			} catch (ClassNotFoundException e) {
-				// fallback to name before b165
-				moduleClass = Class.forName("java.lang.reflect.Module"); //$NON-NLS-1$
-			}
+			Modules.addExportsToAllUnnamed(baseModule, "jdk.internal.org.objectweb.asm"); //$NON-NLS-1$
 
-			Method exportToAll = modulesClass.getDeclaredMethod("addExportsToAllUnnamed", //$NON-NLS-1$ 
-					moduleClass, String.class);
+			Module thisModule = ImageFactory.class.getModule();
 
-			Method getModule = Class.class.getDeclaredMethod("getModule"); //$NON-NLS-1$
-			Object baseModule = getModule.invoke(String.class);
-			Object thisModule = getModule.invoke(ImageFactory.class);
-
-			exportToAll.invoke(null, baseModule, "jdk.internal.org.objectweb.asm"); //$NON-NLS-1$
-
-			exportToAll.invoke(null, thisModule, "com.ibm.dtfj.image.j9"); //$NON-NLS-1$
-			exportToAll.invoke(null, thisModule, "com.ibm.dtfj.utils.file"); //$NON-NLS-1$
-			exportToAll.invoke(null, thisModule, "com.ibm.java.diagnostics.utils"); //$NON-NLS-1$
-			exportToAll.invoke(null, thisModule, "com.ibm.java.diagnostics.utils.commands"); //$NON-NLS-1$
+			Modules.addExportsToAllUnnamed(thisModule, "com.ibm.dtfj.image.j9"); //$NON-NLS-1$
+			Modules.addExportsToAllUnnamed(thisModule, "com.ibm.dtfj.utils.file"); //$NON-NLS-1$
+			Modules.addExportsToAllUnnamed(thisModule, "com.ibm.java.diagnostics.utils"); //$NON-NLS-1$
+			Modules.addExportsToAllUnnamed(thisModule, "com.ibm.java.diagnostics.utils.commands"); //$NON-NLS-1$
 		} catch (Exception e) {
-			// assume pre-Java 9 jvm
+			throw new InternalError("Failed to adjust module exports", e); //$NON-NLS-1$
 		}
 	}
+	/*[ENDIF] Sidecar19-SE*/
 	
 	/**
 	 * This public constructor is intended for use with Class.newInstance().

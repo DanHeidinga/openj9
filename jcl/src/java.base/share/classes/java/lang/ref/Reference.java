@@ -6,18 +6,23 @@ import java.security.PrivilegedAction;
 
 import com.ibm.oti.vm.VM;
 
-/*[IF Sidecar18-SE-OpenJ9 | Sidecar19-SE]*/
-/*[IF Sidecar19-SE]*/
+/*[IF Java12]*/
+import jdk.internal.access.JavaLangRefAccess;
+import jdk.internal.access.SharedSecrets;
+/*[ELSE]
+/*[IF Sidecar19-SE]
 import jdk.internal.misc.JavaLangRefAccess;
 import jdk.internal.misc.SharedSecrets;
 /*[ELSE]
+/*[IF Sidecar18-SE-OpenJ9]
 import sun.misc.JavaLangRefAccess;
 import sun.misc.SharedSecrets;
 /*[ENDIF]*/
 /*[ENDIF]*/
+/*[ENDIF]*/
 
 /*******************************************************************************
- * Copyright (c) 1998, 2018 IBM Corp. and others
+ * Copyright (c) 1998, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -68,9 +73,10 @@ public abstract class Reference<T> extends Object {
 			public boolean waitForReferenceProcessing() throws InterruptedException {
 				return waitForReferenceProcessingImpl();
 			}
+
 			/*[IF Java11]*/
 			public void runFinalization() {
-				throw new InternalError("Compile stub invoked! Apart from deliberate reflective access, this should not happen. Please report this to the project so it can be addressed");	//$NON-NLS-1$
+				Finalizer.runFinalization();
 			}
 			/*[ENDIF]*/
 		});
@@ -87,6 +93,12 @@ public abstract class Reference<T> extends Object {
 			  }
 			});
 	}
+	
+	/* The method waitForReferenceProcessing() is not used directly, just adapt for openjdk regression tests for TLS 1.3 */
+    private static boolean waitForReferenceProcessing() throws InterruptedException {
+    		return waitForReferenceProcessingImpl();
+    }
+
 	/*[ELSE]
 	static {
 		SharedSecrets.setJavaLangRefAccess(new JavaLangRefAccess() {
@@ -103,6 +115,13 @@ public abstract class Reference<T> extends Object {
  * Make the referent null.  This does not force the reference object to be enqueued.
  */	
 public void clear() {
+	clearImpl();
+}
+
+/**
+ * set the referent to null.
+ */	
+private void clearImpl() {
 	synchronized(this) {
 		referent = null;
 		/* change the state to cleared if it's not already cleared or enqueued */
@@ -120,7 +139,7 @@ public void clear() {
 public boolean enqueue() {
 	/*[IF Sidecar19-SE]*/
 	if (ClearBeforeEnqueue.ENABLED) {
-		clear();
+		clearImpl();
 	}
 	/*[ENDIF]*/
 	return enqueueImpl();
@@ -235,4 +254,19 @@ public static void reachabilityFence(java.lang.Object ref) {
 }
 /*[ENDIF]*/
 
+/*[IF Java11]*/
+/**
+ * This method will always throw CloneNotSupportedException. A clone of this instance will not be returned 
+ * since a Reference cannot be cloned. Workaround is to create a new Reference.
+ * 
+ * @throws CloneNotSupportedException always since a Reference cannot be cloned
+ *
+ * @since 11
+ */
+@Override
+protected Object clone() throws CloneNotSupportedException {
+	/*[MSG "K0900", "Create a new Reference, since a Reference cannot be cloned."]*/
+	throw new CloneNotSupportedException(com.ibm.oti.util.Msg.getString("K0900")); //$NON-NLS-1$
+}
+/*[ENDIF] Java11 */
 }

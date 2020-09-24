@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar19-SE]*/
 /*******************************************************************************
- * Copyright (c) 2017, 2017 IBM Corp. and others
+ * Copyright (c) 2017, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -20,6 +20,13 @@
  *
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
+
+/**
+ * Packed decimal and decimal data access accelerator API. Arithmetic, copying and shifting operations
+ * for packed decimal data. Convert between decimal data types stored in byte arrays and Java binary types.
+ * Marshall Java binary types to and from byte arrays.
+ */
+@SuppressWarnings("module")
 module openj9.dataaccess {
-	exports com.ibm.dataaccess;
+  exports com.ibm.dataaccess;
 }

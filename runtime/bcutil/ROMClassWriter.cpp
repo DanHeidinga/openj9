@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2018 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -296,19 +296,21 @@ ROMClassWriter::ROMClassWriter(BufferManager *bufferManager, ClassFileOracle *cl
 	_fieldsSRPKey(srpKeyProducer->generateKey()),
 	_cpDescriptionShapeSRPKey(srpKeyProducer->generateKey()),
 	_innerClassesSRPKey(srpKeyProducer->generateKey()),
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+#if JAVA_SPEC_VERSION >= 11
 	_nestMembersSRPKey(srpKeyProducer->generateKey()),
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 	_optionalInfoSRPKey(srpKeyProducer->generateKey()),
 	_enclosingMethodSRPKey(srpKeyProducer->generateKey()),
 	_sourceDebugExtensionSRPKey(srpKeyProducer->generateKey()),
 	_intermediateClassDataSRPKey(srpKeyProducer->generateKey()),
 	_annotationInfoClassSRPKey(srpKeyProducer->generateKey()),
 	_typeAnnotationInfoSRPKey(srpKeyProducer->generateKey()),
+	_recordInfoSRPKey(srpKeyProducer->generateKey()),
 	_callSiteDataSRPKey(srpKeyProducer->generateKey()),
 	_staticSplitTableSRPKey(srpKeyProducer->generateKey()),
 	_specialSplitTableSRPKey(srpKeyProducer->generateKey()),
-	_varHandleMethodTypeLookupTableSRPKey(srpKeyProducer->generateKey())
+	_varHandleMethodTypeLookupTableSRPKey(srpKeyProducer->generateKey()),
+	_permittedSubclassesInfoSRPKey(srpKeyProducer->generateKey())
 {
 	_methodNotes = (MethodNotes *) _bufferManager->alloc(classFileOracle->getMethodsCount() * sizeof(MethodNotes));
 	if (NULL == _methodNotes) {
@@ -352,7 +354,7 @@ ROMClassWriter::writeROMClass(Cursor *cursor,
 		CheckSize _(cursor, sizeof(J9ROMClass));
 		cursor->writeU32(romSize, Cursor::ROM_SIZE);
 		cursor->writeU32(_classFileOracle->getSingleScalarStaticCount(), Cursor::GENERIC);
-		cursor->writeSRP(_srpKeyProducer->mapCfrConstantPoolIndexToKey(_classFileOracle->getClassNameIndex()), Cursor::SRP_TO_UTF8);
+		cursor->writeSRP(_srpKeyProducer->mapCfrConstantPoolIndexToKey(_classFileOracle->getClassNameIndex()), Cursor::SRP_TO_UTF8_CLASS_NAME);
 		cursor->writeSRP(_srpKeyProducer->mapCfrConstantPoolIndexToKey(_classFileOracle->getSuperClassNameIndex()), Cursor::SRP_TO_UTF8);
 		cursor->writeU32(modifiers, Cursor::GENERIC);
 		cursor->writeU32(extraModifiers, Cursor::GENERIC);
@@ -382,12 +384,12 @@ ROMClassWriter::writeROMClass(Cursor *cursor,
 		cursor->writeU32(_classFileOracle->getMemberAccessFlags(), Cursor::GENERIC);
 		cursor->writeU32(_classFileOracle->getInnerClassCount(), Cursor::GENERIC);
 		cursor->writeSRP(_innerClassesSRPKey, Cursor::SRP_TO_GENERIC);
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+#if JAVA_SPEC_VERSION >= 11
 		cursor->writeSRP(_srpKeyProducer->mapCfrConstantPoolIndexToKey(_classFileOracle->getNestHostNameIndex()), Cursor::SRP_TO_UTF8);
 		cursor->writeU16(_classFileOracle->getNestMembersCount(), Cursor::GENERIC);
 		cursor->writeU16(0, Cursor::GENERIC); /* padding */
 		cursor->writeSRP(_nestMembersSRPKey, Cursor::SRP_TO_GENERIC);
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 		cursor->writeU16(_classFileOracle->getMajorVersion(), Cursor::GENERIC);
 		cursor->writeU16(_classFileOracle->getMinorVersion(), Cursor::GENERIC);
 		cursor->writeU32(optionalFlags, Cursor::OPTIONAL_FLAGS);
@@ -398,7 +400,7 @@ ROMClassWriter::writeROMClass(Cursor *cursor,
 		cursor->writeU32(_classFileOracle->getBootstrapMethodCount(), Cursor::GENERIC);
 		cursor->writeU32(_constantPoolMap->getCallSiteCount(), Cursor::GENERIC);
 		cursor->writeSRP(_callSiteDataSRPKey, Cursor::SRP_TO_GENERIC);
-		cursor->writeU32(_classFileOracle->getClassFileSize(), Cursor::GENERIC);
+		cursor->writeU32(_classFileOracle->getClassFileSize(), Cursor::CLASS_FILE_SIZE);
 		cursor->writeU32((U_32)_classFileOracle->getConstantPoolCount(), Cursor::GENERIC);
 		cursor->writeU16(_constantPoolMap->getStaticSplitEntryCount(), Cursor::GENERIC);
 		cursor->writeU16(_constantPoolMap->getSpecialSplitEntryCount(), Cursor::GENERIC);
@@ -411,24 +413,29 @@ ROMClassWriter::writeROMClass(Cursor *cursor,
 	/*
 	 * Write the rest of the contiguous portion of the ROMClass
 	 */
+
+	cursor->setClassNameIndex((_classFileOracle->getClassNameIndex()));
 	writeConstantPool(cursor, markAndCountOnly);
 	writeFields(cursor, markAndCountOnly);
 	writeInterfaces(cursor, markAndCountOnly);
 	writeInnerClasses(cursor, markAndCountOnly);
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+#if JAVA_SPEC_VERSION >= 11
 	writeNestMembers(cursor, markAndCountOnly);
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 	writeNameAndSignatureBlock(cursor);
 	writeMethods(cursor, lineNumberCursor, variableInfoCursor, markAndCountOnly);
 	writeConstantPoolShapeDescriptions(cursor, markAndCountOnly);
 	writeAnnotationInfo(cursor);
 	writeSourceDebugExtension(cursor);
+	writeRecordComponents(cursor, markAndCountOnly);
+	writePermittedSubclasses(cursor, markAndCountOnly);
 	writeOptionalInfo(cursor);
 	writeCallSiteData(cursor, markAndCountOnly);
 	writeVarHandleMethodTypeLookupTable(cursor, markAndCountOnly);
 	writeStaticSplitTable(cursor, markAndCountOnly);
 	writeSpecialSplitTable(cursor, markAndCountOnly);
-	cursor->padToAlignment(sizeof(U_64), Cursor::GENERIC); // TODO why U_64 alignment and not U_32
+	/* aligned to U_64 required by the shared classes */
+	cursor->padToAlignment(sizeof(U_64), Cursor::GENERIC);
 
 	/*
 	 * Write UTF8s
@@ -448,7 +455,8 @@ ROMClassWriter::writeROMClass(Cursor *cursor,
 	) {
 		classDataCursor->mark(_intermediateClassDataSRPKey);
 		classDataCursor->writeData(_context->intermediateClassData(), _context->intermediateClassDataLength(), Cursor::INTERMEDIATE_CLASS_DATA);
-		classDataCursor->padToAlignment(sizeof(U_64), Cursor::GENERIC); // TODO why U_64 alignment and not U_32
+		/* aligned to U_64 required by the shared classes */
+		classDataCursor->padToAlignment(sizeof(U_64), Cursor::GENERIC);
 	}
 }
 
@@ -480,7 +488,13 @@ public:
 
 	void visitClass(U_16 cfrCPIndex)
 	{
-		_cursor->writeSRP(_srpKeyProducer->mapCfrConstantPoolIndexToKey(cfrCPIndex), Cursor::SRP_TO_UTF8);
+		/* if the cfrCPIndex is for the class name, the data type should be SRP_TO_UTF8_CLASS_NAME to avoid comparing lambda class names */
+		U_16 classNameIndex = _cursor->getClassNameIndex();
+		if (((U_16)-1 != classNameIndex) && (_srpKeyProducer->mapCfrConstantPoolIndexToKey(classNameIndex) == _srpKeyProducer->mapCfrConstantPoolIndexToKey(cfrCPIndex))) {
+			_cursor->writeSRP(_srpKeyProducer->mapCfrConstantPoolIndexToKey(cfrCPIndex), Cursor::SRP_TO_UTF8_CLASS_NAME);
+		} else {
+			_cursor->writeSRP(_srpKeyProducer->mapCfrConstantPoolIndexToKey(cfrCPIndex), Cursor::SRP_TO_UTF8);
+		}
 		_cursor->writeU32(BCT_J9DescriptionCpTypeClass, Cursor::GENERIC);
 	}
 
@@ -506,6 +520,13 @@ public:
 		/* assumes format: { U32 cpIndex, (cfrKind << 4) || cpType } */
 		_cursor->writeU32(cpIndex, Cursor::GENERIC);
 		_cursor->writeU32((cfrKind << BCT_J9DescriptionCpTypeShift) | BCT_J9DescriptionCpTypeMethodHandle, Cursor::GENERIC);
+	}
+
+	void visitConstantDynamic(U_16 bsmIndex, U_16 cfrCPIndex, U_32 primitiveFlag)
+	{
+		/* assumes format: { SRP to NameAndSignature, primitiveFlag || (bsmIndex << 4) || cpType } */
+		_cursor->writeSRP(_srpKeyProducer->mapCfrConstantPoolIndexToKey(cfrCPIndex), Cursor::SRP_TO_NAME_AND_SIGNATURE);
+		_cursor->writeU32((bsmIndex << BCT_J9DescriptionCpTypeShift) | BCT_J9DescriptionCpTypeConstantDynamic | primitiveFlag, Cursor::GENERIC);
 	}
 
 	void visitSingleSlotConstant(U_32 slot1)
@@ -703,14 +724,14 @@ public:
 		}
 	}
 
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+#if JAVA_SPEC_VERSION >= 11
 	void writeNestMembers()
 	{
 		if (!_markAndCountOnly) {
 			_classFileOracle->nestMembersDo(this); /* visitConstantPoolIndex */
 		}
 	}
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 
 	void writeInterfaces()
 	{
@@ -894,9 +915,19 @@ private:
 			 * (i.e., number of dimensions of the array - 1)
 			 * in the next 2 bytes in Big Endian (since we are maintaining Sun StackMapTable format).
 			 *
-			 * See: https://jtcjazz.ottawa.ibm.com:9443/jazz/resource/itemName/com.ibm.team.workitem.WorkItem/18860
-			 * for explanation of why arity -1 is encoded instead of arity.
-			 *  */
+			 * The reason for encoding arity - 1 in verification type info in Stack maps for primitive array special cases are:
+			 * The newarray and anewarray bytecodes assume that the array has only a single dimension.
+			 * To create a multidimension array, multianewarray must be used.
+			 * The primitive array access bytecodes (ie: iaload) can only be used on single dimension arrays.
+			 * aaload must be used to access every dimension prior to the base dimension in a multi-arity primitive array.
+			 * The constants in vrfytbl.c are based off the constants for the primitive types, and can't have the arity of 1 encoded if the constant is to be used for both purposes.
+			 * (See rtverify.c verifyBytecodes() - the RTV_ARRAY_FETCH_PUSH & RTV_ARRAY_STORE cases of the switch)
+			 * In addition, the code all through the verifier assumes this condition.
+			 * Notes:
+			 * See util/vrfytbl.c for bytecode tables.
+			 * See constant definitions in cfreader.h and oti/bytecodewalk.h.
+			 * bcverify/bcverify.c simulateStack() is the other place that creates stack maps.
+			 */
 			_cursor->writeBigEndianU16(nameLength - 2, Cursor::GENERIC);
 		} else {
 			/*
@@ -1066,7 +1097,7 @@ ROMClassWriter::writeInnerClasses(Cursor *cursor, bool markAndCountOnly)
 	Helper(cursor, markAndCountOnly, _classFileOracle, _srpKeyProducer, _srpOffsetTable, _constantPoolMap, size).writeInnerClasses();
 }
 
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+#if JAVA_SPEC_VERSION >= 11
 void
 ROMClassWriter::writeNestMembers(Cursor *cursor, bool markAndCountOnly)
 {
@@ -1075,7 +1106,7 @@ ROMClassWriter::writeNestMembers(Cursor *cursor, bool markAndCountOnly)
 	CheckSize _(cursor,size);
 	Helper(cursor, markAndCountOnly, _classFileOracle, _srpKeyProducer, _srpOffsetTable, _constantPoolMap, size).writeNestMembers();
 }
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 
 void
 ROMClassWriter::writeNameAndSignatureBlock(Cursor *cursor)
@@ -1087,7 +1118,8 @@ void
 ROMClassWriter::writeUTF8s(Cursor *cursor)
 {
 	Helper(cursor, false, _classFileOracle, _srpKeyProducer, _srpOffsetTable, _constantPoolMap, 0).writeUTF8Block();
-	cursor->padToAlignment(sizeof(U_64), Cursor::GENERIC); // TODO why U_64 alignment and not U_32
+	/* aligned to U_64 required by the shared classes */
+	cursor->padToAlignment(sizeof(U_64), Cursor::GENERIC);
 }
 
 void
@@ -1175,7 +1207,7 @@ ROMClassWriter::writeMethods(Cursor *cursor, Cursor *lineNumberCursor, Cursor *v
 			 *            + AccMethodObjectConstructor
 			 *           + AccMethodHasMethodParameters
 			 *
-			 *         + UNUSED
+			 *         + AccMethodAllowFinalFieldWrites
 			 *        + AccMethodHasGenericSignature
 			 *       + AccMethodHasExtendedModifiers
 			 *      + AccMethodHasMethodHandleInvokes
@@ -1185,6 +1217,14 @@ ROMClassWriter::writeMethods(Cursor *cursor, Cursor *lineNumberCursor, Cursor *v
 			 *  + AccMethodHasParameterAnnotations
 			 * + AccMethodHasDefaultAnnotation
 			 */
+
+			/* In class files prior to version 53, any method in the declaring class of a final field
+			 * may write to it. For 53 and later, only initializers (<init> for instance fields, <clinit>
+			 * for static fields) are allowed to write to final fields.
+			 */
+			if ((_classFileOracle->getMajorVersion() < 53) || ('<' == *_classFileOracle->getUTF8Data(iterator.getNameIndex()))) {
+				modifiers |= J9AccMethodAllowFinalFieldWrites;
+			}
 
 			if (iterator.hasFrameIteratorSkipAnnotation()) {
 				modifiers |= J9AccMethodFrameIteratorSkip;
@@ -1350,7 +1390,7 @@ ROMClassWriter::writeMethods(Cursor *cursor, Cursor *lineNumberCursor, Cursor *v
 			if (markAndCountOnly) {
 				/* Following is adding PAD to stackmap size. First round is always markAndCountOnly.
 				 * This logic is very difficult to catch. Cause of the padded stackmapsize, we dont use padding in nextROMMethod() in mthutil.
-				 * Also I find this markAndCountOnly unneccesary and confusing for the following reasons
+				 * Also I find this markAndCountOnly unnecessary and confusing for the following reasons
 				 * 1. It is used partially : See above, we dont use it for the first 6 bytes and we write them down.
 				 * It should be used properly, either always or never.
 				 * 2. Also when it is counting, it is a counting cursor and it actually do not write (see Cursor.hpp).
@@ -1619,6 +1659,113 @@ ROMClassWriter::writeSourceDebugExtension(Cursor *cursor)
 	}
 }
 
+/* 
+ * Records in the ROM class has the following layout:
+ * 4 bytes for the number of record components in the class
+ * for each record component:
+ * 	J9ROMRecordComponentShape
+ * 	4 bytes SRP to record component's generic signature if the component has a signature annotation.
+ * 	4 bytes length of annotation data in bytes, followed by annotation data. Omitted if there are no annotations.
+ * 	4 bytes length of type annotation data in bytes followed by type annotation data.  Omitted if there are no type annotations.
+ * 
+ * For example, if a record component has a generic signature annotation and no other annotations the record components shape will look like:
+ *  J9ROMRecordComponentShape
+ *  4 bytes SRP
+ */
+void
+ROMClassWriter::writeRecordComponents(Cursor *cursor, bool markAndCountOnly)
+{
+	if (! _classFileOracle->isRecord()) {
+		return;
+	}
+
+	cursor->mark(_recordInfoSRPKey);
+
+	/* number of record components */
+	if (markAndCountOnly) {
+		cursor->skip(sizeof(U_32));
+	} else {
+		cursor->writeU32(_classFileOracle->getRecordComponentCount(), Cursor::GENERIC);
+	}
+
+	ClassFileOracle::RecordComponentIterator iterator = _classFileOracle->getRecordComponentIterator();
+	while ( iterator.isNotDone() ) {
+		if (markAndCountOnly) {
+			cursor->skip(sizeof(J9ROMRecordComponentShape));
+		} else {
+			CheckSize _(cursor, sizeof(J9ROMRecordComponentShape));
+
+			/* record component name and descriptor */
+			cursor->writeSRP(_srpKeyProducer->mapCfrConstantPoolIndexToKey(iterator.getNameIndex()), Cursor::SRP_TO_UTF8);
+			cursor->writeSRP(_srpKeyProducer->mapCfrConstantPoolIndexToKey(iterator.getDescriptorIndex()), Cursor::SRP_TO_UTF8);
+
+			/* attribute flags */
+			U_32 attributeFlags = 0;
+			if (iterator.hasGenericSignature()) {
+				attributeFlags |= J9RecordComponentFlagHasGenericSignature;
+			}
+			if (iterator.hasAnnotation()) {
+				attributeFlags |= J9RecordComponentFlagHasAnnotations;
+			}
+			if (iterator.hasTypeAnnotation()) {
+				attributeFlags |= J9RecordComponentFlagHasTypeAnnotations;
+			}
+			cursor->writeU32(attributeFlags, Cursor::GENERIC);
+		}
+
+		/* write optional attributes */
+		if (iterator.hasGenericSignature()) {
+			if (markAndCountOnly) {
+				cursor->skip(sizeof(J9SRP));
+			} else {
+				cursor->writeSRP(_srpKeyProducer->mapCfrConstantPoolIndexToKey(iterator.getGenericSignatureIndex()), Cursor::SRP_TO_UTF8);
+			}
+		}
+		if (iterator.hasAnnotation()) {
+			AnnotationWriter annotationWriter(cursor, _constantPoolMap, _classFileOracle);
+			_classFileOracle->recordComponentAnnotationDo(iterator.getRecordComponentIndex(), &annotationWriter, &annotationWriter, &annotationWriter);
+			cursor->padToAlignment(sizeof(U_32), Cursor::GENERIC);
+		}
+		if (iterator.hasTypeAnnotation()) {
+			AnnotationWriter annotationWriter(cursor, _constantPoolMap, _classFileOracle);
+			_classFileOracle->recordComponentTypeAnnotationDo(iterator.getRecordComponentIndex(), &annotationWriter, &annotationWriter, &annotationWriter);
+			cursor->padToAlignment(sizeof(U_32), Cursor::GENERIC);
+		}
+
+		iterator.next();
+	}
+}
+
+/*
+ * PermittedSubclasses ROM class layout:
+ * 4 bytes for number of classes (actually takes up two, but use 4 for alignment)
+ * for number of classes:
+ *   4 byte SRP to class name
+ */
+void
+ROMClassWriter::writePermittedSubclasses(Cursor *cursor, bool markAndCountOnly)
+{
+	if (_classFileOracle->isSealed()) {
+		cursor->mark(_permittedSubclassesInfoSRPKey);
+
+		U_16 classCount = _classFileOracle->getPermittedSubclassesClassCount();
+		if (markAndCountOnly) {
+			cursor->skip(sizeof(U_32));
+		} else {
+			cursor->writeU32(classCount, Cursor::GENERIC);
+		}
+
+		for (U_16 index = 0; index < classCount; index++) {
+			if (markAndCountOnly) {
+				cursor->skip(sizeof(J9SRP));
+			} else {
+				U_16 classNameCpIndex = _classFileOracle->getPermittedSubclassesClassNameAtIndex(index);
+				cursor->writeSRP(_srpKeyProducer->mapCfrConstantPoolIndexToKey(classNameCpIndex), Cursor::SRP_TO_UTF8);
+			}
+		}
+	}
+}
+
 void
 ROMClassWriter::writeOptionalInfo(Cursor *cursor)
 {
@@ -1653,6 +1800,8 @@ ROMClassWriter::writeOptionalInfo(Cursor *cursor)
 	 * SRP to 'SRP' (self) if OPTINFO_VERIFY_EXCLUDE.. pretty much a flag, leaving an empty slot.
 	 * SRP to class annotations
 	 * SRP to class Type Annotations
+	 * SRP to record class component attributes
+	 * SRP to PermittedSubclasses attribute
 	 */
 	cursor->mark(_optionalInfoSRPKey);
 
@@ -1687,6 +1836,12 @@ ROMClassWriter::writeOptionalInfo(Cursor *cursor)
 	}
 	if (_classFileOracle->hasTypeAnnotations()) {
 		cursor->writeSRP(_typeAnnotationInfoSRPKey, Cursor::SRP_TO_GENERIC);
+	}
+	if (_classFileOracle->isRecord()) {
+		cursor->writeSRP(_recordInfoSRPKey, Cursor::SRP_TO_GENERIC);
+	}
+	if (_classFileOracle->isSealed()) {
+		cursor->writeSRP(_permittedSubclassesInfoSRPKey, Cursor::SRP_TO_GENERIC);
 	}
 }
 

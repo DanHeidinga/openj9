@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2010, 2016 IBM Corp. and others
+ * Copyright (c) 2010, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -52,7 +52,7 @@
 #define J9MEM_CATEGORY_UNUSED10 10 /* #define J9MEM_CATEGORY_JIT 10 */
 #define J9MEM_CATEGORY_UNUSED11 11 /* #define J9MEM_CATEGORY_JIT_CODE_CACHE 11 */
 #define J9MEM_CATEGORY_UNUSED12 12 /* #define J9MEM_CATEGORY_JIT_DATA_CACHE 12 */
-#define J9MEM_CATEGORY_HARMONY 13
+#define J9MEM_CATEGORY_UNUSED13 13 /* #define J9MEM_CATEGORY_HARMONY 13 */
 #define J9MEM_CATEGORY_SUN_MISC_UNSAFE_ALLOCATE 14
 #define J9MEM_CATEGORY_VM_JCL 15
 #define J9MEM_CATEGORY_CLASS_LIBRARIES 16
@@ -76,7 +76,7 @@
 #define J9MEM_CATEGORY_CLASSLIB_GUI_MEDIALIB 34
 #define J9MEM_CATEGORY_CLASSLIB_FONT 35
 #define J9MEM_CATEGORY_CLASSLIB_SOUND 36
-#define J9MEM_CATEGORY_NATIVE_PACKED_DATA 37
+#define J9MEM_CATEGORY_UNUSED37 37
 #define J9MEM_CATEGORY_SUN_MISC_UNSAFE_ALLOCATEDBB 38
 #define J9MEM_CATEGORY_MODULES 39
 

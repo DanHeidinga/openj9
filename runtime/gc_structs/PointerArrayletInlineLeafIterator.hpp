@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -39,9 +38,6 @@
 #include "ObjectIteratorState.hpp"
 #include "SlotObject.hpp"
 
-#if defined(J9VM_GC_ARRAYLETS)
-
-
 /**
  * Iterate over all slots in a pointer array's inline leaf which contain an object reference (will iterate over nothing if the object is fully discontiguous)
  * @ingroup GC_Structs
@@ -51,6 +47,9 @@ class GC_PointerArrayletInlineLeafIterator
 	/* Data Members */
 private:
 	GC_SlotObject _slotObject;		/**< Create own SlotObject class to provide output */
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+	bool const _compressObjectReferences;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 
 	UDATA _arrayletLeafSize; 		/* The size of an arraylet leaf */
 	UDATA _fobjectsPerLeaf; 		/* The number of fj9object_t's per leaf */
@@ -65,6 +64,26 @@ public:
 private:
 protected:
 public:
+	/**
+	 * Return back true if object references are compressed
+	 * @return true, if object references are compressed
+	 */
+	MMINLINE bool compressObjectReferences() {
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+#if defined(OMR_GC_FULL_POINTERS)
+#if defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES)
+		return (bool)OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES;
+#else /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+		return _compressObjectReferences;
+#endif /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+#else /* defined(OMR_GC_FULL_POINTERS) */
+		return true;
+#endif /* defined(OMR_GC_FULL_POINTERS) */
+#else /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return false;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+	}
+
 	MMINLINE void initialize(J9Object *objectPtr) {
 		MM_GCExtensionsBase *extensions = MM_GCExtensionsBase::getExtensions(_javaVM->omrVM);
 
@@ -81,7 +100,7 @@ public:
 			_currentArrayletOffset = ((U_32)index-1) % _fobjectsPerLeaf; /* The offset of _index in the current arraylet */
 	
 			fj9object_t *arrayoidPointer = extensions->indexableObjectModel.getArrayoidPointer(arrayPtr);
-			GC_SlotObject arrayletBaseSlotObject(_javaVM->omrVM, arrayoidPointer + currentArrayletIndex);
+			GC_SlotObject arrayletBaseSlotObject(_javaVM->omrVM, GC_SlotObject::addToSlotAddress(arrayoidPointer, currentArrayletIndex, compressObjectReferences()));
 			_currentArrayletBaseAddress = (fj9object_t *)arrayletBaseSlotObject.readReferenceFromSlot();
 			_elementsStillToRead = index % _fobjectsPerLeaf;
 		}
@@ -92,7 +111,7 @@ public:
 		GC_SlotObject *slotObject = NULL;
 		
 		if (_elementsStillToRead > 0) {
-			_slotObject.writeAddressToSlot(_currentArrayletBaseAddress + _currentArrayletOffset);
+			_slotObject.writeAddressToSlot(GC_SlotObject::addToSlotAddress(_currentArrayletBaseAddress, _currentArrayletOffset, compressObjectReferences()));
 
 			_elementsStillToRead -= 1;
 			_currentArrayletOffset -= 1;
@@ -104,10 +123,13 @@ public:
 
 	GC_PointerArrayletInlineLeafIterator(J9JavaVM *javaVM)
 		: _slotObject(GC_SlotObject(javaVM->omrVM, NULL))
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+		, _compressObjectReferences(J9JAVAVM_COMPRESS_OBJECT_REFERENCES(javaVM))
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 		, _javaVM(javaVM)
 	{
 		_arrayletLeafSize = _javaVM->arrayletLeafSize;
-		_fobjectsPerLeaf = _arrayletLeafSize/sizeof(fj9object_t);
+		_fobjectsPerLeaf = _arrayletLeafSize / J9JAVAVM_REFERENCE_SIZE(javaVM);
 	}
 
 	/**
@@ -115,15 +137,15 @@ public:
 	 */
 	GC_PointerArrayletInlineLeafIterator(J9JavaVM *javaVM, J9Object *objectPtr)
 		: _slotObject(GC_SlotObject(javaVM->omrVM, NULL))
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+		, _compressObjectReferences(J9JAVAVM_COMPRESS_OBJECT_REFERENCES(javaVM))
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 		, _javaVM(javaVM)
 	{
 		_arrayletLeafSize = _javaVM->arrayletLeafSize;
-		_fobjectsPerLeaf = _arrayletLeafSize/sizeof(fj9object_t);
+		_fobjectsPerLeaf = _arrayletLeafSize / J9JAVAVM_REFERENCE_SIZE(javaVM);
 		initialize(objectPtr);
 	}
 };
-
-#endif /* defined(J9VM_GC_ARRAYLETS) */
-
 
 #endif /* POINTERARRAYLETINLINELEAFITERATOR_HPP_ */

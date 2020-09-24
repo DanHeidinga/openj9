@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 2017, 2017 IBM Corp. and others
+ * Copyright (c) 2017, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -48,6 +47,7 @@ bool
 MM_EnvironmentDelegate::initialize(MM_EnvironmentBase *env)
 {
 	_env = env;
+	_vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
 
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
 	if (extensions->isStandardGC()) {
@@ -111,11 +111,10 @@ MM_EnvironmentDelegate::attachVMThread(OMR_VM *omrVM, const char  *threadName, u
 	if (JNI_OK != javaVM->internalVMFunctions->attachSystemDaemonThread(javaVM, &vmThread, threadName)) {
 		return NULL;
 	}
-	javaVM->internalVMFunctions->internalReleaseVMAccessInJNI(vmThread);
 
 #if defined(J9VM_OPT_JAVA_OFFLOAD_SUPPORT)
 	if ((MM_EnvironmentBase::ATTACH_THREAD != reason) &&  (NULL != javaVM->javaOffloadSwitchOnWithReasonFunc)) {
-		(*javaVM->javaOffloadSwitchOnWithReasonFunc)(vmThread, J9_JNI_OFFLOAD_SWITCH_FINALIZE_SLAVE_THREAD + reason);
+		(*javaVM->javaOffloadSwitchOnWithReasonFunc)(vmThread, J9_JNI_OFFLOAD_SWITCH_FINALIZE_WORKER_THREAD + reason);
 		vmThread->javaOffloadState = 1;
 	}
 #endif /* J9VM_OPT_JAVA_OFFLOAD_SUPPORT */
@@ -142,7 +141,7 @@ MM_EnvironmentDelegate::flushNonAllocationCaches()
 {
 #if defined(J9VM_GC_GENERATIONAL)
 	if (_env->getExtensions()->isStandardGC()) {
-		MM_SublistFragment::flush((J9VMGC_SublistFragment*)&((J9VMThread *)_env->getLanguageVMThread())->gcRememberedSet);
+		MM_SublistFragment::flush((J9VMGC_SublistFragment*)&_vmThread->gcRememberedSet);
 	}
 #endif /* J9VM_GC_GENERATIONAL */
 
@@ -154,35 +153,37 @@ MM_EnvironmentDelegate::flushNonAllocationCaches()
 }
 
 void
-MM_EnvironmentDelegate::setGCMasterThread(bool isMasterThread)
+MM_EnvironmentDelegate::setGCMainThread(bool isMainThread)
 {
-	J9VMThread *vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
-	if (isMasterThread) {
-		vmThread->privateFlags |= J9_PRIVATE_FLAGS_GC_MASTER_THREAD;
+	if (isMainThread) {
+		_vmThread->privateFlags |= J9_PRIVATE_FLAGS_GC_MAIN_THREAD;
 	} else {
-		vmThread->privateFlags &= ~J9_PRIVATE_FLAGS_GC_MASTER_THREAD;
+		_vmThread->privateFlags &= ~J9_PRIVATE_FLAGS_GC_MAIN_THREAD;
 	}
 }
 
 void
 MM_EnvironmentDelegate::acquireVMAccess()
 {
-	J9VMThread *vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
-	vmThread->javaVM->internalVMFunctions->internalAcquireVMAccess(vmThread);
+	_vmThread->javaVM->internalVMFunctions->internalAcquireVMAccess(_vmThread);
 }
 
 void
 MM_EnvironmentDelegate::releaseVMAccess()
 {
-	J9VMThread *vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
-	vmThread->javaVM->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	_vmThread->javaVM->internalVMFunctions->internalReleaseVMAccess(_vmThread);
+}
+
+bool
+MM_EnvironmentDelegate::inNative()
+{
+	return (FALSE != _vmThread->inNative);
 }
 
 bool
 MM_EnvironmentDelegate::isExclusiveAccessRequestWaiting()
 {
-	J9VMThread *vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
-	return (J9_PUBLIC_FLAGS_HALT_THREAD_EXCLUSIVE == (vmThread->publicFlags & J9_PUBLIC_FLAGS_HALT_THREAD_EXCLUSIVE));
+	return (J9_PUBLIC_FLAGS_HALT_THREAD_EXCLUSIVE == (_vmThread->publicFlags & J9_PUBLIC_FLAGS_HALT_THREAD_EXCLUSIVE));
 }
 
 /**
@@ -191,8 +192,7 @@ MM_EnvironmentDelegate::isExclusiveAccessRequestWaiting()
 void
 MM_EnvironmentDelegate::acquireExclusiveVMAccess()
 {
-	J9VMThread *vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
-	vmThread->javaVM->internalVMFunctions->acquireExclusiveVMAccess(vmThread);
+	_vmThread->javaVM->internalVMFunctions->acquireExclusiveVMAccess(_vmThread);
 }
 
 /**
@@ -201,41 +201,20 @@ MM_EnvironmentDelegate::acquireExclusiveVMAccess()
 void
 MM_EnvironmentDelegate::releaseExclusiveVMAccess()
 {
-	J9VMThread *vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
-	vmThread->javaVM->internalVMFunctions->releaseExclusiveVMAccess(vmThread);
+	_vmThread->javaVM->internalVMFunctions->releaseExclusiveVMAccess(_vmThread);
 }
 
 
 uintptr_t
-MM_EnvironmentDelegate::relinquishExclusiveVMAccess(bool *deferredVMAccessRelease)
+MM_EnvironmentDelegate::relinquishExclusiveVMAccess()
 {
-	J9VMThread *vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
-	uintptr_t savedExclusiveCount = vmThread->omrVMThread->exclusiveCount;
+	uintptr_t savedExclusiveCount = _vmThread->omrVMThread->exclusiveCount;
 
-	Assert_MM_true(J9_PUBLIC_FLAGS_VM_ACCESS == (vmThread->publicFlags & J9_PUBLIC_FLAGS_VM_ACCESS));
+	Assert_MM_true(J9_PUBLIC_FLAGS_VM_ACCESS == (_vmThread->publicFlags & J9_PUBLIC_FLAGS_VM_ACCESS));
 	Assert_MM_true(0 < savedExclusiveCount);
 
-	vmThread->omrVMThread->exclusiveCount = 0;
-
-	/* start with assumption we will release VM access */
-	bool releaseVMAccess = true;
-
-	if (deferredVMAccessRelease && *deferredVMAccessRelease) {
-		/* The caller requested not to release VM access now - it will do it at a later point. For example, after some concurrent GC work which immediately follows this STW phase,
-		 * has been completed. Such concurrent phase does not require exclusive VM access, but it should keep VM access, since it's accessing or possibly even mutating the heap. */
-		if (J9_LINEAR_LINKED_LIST_IS_EMPTY(vmThread->javaVM->exclusiveVMAccessQueueHead)) {
-			releaseVMAccess = false;
-		} else {
-			/* However, there is a pending exclusive VM access from another party. In this case, we will disobey the caller's request
-			 * and just release it right away since there could not be any concurrent GC work done, due to immediate exclusive VM access handoff.
-			 * We will let the caller know that we disobeyed the request. */
-			*deferredVMAccessRelease = false;
-		}
-	}
-
-	if (releaseVMAccess) {
-		VM_VMAccess::clearPublicFlags(vmThread, J9_PUBLIC_FLAGS_VM_ACCESS);
-	}
+	_vmThread->omrVMThread->exclusiveCount = 0;
+	VM_VMAccess::clearPublicFlags(_vmThread, J9_PUBLIC_FLAGS_VM_ACCESS);
 
 	return savedExclusiveCount;
 }
@@ -243,92 +222,164 @@ MM_EnvironmentDelegate::relinquishExclusiveVMAccess(bool *deferredVMAccessReleas
 void
 MM_EnvironmentDelegate::assumeExclusiveVMAccess(uintptr_t exclusiveCount)
 {
-	J9VMThread *vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
-
 	Assert_MM_true(exclusiveCount >= 1);
-	Assert_MM_true(0 == (vmThread->publicFlags & J9_PUBLIC_FLAGS_VM_ACCESS));
-	Assert_MM_true(0 == vmThread->omrVMThread->exclusiveCount);
+	Assert_MM_true(0 == (_vmThread->publicFlags & J9_PUBLIC_FLAGS_VM_ACCESS));
+	Assert_MM_true(0 == _vmThread->omrVMThread->exclusiveCount);
 
-	vmThread->omrVMThread->exclusiveCount = exclusiveCount;
-	VM_VMAccess::setPublicFlags(vmThread, J9_PUBLIC_FLAGS_VM_ACCESS);
+	_vmThread->omrVMThread->exclusiveCount = exclusiveCount;
+	VM_VMAccess::setPublicFlags(_vmThread, J9_PUBLIC_FLAGS_VM_ACCESS);
 }
 
 void
 MM_EnvironmentDelegate::releaseCriticalHeapAccess(uintptr_t *data)
 {
-        J9VMThread *vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
-        VM_VMAccess::setPublicFlags(vmThread, J9_PUBLIC_FLAGS_NOT_AT_SAFE_POINT);
-        MM_JNICriticalRegion::releaseAccess(vmThread, data);
+	VM_VMAccess::setPublicFlags(_vmThread, J9_PUBLIC_FLAGS_NOT_AT_SAFE_POINT);
+	MM_JNICriticalRegion::releaseAccess(_vmThread, data);
 }
 
 void
 MM_EnvironmentDelegate::reacquireCriticalHeapAccess(uintptr_t data)
 {
-        J9VMThread *vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
-        MM_JNICriticalRegion::reacquireAccess(vmThread, data);
-        VM_VMAccess::clearPublicFlags(vmThread, J9_PUBLIC_FLAGS_NOT_AT_SAFE_POINT);
+	MM_JNICriticalRegion::reacquireAccess(_vmThread, data);
+	VM_VMAccess::clearPublicFlags(_vmThread, J9_PUBLIC_FLAGS_NOT_AT_SAFE_POINT);
 }
 
-#if defined(OMR_GC_CONCURRENT_SCAVENGER)
 void
 MM_EnvironmentDelegate::forceOutOfLineVMAccess()
 {
-	Assert_MM_true(MM_GCExtensions::getExtensions(_env->getOmrVM())->concurrentScavenger);
-	J9VMThread *vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
-	VM_VMAccess::setPublicFlags(vmThread, J9_PUBLIC_FLAGS_DISABLE_INLINE_VM_ACCESS_ACQUIRE);
+	VM_VMAccess::setPublicFlags(_vmThread, J9_PUBLIC_FLAGS_DISABLE_INLINE_VM_ACCESS);
 }
-#endif /* OMR_GC_CONCURRENT_SCAVENGER */
 
 #if defined (J9VM_GC_THREAD_LOCAL_HEAP)
 /**
- * Disable inline TLH allocates by hiding the real heap allocation address from
- * JIT/Interpreter in realHeapAlloc and setting heapALloc == HeapTop so TLH
+ * Disable inline TLH allocates by hiding the real heap top address from
+ * JIT/Interpreter in realHeapTop and setting HeapTop == heapALloc so TLH
  * looks full.
  *
  */
 void
 MM_EnvironmentDelegate::disableInlineTLHAllocate()
 {
-	J9VMThread *vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
-	J9ModronThreadLocalHeap *tlh = (J9ModronThreadLocalHeap *)&vmThread->allocateThreadLocalHeap;
-	tlh->realHeapAlloc = vmThread->heapAlloc;
-	vmThread->heapAlloc = vmThread->heapTop;
+	J9ModronThreadLocalHeap *tlh = (J9ModronThreadLocalHeap *)&_vmThread->allocateThreadLocalHeap;
+	if (NULL == tlh->realHeapTop) {
+		tlh->realHeapTop = _vmThread->heapTop;
+	}
+	_vmThread->heapTop = _vmThread->heapAlloc;
 
 #if defined(J9VM_GC_NON_ZERO_TLH)
-	tlh = (J9ModronThreadLocalHeap *)&vmThread->nonZeroAllocateThreadLocalHeap;
-	tlh->realHeapAlloc = vmThread->nonZeroHeapAlloc;
-	vmThread->nonZeroHeapAlloc = vmThread->nonZeroHeapTop;
+	tlh = (J9ModronThreadLocalHeap *)&_vmThread->nonZeroAllocateThreadLocalHeap;
+	if (NULL == tlh->realHeapTop) {
+		tlh->realHeapTop = _vmThread->nonZeroHeapTop;
+	}
+	_vmThread->nonZeroHeapTop = _vmThread->nonZeroHeapAlloc;
 #endif /* defined(J9VM_GC_NON_ZERO_TLH) */
 }
 
 /**
- * Re-enable inline TLH allocate by restoring heapAlloc from realHeapAlloc
+ * Re-enable inline TLH allocate by restoring heapTop from realHeapTop
  */
 void
 MM_EnvironmentDelegate::enableInlineTLHAllocate()
 {
-	J9VMThread *vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
-	J9ModronThreadLocalHeap *tlh = (J9ModronThreadLocalHeap *)&vmThread->allocateThreadLocalHeap;
-	vmThread->heapAlloc =  tlh->realHeapAlloc;
-	tlh->realHeapAlloc = NULL;
+	J9ModronThreadLocalHeap *tlh = (J9ModronThreadLocalHeap *)&_vmThread->allocateThreadLocalHeap;
+	if (NULL != tlh->realHeapTop) {
+		_vmThread->heapTop =  tlh->realHeapTop;
+		tlh->realHeapTop = NULL;
+	}
 
 #if defined(J9VM_GC_NON_ZERO_TLH)
-	tlh = (J9ModronThreadLocalHeap *)&vmThread->nonZeroAllocateThreadLocalHeap;
-	vmThread->nonZeroHeapAlloc =  tlh->realHeapAlloc;
-	tlh->realHeapAlloc = NULL;
+	tlh = (J9ModronThreadLocalHeap *)&_vmThread->nonZeroAllocateThreadLocalHeap;
+	if (NULL != tlh->realHeapTop) {
+		_vmThread->nonZeroHeapTop =  tlh->realHeapTop;
+		tlh->realHeapTop = NULL;
+	}
 #endif /* defined(J9VM_GC_NON_ZERO_TLH) */
 }
 
 /**
- * Determine if inline TLH allocate is enabled; its enabled if realheapAlloc is NULL.
- * @return TRUE if inline TLH allocates currently enabled for this thread; FALSE otheriwse
+ * Determine if inline TLH allocate is enabled; its enabled if realheapTop is NULL.
+ * @return TRUE if inline TLH allocates currently enabled for this thread; FALSE otherwise
  */
 bool
 MM_EnvironmentDelegate::isInlineTLHAllocateEnabled()
 {
-	J9VMThread *vmThread = (J9VMThread *)_env->getOmrVMThread()->_language_vmthread;
-	J9ModronThreadLocalHeap *tlh = (J9ModronThreadLocalHeap *)&vmThread->allocateThreadLocalHeap;
-	return NULL != tlh->realHeapAlloc ? false : true;
+	J9ModronThreadLocalHeap *tlh = (J9ModronThreadLocalHeap *)&_vmThread->allocateThreadLocalHeap;
+	bool result = (NULL == tlh->realHeapTop);
+
+#if defined(J9VM_GC_NON_ZERO_TLH)
+	tlh = (J9ModronThreadLocalHeap *)&_vmThread->nonZeroAllocateThreadLocalHeap;
+	result = result && (NULL == tlh->realHeapTop);
+#endif /* defined(J9VM_GC_NON_ZERO_TLH) */
+
+	return result;
 }
+
+
+void
+MM_EnvironmentDelegate::setTLHSamplingTop(uintptr_t size)
+{
+	uintptr_t max = 0;
+	J9ModronThreadLocalHeap *tlh = (J9ModronThreadLocalHeap *)&_vmThread->allocateThreadLocalHeap;
+	if (NULL != tlh->realHeapTop) {
+		max = tlh->realHeapTop - _vmThread->heapAlloc;
+	} else {
+		max = _vmThread->heapTop - _vmThread->heapAlloc;
+	}
+
+	if (max > size) {
+		if (NULL == tlh->realHeapTop) {
+			tlh->realHeapTop = _vmThread->heapTop;
+		}
+		_vmThread->heapTop = _vmThread->heapAlloc + size;
+	} else {
+		if (NULL != tlh->realHeapTop) {
+			_vmThread->heapTop =  tlh->realHeapTop;
+			tlh->realHeapTop = NULL;
+		}
+	}
+
+#if defined(J9VM_GC_NON_ZERO_TLH)
+	/* TODO: need to find better way set TLH sampling Top for NON ZERO case */
+	tlh = (J9ModronThreadLocalHeap *)&_vmThread->nonZeroAllocateThreadLocalHeap;
+	if (NULL != tlh->realHeapTop) {
+		max = tlh->realHeapTop - _vmThread->nonZeroHeapAlloc;
+	} else {
+		max = _vmThread->nonZeroHeapTop - _vmThread->nonZeroHeapAlloc;
+	}
+
+	if (max > size) {
+		if (NULL == tlh->realHeapTop) {
+			tlh->realHeapTop = _vmThread->nonZeroHeapTop;
+		}
+		_vmThread->nonZeroHeapTop = _vmThread->nonZeroHeapAlloc + size;
+	} else {
+		if (NULL != tlh->realHeapTop) {
+			_vmThread->nonZeroHeapTop =  tlh->realHeapTop;
+			tlh->realHeapTop = NULL;
+		}
+	}
+
+#endif /* defined(J9VM_GC_NON_ZERO_TLH) */
+}
+
+void
+MM_EnvironmentDelegate::resetTLHSamplingTop()
+{
+	enableInlineTLHAllocate();
+}
+
+uintptr_t
+MM_EnvironmentDelegate::getAllocatedSizeInsideTLH()
+{
+	uintptr_t ret = 0;
+	J9ModronThreadLocalHeap *tlh = (J9ModronThreadLocalHeap *)&_vmThread->allocateThreadLocalHeap;
+	ret += _vmThread->heapAlloc - tlh->heapBase;
+#if defined(J9VM_GC_NON_ZERO_TLH)
+	tlh = (J9ModronThreadLocalHeap *)&_vmThread->nonZeroAllocateThreadLocalHeap;
+	ret += _vmThread->nonZeroHeapAlloc - tlh->heapBase;
+#endif /* defined(J9VM_GC_NON_ZERO_TLH) */
+	return ret;
+}
+
 #endif /* J9VM_GC_THREAD_LOCAL_HEAP */
 

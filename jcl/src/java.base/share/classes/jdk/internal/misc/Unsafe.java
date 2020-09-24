@@ -1,6 +1,6 @@
-/*[INCLUDE-IF Sidecar19-SE-OpenJ9]*/
+/*[INCLUDE-IF Sidecar19-SE]*/
 /*******************************************************************************
- * Copyright (c) 2017, 2018 IBM Corp. and others
+ * Copyright (c) 2017, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -25,14 +25,20 @@ package jdk.internal.misc;
 import com.ibm.oti.vm.VM;
 import com.ibm.oti.vm.VMLangAccess;
 
-import java.lang.Class;
-import java.lang.ClassLoader;
 import java.lang.reflect.Field;
 import java.security.ProtectionDomain;
 import java.util.Objects;
+/*[IF Java12]*/
+import java.nio.ByteBuffer;
+import sun.nio.ch.DirectBuffer;
+import jdk.internal.ref.Cleaner;
+/*[ENDIF] Java12 */
 
 public final class Unsafe {
 
+	/* Prevents this class from being instantiated. */
+	private Unsafe() {}
+	
 	/* unsafe instance */
 	private static final Unsafe theUnsafe;
 
@@ -179,7 +185,7 @@ public final class Unsafe {
 
 	/* Mask byte offset of an int. */
 	private static final long BYTE_OFFSET_MASK = 0b11L;
-	
+
 	static {
 		registerNatives();
 
@@ -400,6 +406,28 @@ public final class Unsafe {
 	 * @param value Object to store in obj
 	 */
 	public native void putObject(Object obj, long offset, Object value);
+
+/*[IF Java12]*/
+	/**
+	 * Gets the value of the Object in the obj parameter referenced by offset.
+	 * This is a non-volatile operation.
+	 * 
+	 * @param obj object from which to retrieve the value
+	 * @param offset position of the value in obj
+	 * @return Object value stored in obj
+	 */
+	public native Object getReference(Object obj, long offset);
+
+	/**
+	 * Sets the value of the Object in the obj parameter at memory offset.
+	 * This is a non-volatile operation.
+	 * 
+	 * @param obj object into which to store the value
+	 * @param offset position of the value in obj
+	 * @param value Object to store in obj
+	 */
+	public native void putReference(Object obj, long offset, Object value);
+/*[ENDIF] Java12 */
 	
 	/**
 	 * Gets the value of the Object in memory referenced by address.
@@ -571,6 +599,37 @@ public final class Unsafe {
 	public final native Object compareAndExchangeObject(Object obj, long offset, Object compareValue,
 			Object exchangeValue);
 
+/*[IF Java12]*/
+	/**
+	 * Atomically sets the parameter value at offset in obj if the compare value 
+	 * matches the existing value in the object.
+	 * The get operation has memory semantics of getVolatile.
+	 * The set operation has the memory semantics of setVolatile.
+	 *
+	 * @param obj object into which to store the value
+	 * @param offset location to compare and store value in obj
+	 * @param compareValue value that is expected to be in obj at offset
+	 * @param setValue value that will be set in obj at offset if compare is successful
+	 * @return boolean value indicating whether the field was updated
+	 */
+	public final native boolean compareAndSetReference(Object obj, long offset, Object compareValue, Object setValue);
+
+	/**
+	 * Atomically sets the parameter value at offset in obj if the compare value 
+	 * matches the existing value in the object.
+	 * The get operation has memory semantics of getVolatile.
+	 * The set operation has the memory semantics of setVolatile.
+	 *
+	 * @param obj object into which to store the value
+	 * @param offset location to compare and store value in obj
+	 * @param compareValue value that is expected to be in obj at offset
+	 * @param exchangeValue value that will be set in obj at offset if compare is successful
+	 * @return value in obj at offset before this operation. This will be compareValue if the exchange was successful
+	 */
+	public final native Object compareAndExchangeReference(Object obj, long offset, Object compareValue,
+			Object exchangeValue);
+/*[ENDIF] Java12 */
+
 	/**
 	 * Atomically gets the value of the byte in the obj parameter referenced by offset.
 	 * 
@@ -733,6 +792,26 @@ public final class Unsafe {
 	 */
 	public native void putObjectVolatile(Object obj, long offset, Object value);
 
+/*[IF Java12]*/
+	/**
+	 * Atomically gets the value of the Object in the obj parameter referenced by offset.
+	 * 
+	 * @param obj object from which to retrieve the value
+	 * @param offset position of the value in obj
+	 * @return Object value stored in obj
+	 */
+	public native Object getReferenceVolatile(Object obj, long offset);
+
+	/**
+	 * Atomically sets the value of the Object in the obj parameter at memory offset.
+	 * 
+	 * @param obj object into which to store the value
+	 * @param offset position of the value in obj
+	 * @param value Object to store in obj
+	 */
+	public native void putReferenceVolatile(Object obj, long offset, Object value);
+/*[ENDIF] Java12 */
+
 	/**
 	 * Makes permit available for thread parameter.
 	 * 
@@ -829,21 +908,23 @@ public final class Unsafe {
 	 */
 	private native void copyMemory0(Object srcObj, long srcOffset, Object destObj, long destOffset, long size);
 
-	/* 
-	 * Swap bytes between source object and destination.
+	/*
+	 * Copy bytes from source object to destination in reverse order.
+	 * Memory is reversed in elementSize chunks.
 	 * 
 	 * @param srcObj object to copy from 
-	 * @param srcOffset location in srcObj to start swap
+	 * @param srcOffset location in srcObj to start copy
 	 * @param destObj object to copy into
-	 * @param destOffset location in destObj to start swap
-	 * @param srcSize the number of bytes to be swapped in source
-	 * @param destSize the number of bytes to be swapped in destination
+	 * @param destOffset location in destObj to start copy
+	 * @param copySize the number of bytes to be copied, a multiple of elementSize
+	 * @param elementSize the size in bytes of elements that will be reversed
 	 * 
 	 * @throws IllegalArgumentException if srcOffset is illegal in srcObj, 
-	 * if destOffset is illegal in destObj, or if sizes are invalid
+	 * if destOffset is illegal in destObj, if copySize is invalid or copySize is not
+	 * a multiple of elementSize
 	 */
-	private native void copySwapMemory0(Object srcObj, long srcOffset, Object destObj, long destOffset, long srcSize,
-			long destSize);
+	private native void copySwapMemory0(Object srcObj, long srcOffset, Object destObj, long destOffset, long copySize,
+			long elementSize);
 
 	/* 
 	 * Returns byte offset to field.
@@ -872,7 +953,7 @@ public final class Unsafe {
 	 * Returns byte offset to start of static class or interface.
 	 * 
 	 * @param field which contains desired class or interface
-	 * @return offset to start of class or iterface
+	 * @return offset to start of class or interface
 	 * 
 	 * @throws NullPointerException if field parameter is null
 	 * @throws IllegalArgumentException if field is not static
@@ -960,6 +1041,27 @@ public final class Unsafe {
 
 	/* @return true if machine is big endian, false otherwise */
 	private native boolean isBigEndian0();
+
+/*[IF Java14]*/
+	/**
+	 * Make sure that the virtual memory at address "addr" for length "len" has
+	 * been written back from the cache to physical memory.
+	 * Throw RuntimeException if cache flushing is not enabled on the runtime OS.
+	 * 
+	 * @param addr address to the start of the block of virtual memory to be flushed
+	 * @param len length of the block of virtual memory to be flushed
+	 * @throws RuntimeException if cache flushing not enabled
+	 */
+	public native void writebackMemory(long addr, long len);
+
+	/**
+	 * Check if cache writeback is possible on the runtime platform by checking
+	 * if there is OS and/or CPU support.
+	 * 
+	 * @return true if cache writeback is possible, else false
+	 */
+	public static native boolean isWritebackEnabled();
+/*[ENDIF] Java14 */
 	
 	/**
 	 * Getter for unsafe instance.
@@ -1307,40 +1409,43 @@ public final class Unsafe {
 	}
 
 	/**
-	 * Swap bytes between source object and destination.
+	 * Copy bytes from source object to destination in reverse order.
+	 * Memory is reversed in elementSize chunks.
 	 * 
 	 * @param srcObj object to copy from 
-	 * @param srcOffset location in srcObj to start swap
+	 * @param srcOffset location in srcObj to start copy
 	 * @param destObj object to copy into
-	 * @param destOffset location in destObj to start swap
-	 * @param srcSize the number of bytes to be swapped in source
-	 * @param destSize the number of bytes to be swapped in destination
+	 * @param destOffset location in destObj to start copy
+	 * @param copySize the number of bytes to be copied, a multiple of elementSize
+	 * @param elementSize the size in bytes of elements that will be reversed
 	 * 
 	 * @throws IllegalArgumentException if srcOffset is illegal in srcObj, 
-	 * if destOffset is illegal in destObj, or if sizes are invalid
+	 * if destOffset is illegal in destObj, if copySize is invalid or copySize is not
+	 * a multiple of elementSize
 	 */
-	public void copySwapMemory(Object srcObj, long srcOffset, Object destObj, long destOffset, long srcSize,
-			long destSize) {
-		copySwapMemoryChecks(srcObj, srcOffset, destObj, destOffset, srcSize, destSize);
+	public void copySwapMemory(Object srcObj, long srcOffset, Object destObj, long destOffset, long copySize,
+			long elementSize) {
+		copySwapMemoryChecks(srcObj, srcOffset, destObj, destOffset, copySize, elementSize);
 
-		if (0 != srcSize) {
-			copySwapMemory0(srcObj, srcOffset, destObj, destOffset, srcSize, destSize);
+		if (0 != copySize) {
+			copySwapMemory0(srcObj, srcOffset, destObj, destOffset, copySize, elementSize);
 		}
 	}
 
 	/**
-	 * Swap bytes between source address and destination.
+	 * Copy bytes from source address to destination in reverse order.
+	 * Memory is reversed in elementSize chunks.
 	 * 
-	 * @param srcAddress location to start swap
-	 * @param destAddress location to start swap
-	 * @param srcSize the number of bytes to be swapped at source
-	 * @param destSize the number of bytes to be swapped at destination
+	 * @param srcAddress location to start copy
+	 * @param destAddress location to start copy
+	 * @param copySize the number of bytes to be copied, a multiple of elementSize
+	 * @param elementSize the size in bytes of elements that will be reversed
 	 * 
 	 * @throws IllegalArgumentException if srcAddress or destAddress is illegal, 
-	 *  or if sizes are invalid
+	 * if copySize is invalid or copySize is not a multiple of elementSize
 	 */
-	public void copySwapMemory(long srcAddress, long destAddress, long srcSize, long destSize) {
-		copySwapMemory(null, srcAddress, null, destAddress, srcSize, destSize);
+	public void copySwapMemory(long srcAddress, long destAddress, long copySize, long elementSize) {
+		copySwapMemory(null, srcAddress, null, destAddress, copySize, elementSize);
 	}
 
 	/**
@@ -1395,7 +1500,7 @@ public final class Unsafe {
 	 * Returns byte offset to start of static class or interface.
 	 * 
 	 * @param field which contains desired class or interface
-	 * @return offset to start of class or iterface
+	 * @return offset to start of class or interface
 	 * 
 	 * @throws NullPointerException if field parameter is null
 	 * @throws IllegalArgumentException if field is not static
@@ -1697,7 +1802,7 @@ public final class Unsafe {
 	/**
 	 * Atomically sets the parameter value at offset in obj if the compare value 
 	 * matches the existing value in the object.
-	 * The get operation has memory semantics of getAquire.
+	 * The get operation has memory semantics of getAcquire.
 	 * The set operation has the memory semantics of set.
 	 *
 	 * @param obj object into which to store the value
@@ -2699,6 +2804,106 @@ public final class Unsafe {
 		return compareAndSetObject(obj, offset, compareValue, setValue);
 	}
 
+/*[IF Java12]*/
+	/**
+	 * Atomically sets the parameter value at offset in obj if the compare value 
+	 * matches the existing value in the object.
+	 * The get operation has memory semantics of getAcquire.
+	 * The set operation has the memory semantics of set.
+	 *
+	 * @param obj object into which to store the value
+	 * @param offset location to compare and store value in obj
+	 * @param compareValue value that is expected to be in obj at offset
+	 * @param exchangeValue value that will be set in obj at offset if compare is successful
+	 * @return value in obj at offset before this operation. This will be compareValue if the exchange was successful
+	 */
+	public final Object compareAndExchangeReferenceAcquire(Object obj, long offset, Object compareValue,
+			Object exchangeValue) {
+		return compareAndExchangeReference(obj, offset, compareValue, exchangeValue);
+	}
+
+	/**
+	 * Atomically sets the parameter value at offset in obj if the compare value 
+	 * matches the existing value in the object.
+	 * The get operation has memory semantics of get.
+	 * The set operation has the memory semantics of setRelease.
+	 *
+	 * @param obj object into which to store the value
+	 * @param offset location to compare and store value in obj
+	 * @param compareValue value that is expected to be in obj at offset
+	 * @param exchangeValue value that will be set in obj at offset if compare is successful
+	 * @return value in obj at offset before this operation. This will be compareValue if the exchange was successful
+	 */
+	public final Object compareAndExchangeReferenceRelease(Object obj, long offset, Object compareValue,
+			Object exchangeValue) {
+		return compareAndExchangeReference(obj, offset, compareValue, exchangeValue);
+	}
+
+	/**
+	 * Sets the parameter value at offset in obj if the compare value 
+	 * matches the existing value in the object.
+	 * The get operation has memory semantics of get.
+	 * The set operation has the memory semantics of set.
+	 *
+	 * @param obj object into which to store the value
+	 * @param offset location to compare and store value in obj
+	 * @param compareValue value that is expected to be in obj at offset
+	 * @param setValue value that will be set in obj at offset if compare is successful
+	 * @return boolean value indicating whether the field was updated
+	 */
+	public final boolean weakCompareAndSetReferencePlain(Object obj, long offset, Object compareValue, Object setValue) {
+		return compareAndSetReference(obj, offset, compareValue, setValue);
+	}
+
+	/**
+	 * Sets the parameter value at offset in obj if the compare value 
+	 * matches the existing value in the object.
+	 * The get operation has memory semantics of getAcquire.
+	 * The set operation has the memory semantics of set.
+	 *
+	 * @param obj object into which to store the value
+	 * @param offset location to compare and store value in obj
+	 * @param compareValue value that is expected to be in obj at offset
+	 * @param setValue value that will be set in obj at offset if compare is successful
+	 * @return boolean value indicating whether the field was updated
+	 */
+	public final boolean weakCompareAndSetReferenceAcquire(Object obj, long offset, Object compareValue, Object setValue) {
+		return compareAndSetReference(obj, offset, compareValue, setValue);
+	}
+
+	/**
+	 * Sets the parameter value at offset in obj if the compare value 
+	 * matches the existing value in the object.
+	 * The get operation has memory semantics of get.
+	 * The set operation has the memory semantics of setRelease.
+	 *
+	 * @param obj object into which to store the value
+	 * @param offset location to compare and store value in obj
+	 * @param compareValue value that is expected to be in obj at offset
+	 * @param setValue value that will be set in obj at offset if compare is successful
+	 * @return boolean value indicating whether the field was updated
+	 */
+	public final boolean weakCompareAndSetReferenceRelease(Object obj, long offset, Object compareValue, Object setValue) {
+		return compareAndSetReference(obj, offset, compareValue, setValue);
+	}
+
+	/**
+	 * Sets the parameter value at offset in obj if the compare value 
+	 * matches the existing value in the object.
+	 * The get operation has memory semantics of get.
+	 * The set operation has the memory semantics of set.
+	 *
+	 * @param obj object into which to store the value
+	 * @param offset location to compare and store value in obj
+	 * @param compareValue value that is expected to be in obj at offset
+	 * @param setValue value that will be set in obj at offset if compare is successful
+	 * @return boolean value indicating whether the field was updated
+	 */
+	public final boolean weakCompareAndSetReference(Object obj, long offset, Object compareValue, Object setValue) {
+		return compareAndSetReference(obj, offset, compareValue, setValue);
+	}
+/*[ENDIF] Java12 */
+
 	/**
 	 * Gets the value of the byte in the obj parameter referenced by offset using acquire semantics.
 	 * Preceding loads will not be reordered with subsequent loads/stores.
@@ -2807,6 +3012,20 @@ public final class Unsafe {
 		return getObjectVolatile(obj, offset);
 	}
 
+	/*[IF Java12]*/
+	/**
+	 * Gets the value of the Object in the obj parameter referenced by offset using acquire semantics.
+	 * Preceding loads will not be reordered with subsequent loads/stores.
+	 * 
+	 * @param obj object from which to retrieve the value
+	 * @param offset position of the value in obj
+	 * @return Object value stored in obj
+	 */
+	public final Object getReferenceAcquire(Object obj, long offset) {
+		return getReferenceVolatile(obj, offset);
+	}
+	/*[ENDIF] Java12 */
+
 	/**
 	 * Sets the value of the byte in the obj parameter at memory offset using acquire semantics.
 	 * Preceding stores will not be reordered with subsequent loads/stores.
@@ -2914,6 +3133,20 @@ public final class Unsafe {
 	public final void putObjectRelease(Object obj, long offset, Object value) {
 		putObjectVolatile(obj, offset, value);
 	}
+
+/*[IF Java12]*/
+	/**
+	 * Sets the value of the Object in the obj parameter at memory offset using acquire semantics.
+	 * Preceding stores will not be reordered with subsequent loads/stores.
+	 * 
+	 * @param obj object into which to store the value
+	 * @param offset position of the value in obj
+	 * @param value Object to store in obj
+	 */
+	public final void putReferenceRelease(Object obj, long offset, Object value) {
+		putReferenceVolatile(obj, offset, value);
+	}
+/*[ENDIF] Java12 */
 	
 	/**
 	 * Gets the value of the byte in the obj parameter referenced by offset.
@@ -3023,6 +3256,20 @@ public final class Unsafe {
 		return getObjectVolatile(obj, offset);
 	}
 
+/*[IF Java12]*/
+	/**
+	 * Gets the value of the Object in the obj parameter referenced by offset.
+	 * The operation is in program order, but does enforce ordering with respect to other threads.
+	 * 
+	 * @param obj object from which to retrieve the value
+	 * @param offset position of the value in obj
+	 * @return Object value stored in obj
+	 */
+	public final Object getReferenceOpaque(Object obj, long offset) {
+		return getReferenceVolatile(obj, offset);
+	}
+/*[ENDIF] Java12 */
+
 	/**
 	 * Sets the value of the byte in the obj parameter at memory offset.
 	 * The operation is in program order, but does enforce ordering with respect to other threads.
@@ -3130,6 +3377,20 @@ public final class Unsafe {
 	public final void putObjectOpaque(Object obj, long offset, Object value) {
 		putObjectVolatile(obj, offset, value);
 	}
+
+/*[IF Java12]*/
+	/**
+	 * Sets the value of the Object in the obj parameter at memory offset.
+	 * The operation is in program order, but does enforce ordering with respect to other threads.
+	 * 
+	 * @param obj object into which to store the value
+	 * @param offset position of the value in obj
+	 * @param value Object to store in obj
+	 */
+	public final void putReferenceOpaque(Object obj, long offset, Object value) {
+		putReferenceVolatile(obj, offset, value);
+	}
+/*[ENDIF] Java12 */
 
 	/**
 	 * Get the load average in the system.
@@ -3597,7 +3858,7 @@ public final class Unsafe {
 	public final byte getAndSetByte(Object obj, long offset, byte value) {
 		for (;;) {
 			byte byteAtOffset = getByteVolatile(obj, offset);
-			if (weakCompareAndSetByte(obj, offset, byteAtOffset, value)) {
+			if (compareAndSetByte(obj, offset, byteAtOffset, value)) {
 				return byteAtOffset;
 			}
 		}
@@ -3657,7 +3918,7 @@ public final class Unsafe {
 	public final int getAndSetInt(Object obj, long offset, int value) {
 		for (;;) {
 			int intAtOffset = getIntVolatile(obj, offset);
-			if (weakCompareAndSetInt(obj, offset, intAtOffset, value)) {
+			if (compareAndSetInt(obj, offset, intAtOffset, value)) {
 				return intAtOffset;
 			}
 		}
@@ -3717,7 +3978,7 @@ public final class Unsafe {
 	public final long getAndSetLong(Object obj, long offset, long value) {
 		for (;;) {
 			long longAtOffset = getLongVolatile(obj, offset);
-			if (weakCompareAndSetLong(obj, offset, longAtOffset, value)) {
+			if (compareAndSetLong(obj, offset, longAtOffset, value)) {
 				return longAtOffset;
 			}
 		}
@@ -3873,7 +4134,7 @@ public final class Unsafe {
 	public final short getAndSetShort(Object obj, long offset, short value) {
 		for (;;) {
 			short shortAtOffset = getShortVolatile(obj, offset);
-			if (weakCompareAndSetShort(obj, offset, shortAtOffset, value)) {
+			if (compareAndSetShort(obj, offset, shortAtOffset, value)) {
 				return shortAtOffset;
 			}
 		}
@@ -3933,7 +4194,7 @@ public final class Unsafe {
 	public final char getAndSetChar(Object obj, long offset, char value) {
 		for (;;) {
 			char charAtOffset = getCharVolatile(obj, offset);
-			if (weakCompareAndSetChar(obj, offset, charAtOffset, value)) {
+			if (compareAndSetChar(obj, offset, charAtOffset, value)) {
 				return charAtOffset;
 			}
 		}
@@ -4041,7 +4302,7 @@ public final class Unsafe {
 	public final Object getAndSetObject(Object obj, long offset, Object value) {
 		for (;;) {
 			Object objectAtOffset = getObjectVolatile(obj, offset);
-			if (weakCompareAndSetObject(obj, offset, objectAtOffset, value)) {
+			if (compareAndSetObject(obj, offset, objectAtOffset, value)) {
 				return objectAtOffset;
 			}
 		}
@@ -4086,6 +4347,68 @@ public final class Unsafe {
 			}
 		}
 	}
+
+/*[IF Java12]*/
+	/**
+	 * Atomically sets value at offset in obj
+	 * and returns the value of the field prior to the update.
+	 * The get operation has the memory semantics of getVolatile.
+	 * The set operation has the memory semantics of setVolatile.
+	 * 
+	 * @param obj object into which to set the value
+	 * @param offset location to set value in obj
+	 * @param value to set in obj memory
+	 * @return value of field in obj at offset before update
+	 */
+	public final Object getAndSetReference(Object obj, long offset, Object value) {
+		for (;;) {
+			Object objectAtOffset = getReferenceVolatile(obj, offset);
+			if (compareAndSetReference(obj, offset, objectAtOffset, value)) {
+				return objectAtOffset;
+			}
+		}
+	}
+
+	/**
+	 * Atomically sets value at offset in obj
+	 * and returns the value of the field prior to the update.
+	 * The get operation has the memory semantics of get.
+	 * The set operation has the memory semantics of setRelease.
+	 * 
+	 * @param obj object into which to set the value
+	 * @param offset location to set value in obj
+	 * @param value to set in obj memory
+	 * @return value of field in obj at offset before update
+	 */
+	public final Object getAndSetReferenceRelease(Object obj, long offset, Object value) {
+		for (;;) {
+			Object objectAtOffset = getReference(obj, offset);
+			if (weakCompareAndSetReferenceRelease(obj, offset, objectAtOffset, value)) {
+				return objectAtOffset;
+			}
+		}
+	}
+
+	/**
+	 * Atomically sets value at offset in obj
+	 * and returns the value of the field prior to the update.
+	 * The get operation has the memory semantics of getAcquire.
+	 * The set operation has the memory semantics of set.
+	 * 
+	 * @param obj object into which to set the value
+	 * @param offset location to set value in obj
+	 * @param value to set in obj memory
+	 * @return value of field in obj at offset before update
+	 */
+	public final Object getAndSetReferenceAcquire(Object obj, long offset, Object value) {
+		for (;;) {
+			Object objectAtOffset = getReferenceAcquire(obj, offset);
+			if (weakCompareAndSetReferenceAcquire(obj, offset, objectAtOffset, value)) {
+				return objectAtOffset;
+			}
+		}
+	}
+/*[ENDIF] Java12 */
 
 	/**
 	 * Atomically OR's the given value to the current value of the 
@@ -5531,6 +5854,40 @@ public final class Unsafe {
 		putCharUnaligned(obj, offset, endianValue);
 	}
 
+/*[IF Java12]*/
+	/**
+	 * If incoming ByteBuffer is an instance of sun.nio.ch.DirectBuffer,
+	 * and it is direct, and not a slice or duplicate,
+	 * if it has a cleaner, it is invoked,
+	 * otherwise an IllegalArgumentException is thrown
+	 * 
+	 * @param bbo a ByteBuffer object
+	 * @throws IllegalArgumentException as per description above
+	 */
+	public void invokeCleaner(ByteBuffer bbo) {
+		if (bbo instanceof DirectBuffer) {
+			if (bbo.isDirect()) {
+				DirectBuffer db = (DirectBuffer)bbo;
+				if (db.attachment() == null) {
+					Cleaner cleaner = db.cleaner();
+					if (cleaner != null) {
+						cleaner.clean();
+					}
+				} else {
+					/*[MSG "K0706", "This DirectBuffer object is a slice or duplicate"]*/
+					throw new IllegalArgumentException(com.ibm.oti.util.Msg.getString("K0706")); //$NON-NLS-1$
+				}
+			} else {
+				/*[MSG "K0705", "This DirectBuffer object is not direct"]*/
+				throw new IllegalArgumentException(com.ibm.oti.util.Msg.getString("K0705")); //$NON-NLS-1$
+			}
+		} else {
+			/*[MSG "K0704", "A sun.nio.ch.DirectBuffer object is expected"]*/
+			throw new IllegalArgumentException(com.ibm.oti.util.Msg.getString("K0704")); //$NON-NLS-1$
+		}
+	}
+/*[ENDIF] Java12 */
+
 	/* 
 	 * Private methods 
 	 */
@@ -5874,15 +6231,14 @@ public final class Unsafe {
 	 * Verify that parameters are valid.
 	 * 
 	 * @throws IllegalArgumentException if srcOffset is illegal in srcObj, 
-	 * if destOffset is illegal in destObj, or if sizes are invalid
+	 * if destOffset is illegal in destObj, if copySize is invalid or copySize is not
+	 * a multiple of elementSize
 	 */
-	private void copySwapMemoryChecks(Object srcObj, long srcOffset, Object destObj, long destOffset, long srcSize,
-			long destSize) {
-		checkSize(srcSize);
-		if ((2 == destSize) || (4 == destSize) || (8 == destSize)) {
-			long remainder = srcSize - (srcSize / destSize) * destSize;
-
-			if (0 == remainder) {
+	private void copySwapMemoryChecks(Object srcObj, long srcOffset, Object destObj, long destOffset, long copySize,
+			long elementSize) {
+		checkSize(copySize);
+		if ((2 == elementSize) || (4 == elementSize) || (8 == elementSize)) {
+			if (0 == (copySize % elementSize)) {
 				checkPrimitivePointer(srcObj, srcOffset);
 				checkPrimitivePointer(destObj, destOffset);
 			} else {

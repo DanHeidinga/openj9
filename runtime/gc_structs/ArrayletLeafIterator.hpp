@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -39,7 +38,6 @@
 #include "ArrayObjectModel.hpp"
 #include "ArrayletObjectModel.hpp"
 
-#if defined(J9VM_GC_ARRAYLETS)
 /**
  * Defines the interface for iterating over all slots in an object which contain an object reference
  * @ingroup GC_Structs
@@ -48,6 +46,9 @@ class GC_ArrayletLeafIterator
 {
 protected:
 	OMR_VM *const _omrVM;
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+	bool const _compressObjectReferences;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 	GC_SlotObject _slotObject;
 	J9IndexableObject *_spinePtr; /**< The pointer to the beginning of the actual indexable object (ie: the spine) */
 	GC_ArrayletObjectModel::ArrayLayout _layout; /**< The layout of the arraylet being iterated */
@@ -58,13 +59,33 @@ protected:
 
 public:
 	/**
+	 * Return back true if object references are compressed
+	 * @return true, if object references are compressed
+	 */
+	MMINLINE bool compressObjectReferences() {
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+#if defined(OMR_GC_FULL_POINTERS)
+#if defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES)
+		return (bool)OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES;
+#else /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+		return _compressObjectReferences;
+#endif /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+#else /* defined(OMR_GC_FULL_POINTERS) */
+		return true;
+#endif /* defined(OMR_GC_FULL_POINTERS) */
+#else /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return false;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+	}
+
+	/**
 	 * @return the next leaf reference slot in the arraylet
 	 * @return NULL if there are no more reference slots in the object
 	 */
 	MMINLINE GC_SlotObject *nextLeafPointer()
 	{
 		if (_numLeafsCounted < _numLeafs) {
-			_slotObject.writeAddressToSlot(&_arrayoid[_numLeafsCounted]);
+			_slotObject.writeAddressToSlot(GC_SlotObject::addToSlotAddress(_arrayoid, _numLeafsCounted, compressObjectReferences()));
 			_numLeafsCounted += 1;
 			return &_slotObject;
 		} else {
@@ -78,10 +99,10 @@ public:
 		MM_GCExtensionsBase *extensions = MM_GCExtensionsBase::getExtensions(_omrVM);
 		_spinePtr = objectPtr;
 		_layout = extensions->indexableObjectModel.getArrayLayout(objectPtr);
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
+
 		/* For a hybrid arraylet spec, this iterator should not be called for a contiguous arraylet */
 		Assert_MM_true(GC_ArrayletObjectModel::InlineContiguous != _layout);
-#endif
+
 		/* for 0-sized arrays, there is no need to return the fake leaf pointer.
 		 * It can potentially be problematic to return this fake leaf pointer as users of
 		 * this iterator assume we return valid leaf pointers. 
@@ -103,12 +124,13 @@ public:
 
 	GC_ArrayletLeafIterator(J9JavaVM *javaVM, J9IndexableObject *objectPtr) :
 		_omrVM(javaVM->omrVM)
-	,	_slotObject(GC_SlotObject(_omrVM, NULL))
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+		, _compressObjectReferences(J9JAVAVM_COMPRESS_OBJECT_REFERENCES(javaVM))
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
+		, _slotObject(GC_SlotObject(_omrVM, NULL))
 	{
 		initialize(objectPtr);
 	}
 };
-#endif /* J9VM_GC_ARRAYLETS */
 
 #endif /* ARRAYLETLEAFITERATOR_HPP_ */
-

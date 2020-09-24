@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -27,6 +26,7 @@
 #include "j9.h"
 #include "j9cfg.h"
 #include "modron.h"
+#include "objectdescription.h"
 
 #include "Bits.hpp"
 
@@ -43,6 +43,9 @@ class GC_MixedObjectModel
 * Data members
 */
 private:
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+	bool _compressObjectReferences;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 protected:
 public:
 
@@ -52,6 +55,28 @@ public:
 private:
 protected:
 public:
+	/**
+	 * Return back true if object references are compressed
+	 * @return true, if object references are compressed
+	 */
+	MMINLINE bool
+	compressObjectReferences()
+	{
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+#if defined(OMR_GC_FULL_POINTERS)
+#if defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES)
+		return (bool)OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES;
+#else /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+		return _compressObjectReferences;
+#endif /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+#else /* defined(OMR_GC_FULL_POINTERS) */
+		return true;
+#endif /* defined(OMR_GC_FULL_POINTERS) */
+#else /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return false;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+	}
+
 	/**
 	 * Returns the size of a class, in bytes, excluding the header.
 	 * @param clazzPtr Pointer to the class whose size is required
@@ -71,7 +96,7 @@ public:
 	MMINLINE UDATA
 	getSizeInBytesWithoutHeader(J9Object *objectPtr)
 	{
-		return getSizeInBytesWithoutHeader(J9GC_J9OBJECT_CLAZZ(objectPtr));
+		return getSizeInBytesWithoutHeader(J9GC_J9OBJECT_CLAZZ(objectPtr, this));
 	}
 
 	/**
@@ -82,7 +107,18 @@ public:
 	MMINLINE UDATA
 	getSizeInBytesWithHeader(J9Object *objectPtr)
 	{
-		return getSizeInBytesWithoutHeader(objectPtr) + sizeof(J9Object);
+		return getSizeInBytesWithoutHeader(objectPtr) + getHeaderSize(objectPtr);
+	}
+	
+	/**
+	* Returns an address of first data slot of the object
+	* @param objectPtr Pointer to the object
+	* @return Address of first data slot of the object
+	*/
+	MMINLINE fomrobject_t *
+	getHeadlessObject(J9Object *objectPtr)
+	{
+		return (fomrobject_t *)((uint8_t*)objectPtr + getHeaderSize(objectPtr));
 	}
 	
 	/**
@@ -93,7 +129,7 @@ public:
 	MMINLINE UDATA
 	getHeaderSize(J9Object *objectPtr)
 	{
-		return sizeof(J9Object);
+		return J9GC_OBJECT_HEADER_SIZE(this);
 	}
 
 	/**
@@ -115,7 +151,7 @@ public:
 	MMINLINE UDATA
 	getHashcodeOffset(J9Object *objectPtr)
 	{
-		return getHashcodeOffset(J9GC_J9OBJECT_CLAZZ(objectPtr));
+		return getHashcodeOffset(J9GC_J9OBJECT_CLAZZ(objectPtr, this));
 	}
 
 	/**

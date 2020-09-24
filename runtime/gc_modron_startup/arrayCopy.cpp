@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -121,14 +120,13 @@ referenceArrayCopy(J9VMThread *vmThread, J9IndexableObject *srcObject, J9Indexab
 	if (lengthInSlots > 0) {
 		MM_GCExtensions *ext = MM_GCExtensions::getExtensions(vmThread->javaVM);
 
-#if defined(J9VM_GC_ARRAYLETS)
 		Assert_MM_true(ext->indexableObjectModel.isInlineContiguousArraylet(srcObject) && ext->indexableObjectModel.isInlineContiguousArraylet(destObject));
-#endif
 
 		uintptr_t srcHeaderSize = ext->indexableObjectModel.getHeaderSize(srcObject);
 		uintptr_t destHeaderSize = ext->indexableObjectModel.getHeaderSize(destObject);
-		I_32 srcIndex = (I_32)(((uintptr_t)srcAddress - (srcHeaderSize + (uintptr_t)srcObject)) / sizeof(fj9object_t));
-		I_32 destIndex = (I_32)(((uintptr_t)destAddress - (destHeaderSize + (uintptr_t)destObject)) / sizeof(fj9object_t));
+		uintptr_t const referenceSize = J9VMTHREAD_REFERENCE_SIZE(vmThread);
+		I_32 srcIndex = (I_32)(((uintptr_t)srcAddress - (srcHeaderSize + (uintptr_t)srcObject)) / referenceSize);
+		I_32 destIndex = (I_32)(((uintptr_t)destAddress - (destHeaderSize + (uintptr_t)destObject)) / referenceSize);
 
 		return referenceArrayCopyIndex(vmThread, srcObject, destObject, srcIndex, destIndex, lengthInSlots);
 	}
@@ -264,7 +262,7 @@ initializeReferenceArrayCopyTable(J9ReferenceArrayCopyTable *table)
 	table->backwardReferenceArrayCopyIndex[j9gc_modron_wrtbar_cardmark] = backwardReferenceArrayCopyAndAlwaysWrtbarIndex;
 	table->backwardReferenceArrayCopyIndex[j9gc_modron_wrtbar_cardmark_incremental] = backwardReferenceArrayCopyAndAlwaysWrtbarIndex;
 	table->backwardReferenceArrayCopyIndex[j9gc_modron_wrtbar_cardmark_and_oldcheck] = backwardReferenceArrayCopyAndAlwaysWrtbarIndex;
-	table->backwardReferenceArrayCopyIndex[j9gc_modron_wrtbar_realtime] = backwardReferenceArrayCopyAndAlwaysWrtbarIndex;
+	table->backwardReferenceArrayCopyIndex[j9gc_modron_wrtbar_satb] = backwardReferenceArrayCopyAndAlwaysWrtbarIndex;
 
 	/* Forward copies with type check on each element (check for ArrayStoreException) */
 	table->forwardReferenceArrayCopyWithCheckIndex[j9gc_modron_wrtbar_illegal] = copyVariantUndefinedIndex;
@@ -274,7 +272,7 @@ initializeReferenceArrayCopyTable(J9ReferenceArrayCopyTable *table)
 	table->forwardReferenceArrayCopyWithCheckIndex[j9gc_modron_wrtbar_cardmark] = forwardReferenceArrayCopyWithCheckAndAlwaysWrtbarIndex;
 	table->forwardReferenceArrayCopyWithCheckIndex[j9gc_modron_wrtbar_cardmark_incremental] = forwardReferenceArrayCopyWithCheckAndAlwaysWrtbarIndex;
 	table->forwardReferenceArrayCopyWithCheckIndex[j9gc_modron_wrtbar_cardmark_and_oldcheck] = forwardReferenceArrayCopyWithCheckAndAlwaysWrtbarIndex;
-	table->forwardReferenceArrayCopyWithCheckIndex[j9gc_modron_wrtbar_realtime] = forwardReferenceArrayCopyWithCheckAndAlwaysWrtbarIndex;
+	table->forwardReferenceArrayCopyWithCheckIndex[j9gc_modron_wrtbar_satb] = forwardReferenceArrayCopyWithCheckAndAlwaysWrtbarIndex;
 	
 	/* Forward copies with no type check */
 	table->forwardReferenceArrayCopyWithoutCheckIndex[j9gc_modron_wrtbar_illegal] = copyVariantUndefinedIndex;
@@ -284,7 +282,7 @@ initializeReferenceArrayCopyTable(J9ReferenceArrayCopyTable *table)
 	table->forwardReferenceArrayCopyWithoutCheckIndex[j9gc_modron_wrtbar_cardmark] = forwardReferenceArrayCopyWithoutCheckAndAlwaysWrtbarIndex;
 	table->forwardReferenceArrayCopyWithoutCheckIndex[j9gc_modron_wrtbar_cardmark_incremental] = forwardReferenceArrayCopyWithoutCheckAndAlwaysWrtbarIndex;
 	table->forwardReferenceArrayCopyWithoutCheckIndex[j9gc_modron_wrtbar_cardmark_and_oldcheck] = forwardReferenceArrayCopyWithoutCheckAndAlwaysWrtbarIndex;
-	table->forwardReferenceArrayCopyWithoutCheckIndex[j9gc_modron_wrtbar_realtime] = forwardReferenceArrayCopyWithoutCheckAndAlwaysWrtbarIndex;
+	table->forwardReferenceArrayCopyWithoutCheckIndex[j9gc_modron_wrtbar_satb] = forwardReferenceArrayCopyWithoutCheckAndAlwaysWrtbarIndex;
 }
 
 } /* extern "C" */

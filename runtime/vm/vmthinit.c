@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -35,7 +35,7 @@
 #include "j2sever.h"
 
 /* processReferenceMonitor is only used for Java 9 and later */
-#define J9_IS_PROCESS_REFERENCE_MONITOR_ENABLED(vm) ((J2SE_VERSION(vm) & J2SE_VERSION_MASK) >= J2SE_19)
+#define J9_IS_PROCESS_REFERENCE_MONITOR_ENABLED(vm) (J2SE_VERSION(vm) >= J2SE_V11)
 
 UDATA initializeVMThreading(J9JavaVM *vm)
 {
@@ -65,7 +65,7 @@ UDATA initializeVMThreading(J9JavaVM *vm)
 #endif
 
 #ifdef J9VM_GC_FINALIZATION
-		omrthread_monitor_init_with_name(&vm->finalizeMasterMonitor, 0, "VM GC finalize master") ||
+		omrthread_monitor_init_with_name(&vm->finalizeMainMonitor, 0, "VM GC finalize main") ||
 		omrthread_monitor_init_with_name(&vm->finalizeRunFinalizationMutex, 0, "VM GC finalize run finalization") ||
 		(J9_IS_PROCESS_REFERENCE_MONITOR_ENABLED(vm) && omrthread_monitor_init_with_name(&vm->processReferenceMonitor, 0, "VM GC process reference")) ||
 #endif
@@ -76,9 +76,13 @@ UDATA initializeVMThreading(J9JavaVM *vm)
 
 		omrthread_monitor_init_with_name(&vm->nativeLibraryMonitor, 0, "JNI native library loading lock") ||
 
-		omrthread_monitor_init_with_name(&vm->jlmModulesInitMutex, 0, "Lock for jlmModules global ref") ||
-
 		omrthread_monitor_init_with_name(&vm->vmRuntimeStateListener.runtimeStateListenerMutex, 0, "VM state notification mutex") ||
+
+		omrthread_monitor_init_with_name(&vm->constantDynamicMutex, 0, "Wait mutex for constantDynamic during resolve") ||
+
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+		omrthread_monitor_init_with_name(&vm->valueTypeVerificationMutex, 0, "Wait mutex for verifying valuetypes") ||
+#endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
 
 		initializeMonitorTable(vm)
 	)
@@ -100,11 +104,11 @@ void freeVMThread(J9JavaVM *vm, J9VMThread *vmThread)
 		j9mem_free_memory(vmThread->riParameters);
 	}
 #endif /* defined(J9VM_PORT_RUNTIME_INSTRUMENTATION) */
-#if defined(J9VM_INTERP_SMALL_MONITOR_SLOT)
-	j9mem_free_memory32(vmThread->startOfMemoryBlock);
-#else
-	j9mem_free_memory(vmThread->startOfMemoryBlock);
-#endif
+	if (J9JAVAVM_COMPRESS_OBJECT_REFERENCES(vm)) {
+		j9mem_free_memory32(vmThread->startOfMemoryBlock);
+	} else {
+		j9mem_free_memory(vmThread->startOfMemoryBlock);
+	}
 }
 
 void terminateVMThreading(J9JavaVM *vm)
@@ -143,7 +147,7 @@ void terminateVMThreading(J9JavaVM *vm)
 	if (vm->bindNativeMutex) omrthread_monitor_destroy(vm->bindNativeMutex);
 
 #ifdef J9VM_GC_FINALIZATION
-	if (vm->finalizeMasterMonitor) omrthread_monitor_destroy(vm->finalizeMasterMonitor);
+	if (vm->finalizeMainMonitor) omrthread_monitor_destroy(vm->finalizeMainMonitor);
 	if (NULL != vm->processReferenceMonitor) omrthread_monitor_destroy(vm->processReferenceMonitor);
 	if (vm->finalizeRunFinalizationMutex) omrthread_monitor_destroy(vm->finalizeRunFinalizationMutex);
 #endif
@@ -154,9 +158,11 @@ void terminateVMThreading(J9JavaVM *vm)
 	if (vm->asyncEventMutex) omrthread_monitor_destroy(vm->asyncEventMutex);
 	if (vm->osrGlobalBufferLock) omrthread_monitor_destroy(vm->osrGlobalBufferLock);
 	if (vm->nativeLibraryMonitor) omrthread_monitor_destroy(vm->nativeLibraryMonitor);
-	if (vm->jlmModulesInitMutex) omrthread_monitor_destroy(vm->jlmModulesInitMutex);
 	if (vm->vmRuntimeStateListener.runtimeStateListenerMutex) omrthread_monitor_destroy(vm->vmRuntimeStateListener.runtimeStateListenerMutex);
-
+	if (vm->constantDynamicMutex) omrthread_monitor_destroy(vm->constantDynamicMutex);
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+	if (vm->valueTypeVerificationMutex) omrthread_monitor_destroy(vm->valueTypeVerificationMutex);
+#endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
 	destroyMonitorTable(vm);
 }
 

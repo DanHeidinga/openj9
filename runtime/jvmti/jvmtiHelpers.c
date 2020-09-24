@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -25,132 +25,6 @@
 #include "j9cp.h"
 
 extern jvmtiNativeInterface jvmtiFunctionTable;
-
-static jvmtiCapabilities capabilitiesMask10 = {
-	1, /* can_tag_objects */
-	1, /* can_generate_field_modification_events */
-	1, /* can_generate_field_access_events */
-	1, /* can_get_bytecodes */
-	1, /* can_get_synthetic_attribute */
-	1, /* can_get_owned_monitor_info */
-	1, /* can_get_current_contended_monitor */
-	1, /* can_get_monitor_info */
-	1, /* can_pop_frame */
-	1, /* can_redefine_classes */
-	1, /* can_signal_thread */
-	1, /* can_get_source_file_name */
-	1, /* can_get_line_numbers */
-	1, /* can_get_source_debug_extension */
-	1, /* can_access_local_variables */
-	1, /* can_maintain_original_method_order */
-	1, /* can_generate_single_step_events */
-	1, /* can_generate_exception_events */
-	1, /* can_generate_frame_pop_events */
-	1, /* can_generate_breakpoint_events */
-	1, /*  can_suspend */
-	1, /* can_redefine_any_class */
-	1, /* can_get_current_thread_cpu_time */
-	1, /* can_get_thread_cpu_time */
-	1, /* can_generate_method_entry_events */
-	1, /* can_generate_method_exit_events */
-	1, /* can_generate_all_class_hook_events */
-	1, /* can_generate_compiled_method_load_events */
-	1, /* can_generate_monitor_events */
-	1, /* can_generate_vm_object_alloc_events */
-	1, /* can_generate_native_method_bind_events */
-	1, /* can_generate_garbage_collection_events */
-	1, /* can_generate_object_free_events */
-};
-
-static jvmtiCapabilities capabilitiesMask11 = {
-	1, /* can_tag_objects */
-	1, /* can_generate_field_modification_events */
-	1, /* can_generate_field_access_events */
-	1, /* can_get_bytecodes */
-	1, /* can_get_synthetic_attribute */
-	1, /* can_get_owned_monitor_info */
-	1, /* can_get_current_contended_monitor */
-	1, /* can_get_monitor_info */
-	1, /* can_pop_frame */
-	1, /* can_redefine_classes */
-	1, /* can_signal_thread */
-	1, /* can_get_source_file_name */
-	1, /* can_get_line_numbers */
-	1, /* can_get_source_debug_extension */
-	1, /* can_access_local_variables */
-	1, /* can_maintain_original_method_order */
-	1, /* can_generate_single_step_events */
-	1, /* can_generate_exception_events */
-	1, /* can_generate_frame_pop_events */
-	1, /* can_generate_breakpoint_events */
-	1, /*  can_suspend */
-	1, /* can_redefine_any_class */
-	1, /* can_get_current_thread_cpu_time */
-	1, /* can_get_thread_cpu_time */
-	1, /* can_generate_method_entry_events */
-	1, /* can_generate_method_exit_events */
-	1, /* can_generate_all_class_hook_events */
-	1, /* can_generate_compiled_method_load_events */
-	1, /* can_generate_monitor_events */
-	1, /* can_generate_vm_object_alloc_events */
-	1, /* can_generate_native_method_bind_events */
-	1, /* can_generate_garbage_collection_events */
-	1, /* can_generate_object_free_events */
-	1, /* can_force_early_return */
-	1, /* can_get_owned_monitor_stack_depth_info */
-	1, /* can_get_constant_pool */
-	1, /* can_set_native_method_prefix */
-	1, /* can_retransform_classes */
-	1, /* can_retransform_any_class */
-	1, /* can_generate_resource_exhaustion_heap_events */
-	1, /* can_generate_resource_exhaustion_threads_events */
-};
-
-static jvmtiCapabilities capabilitiesMask90 = {
-	1, /* can_tag_objects */
-	1, /* can_generate_field_modification_events */
-	1, /* can_generate_field_access_events */
-	1, /* can_get_bytecodes */
-	1, /* can_get_synthetic_attribute */
-	1, /* can_get_owned_monitor_info */
-	1, /* can_get_current_contended_monitor */
-	1, /* can_get_monitor_info */
-	1, /* can_pop_frame */
-	1, /* can_redefine_classes */
-	1, /* can_signal_thread */
-	1, /* can_get_source_file_name */
-	1, /* can_get_line_numbers */
-	1, /* can_get_source_debug_extension */
-	1, /* can_access_local_variables */
-	1, /* can_maintain_original_method_order */
-	1, /* can_generate_single_step_events */
-	1, /* can_generate_exception_events */
-	1, /* can_generate_frame_pop_events */
-	1, /* can_generate_breakpoint_events */
-	1, /*  can_suspend */
-	1, /* can_redefine_any_class */
-	1, /* can_get_current_thread_cpu_time */
-	1, /* can_get_thread_cpu_time */
-	1, /* can_generate_method_entry_events */
-	1, /* can_generate_method_exit_events */
-	1, /* can_generate_all_class_hook_events */
-	1, /* can_generate_compiled_method_load_events */
-	1, /* can_generate_monitor_events */
-	1, /* can_generate_vm_object_alloc_events */
-	1, /* can_generate_native_method_bind_events */
-	1, /* can_generate_garbage_collection_events */
-	1, /* can_generate_object_free_events */
-	1, /* can_force_early_return */
-	1, /* can_get_owned_monitor_stack_depth_info */
-	1, /* can_get_constant_pool */
-	1, /* can_set_native_method_prefix */
-	1, /* can_retransform_classes */
-	1, /* can_retransform_any_class */
-	1, /* can_generate_resource_exhaustion_heap_events */
-	1, /* can_generate_resource_exhaustion_threads_events */
-	1, /* can_generate_early_vmstart */
-	1, /* can_generate_early_class_hook_events */
-};
 
 /* Jazz 99339: Map JVMTI event number to the reason code for zAAP switching on zOS.
  * Note: refer to jvmtiEventCallbacks (/runtime/include/jvmti.h) for reserved JVMTI events.
@@ -192,6 +66,8 @@ static const UDATA reasonCodeFromJVMTIEvent[] = {
 	J9_JNI_OFFLOAD_SWITCH_JVMTI_GC_FINISH,								/* JVMTI_EVENT_GARBAGE_COLLECTION_FINISH */
 	J9_JNI_OFFLOAD_SWITCH_JVMTI_OBJECT_FREE,							/* JVMTI_EVENT_OBJECT_FREE */
 	J9_JNI_OFFLOAD_SWITCH_JVMTI_VM_OBJECT_ALLOC,						/* JVMTI_EVENT_VM_OBJECT_ALLOC */
+	0,																	/* Reserved for JVMTI event */
+	J9_JNI_OFFLOAD_SWITCH_JVMTI_SAMPLED_OBJECT_ALLOC,					/* JVMTI_EVENT_SAMPLED_OBJECT_ALLOC */
 	J9_JNI_OFFLOAD_SWITCH_J9JVMTI_COMPILING_START,						/* J9JVMTI_EVENT_COM_IBM_COMPILING_START */
 	J9_JNI_OFFLOAD_SWITCH_J9JVMTI_COMPILING_END,						/* J9JVMTI_EVENT_COM_IBM_COMPILING_END */
 	J9_JNI_OFFLOAD_SWITCH_J9JVMTI_INSTRUMENTABLE_OBJECT_ALLOC,			/* J9JVMTI_EVENT_COM_IBM_INSTRUMENTABLE_OBJECT_ALLOC */
@@ -214,6 +90,8 @@ static J9JVMTIGlobalBreakpoint * findGlobalBreakpoint (J9JVMTIData * jvmtiData, 
 static J9JVMTIBreakpointedMethod * createBreakpointedMethod (J9VMThread * currentThread, J9Method * ramMethod);
 static UDATA hashEqualObjectTag (void *lhsEntry, void *rhsEntry, void *userData);
 static UDATA findDecompileInfoFrameIterator(J9VMThread *currentThread, J9StackWalkState *walkState);
+static UDATA watchedClassHash (void *entry, void *userData);
+static UDATA watchedClassEqual (void *lhsEntry, void *rhsEntry, void *userData);
 
 
 jvmtiError
@@ -284,7 +162,7 @@ disposeEnvironment(J9JVMTIEnv * j9env, UDATA freeData)
 
 	/* Mark this env as disposed - this prevents any further events being reported */
 
-	if ((j9env->flags & J9JVMTIENV_FLAG_DISPOSED) == 0) {
+	if (J9_ARE_NO_BITS_SET(j9env->flags, J9JVMTIENV_FLAG_DISPOSED)) {
 		J9HookInterface ** vmHook = j9env->vmHook.hookInterface;
 		J9HookInterface ** gcHook = j9env->gcHook.hookInterface;
 		J9HookInterface ** gcOmrHook = j9env->gcOmrHook.hookInterface;
@@ -294,12 +172,20 @@ disposeEnvironment(J9JVMTIEnv * j9env, UDATA freeData)
 
 		j9env->flags |= J9JVMTIENV_FLAG_DISPOSED;
 
+#if JAVA_SPEC_VERSION >= 11
+		if (j9env->capabilities.can_generate_sampled_object_alloc_events) {
+			J9JVMTI_DATA_FROM_VM(vm)->flags &= ~J9JVMTI_FLAG_SAMPLED_OBJECT_ALLOC_ENABLED;
+			/* Set sampling interval to UDATA_MAX to inform GC that sampling is not required */
+			vm->memoryManagerFunctions->j9gc_set_allocation_sampling_interval(vm, UDATA_MAX);
+		}
+#endif /* JAVA_SPEC_VERSION >= 11 */
+
 		/* Remove all breakpoints */
 
 		if (j9env->breakpoints != NULL) {
 			J9VMThread * currentThread = vm->internalVMFunctions->currentVMThread(vm);
 			pool_state poolState;
-			J9JVMTIAgentBreakpoint * agentBreakpoint;
+			J9JVMTIAgentBreakpoint * agentBreakpoint = NULL;
 
 			agentBreakpoint = pool_startDo(j9env->breakpoints, &poolState);
 			while (agentBreakpoint != NULL) {
@@ -351,9 +237,17 @@ disposeEnvironment(J9JVMTIEnv * j9env, UDATA freeData)
 			j9env->objectTagTable = NULL;
 		}
 
-		if (NULL != j9env->watchedFieldPool) {
-			pool_kill(j9env->watchedFieldPool);
-			j9env->watchedFieldPool = NULL;
+		if (NULL != j9env->watchedClasses) {
+			J9HashTableState walkState;
+			J9JVMTIWatchedClass *watchedClass = hashTableStartDo(j9env->watchedClasses, &walkState);
+			while (NULL != watchedClass) {
+				if (J9JVMTI_CLASS_REQUIRES_ALLOCATED_J9JVMTI_WATCHED_FIELD_ACCESS_BITS(watchedClass->clazz)) {
+					j9mem_free_memory(watchedClass->watchBits);
+				}
+				watchedClass = hashTableNextDo(&walkState);
+			}
+			hashTableFree(j9env->watchedClasses);
+			j9env->watchedClasses = NULL;
 		}
 
 		if (NULL != j9env->breakpoints) {
@@ -413,14 +307,6 @@ allocateEnvironment(J9InvocationJavaVM * invocationJavaVM, jint version, void **
 #if defined (J9VM_INTERP_NATIVE_SUPPORT)
 			j9env->jitHook.hookInterface = jitHook;
 #endif
-			j9env->capabilitiesMask = capabilitiesMask10;
-			if (version >= JVMTI_VERSION_1_1) {
-				j9env->capabilitiesMask = capabilitiesMask11;
-			}
-			if (version >= JVMTI_VERSION_9_0) {
-				j9env->capabilitiesMask = capabilitiesMask90;
-			}
-
 			if ((j9env->vmHook.agentID = (*vmHook)->J9HookAllocateAgentID(vmHook)) == 0) {
 				goto fail;
 			}
@@ -451,8 +337,8 @@ allocateEnvironment(J9InvocationJavaVM * invocationJavaVM, jint version, void **
 			if (j9env->objectTagTable == NULL) {
 				goto fail;
 			}
-			j9env->watchedFieldPool = pool_new(sizeof(J9JVMTIWatchedField), 0, 0, POOL_ALWAYS_KEEP_SORTED, J9_GET_CALLSITE(), J9MEM_CATEGORY_JVMTI, POOL_FOR_PORT(vm->portLibrary));
-			if (j9env->watchedFieldPool == NULL) {
+			j9env->watchedClasses = hashTableNew(OMRPORT_FROM_J9PORT(vm->portLibrary), J9_GET_CALLSITE(), 0, sizeof(J9JVMTIWatchedClass), sizeof(UDATA), 0,  J9MEM_CATEGORY_JVMTI, watchedClassHash, watchedClassEqual, NULL, NULL);
+			if (j9env->watchedClasses == NULL) {
 				goto fail;
 			}
 			j9env->breakpoints = pool_new(sizeof(J9JVMTIAgentBreakpoint), 0, 0, POOL_ALWAYS_KEEP_SORTED, J9_GET_CALLSITE(), J9MEM_CATEGORY_JVMTI, POOL_FOR_PORT(vm->portLibrary));
@@ -505,7 +391,7 @@ fail:
 
 		omrthread_monitor_exit(jvmtiData->mutex);
 		vm->internalVMFunctions->releaseExclusiveVMAccess(currentThread);
-		vm->internalVMFunctions->internalReleaseVMAccess(currentThread);
+		vm->internalVMFunctions->internalExitVMToJNI(currentThread);
 	}
 
 	return rc;
@@ -594,7 +480,7 @@ javaOffloadSwitchOff(J9JVMTIEnv * j9env, J9VMThread * currentThread, UDATA event
 	vm = currentThread->javaVM;
 
 	/* There are two cases for zAAP switching:
-	 * 1) The agent libary (most likely created by customer) calls GetEnv() at any time when required 
+	 * 1) The agent library (most likely created by customer) calls GetEnv() at any time when required 
 	 *    but doesn't need to call GetEnv() in Agent_OnLoad. Thus, it may be possible for j9env->library 
 	 *    to be NULL if JVMTI is used directly by the VM.
 	 * 2) The flag in J9NativeLibrary->doSwitching requires it to do zAAP switching.
@@ -705,7 +591,9 @@ finishedEvent(J9VMThread * currentThread, UDATA eventNumber, UDATA hadVMAccess, 
 	/* Acquire VM access if the current thread does not already have it */
 
 #if defined(J9VM_INTERP_ATOMIC_FREE_JNI)
-	currentThread->javaVM->internalVMFunctions->internalEnterVMFromJNI(currentThread);
+	if (currentThread->inNative) {
+		currentThread->javaVM->internalVMFunctions->internalEnterVMFromJNI(currentThread);
+	}
 #else /* J9VM_INTERP_ATOMIC_FREE_JNI */
 	if (!(currentThread->publicFlags & J9_PUBLIC_FLAGS_VM_ACCESS)) {
 		currentThread->javaVM->internalVMFunctions->internalAcquireVMAccess(currentThread);
@@ -777,11 +665,17 @@ getThreadState(J9VMThread *currentThread, j9object_t threadObject)
 		if (vmstate & J9VMTHREAD_STATE_INTERRUPTED) {
 			state |= JVMTI_THREAD_STATE_INTERRUPTED;
 		}
+#if defined(J9VM_INTERP_ATOMIC_FREE_JNI)
+		if (vmThread->inNative) {
+			state |= JVMTI_THREAD_STATE_IN_NATIVE;
+		}
+#else /* J9VM_INTERP_ATOMIC_FREE_JNI */
 		if ( (vmThread->omrVMThread->vmState & J9VMSTATE_MAJOR) == J9VMSTATE_JNI ) {
 			if (!(vmThread->publicFlags & J9_PUBLIC_FLAGS_VM_ACCESS)) {
 				state |= JVMTI_THREAD_STATE_IN_NATIVE;
 			}
 		}
+#endif /* J9VM_INTERP_ATOMIC_FREE_JNI */
 		if (vmstate & J9VMTHREAD_STATE_BLOCKED) {
 			state |= JVMTI_THREAD_STATE_BLOCKED_ON_MONITOR_ENTER;
 		/* Object.wait() */
@@ -898,6 +792,20 @@ static UDATA
 hashEqualObjectTag(void *lhsEntry, void *rhsEntry, void *userData) 
 {
 	return (((J9JVMTIObjectTag *) lhsEntry)->ref == ((J9JVMTIObjectTag *) rhsEntry)->ref);
+}
+
+
+static UDATA
+watchedClassHash(void *entry, void *userData) 
+{
+	return ((UDATA) ((J9JVMTIWatchedClass *) entry)->clazz) / J9_REQUIRED_CLASS_ALIGNMENT;
+}
+
+
+static UDATA
+watchedClassEqual(void *lhsEntry, void *rhsEntry, void *userData) 
+{
+	return (((J9JVMTIWatchedClass *) lhsEntry)->clazz == ((J9JVMTIWatchedClass *) rhsEntry)->clazz);
 }
 
 
@@ -1077,8 +985,8 @@ createBreakpointedMethod(J9VMThread * currentThread, J9Method * ramMethod)
 	UDATA methodSize;
 	UDATA delta;
 	J9ExceptionInfo * originalExceptionInfo = NULL;
-	J9SRP * originalThrowNames = NULL;
 #ifdef J9VM_ENV_DATA64
+	J9SRP * originalThrowNames = NULL;
 	J9UTF8 * methodName;
 	J9UTF8 * methodSignature;
 	J9UTF8 * genericSignature;
@@ -1108,7 +1016,9 @@ createBreakpointedMethod(J9VMThread * currentThread, J9Method * ramMethod)
 
 	if (J9ROMMETHOD_HAS_EXCEPTION_INFO(originalROMMethod)) {
 		originalExceptionInfo = J9_EXCEPTION_DATA_FROM_ROM_METHOD(originalROMMethod);
+#ifdef J9VM_ENV_DATA64
 		originalThrowNames = J9EXCEPTIONINFO_THROWNAMES(originalExceptionInfo);
+#endif
 	}
 
 	/* Copy ROM method */
@@ -1118,10 +1028,10 @@ createBreakpointedMethod(J9VMThread * currentThread, J9Method * ramMethod)
 #ifdef J9VM_ENV_DATA64
 	/* Account for the space taken by the name and signature UTF8s */
 
-	methodName = J9ROMMETHOD_GET_NAME(UNTAGGED_METHOD_CP(ramMethod)->ramClass->romClass, originalROMMethod);
+	methodName = J9ROMMETHOD_NAME(originalROMMethod);
 	/* allocSize guaranteed to be 4-aligned at this point, so no need to align for UTF */
 	allocSize += ((sizeof(U_16) + J9UTF8_LENGTH(methodName) + 1) & ~1);
-	methodSignature = J9ROMMETHOD_GET_SIGNATURE(UNTAGGED_METHOD_CP(ramMethod)->ramClass->romClass, originalROMMethod);
+	methodSignature = J9ROMMETHOD_SIGNATURE(originalROMMethod);
 	allocSize += ((sizeof(U_16) + J9UTF8_LENGTH(methodSignature) + 1) & ~1);
 	genericSignature = J9_GENERIC_SIGNATURE_FROM_ROM_METHOD(originalROMMethod);
 	if (genericSignature != NULL) {
@@ -1664,4 +1574,26 @@ findDecompileInfo(J9VMThread *currentThread, J9VMThread *targetThread, UDATA dep
 	walkState->frameWalkFunction = findDecompileInfoFrameIterator;
 	currentThread->javaVM->walkStackFrames(currentThread, walkState);
 	return (UDATA)walkState->userData1;
+}
+
+void
+ensureHeapWalkable(J9VMThread *currentThread)
+{
+	J9JavaVM *vm = currentThread->javaVM;
+	/* Must be called while holding exclusive */
+	Assert_JVMTI_true(currentThread->omrVMThread->exclusiveCount > 0);
+	/* If heap walk is already enabled, nothing need be done */
+	if (J9_ARE_NO_BITS_SET(vm->requiredDebugAttributes, J9VM_DEBUG_ATTRIBUTE_ALLOW_USER_HEAP_WALK)) {
+		J9MemoryManagerFunctions const * const mmFuncs = vm->memoryManagerFunctions;
+		vm->requiredDebugAttributes |= J9VM_DEBUG_ATTRIBUTE_ALLOW_USER_HEAP_WALK;
+		/* J9MMCONSTANT_EXPLICIT_GC_RASDUMP_COMPACT allows the GC to run while the current thread is holding
+		 * exclusive VM access.
+		 */
+		mmFuncs->j9gc_modron_global_collect_with_overrides(currentThread, J9MMCONSTANT_EXPLICIT_GC_RASDUMP_COMPACT);
+		if (J9_GC_POLICY_METRONOME == vm->gcPolicy) {
+			/* In metronome, the previous GC call may have only finished the current cycle.
+			 * Call again to ensure a full GC takes place.					 */
+			mmFuncs->j9gc_modron_global_collect_with_overrides(currentThread, J9MMCONSTANT_EXPLICIT_GC_RASDUMP_COMPACT);
+		}
+	}
 }

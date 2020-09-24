@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar18-SE]*/
 /*******************************************************************************
- * Copyright (c) 2000, 2018 IBM Corp. and others
+ * Copyright (c) 2000, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -220,7 +220,7 @@ final public class TraceFormat
 				"  ThreadID         TP id  Type         TraceEntry ");
 		expectedRecords = 0;
 
-		// initialise statics in other classes
+		// initialize statics in other classes
 		Util.initStatics();
 		TraceArgs.initStatics();
 		TraceRecord.initStatics();
@@ -449,6 +449,16 @@ final public class TraceFormat
 		}
 		
 		/*
+		 * Now load OMRTraceFormat.dat if available.
+		 */
+		String omrFormatFilePath = findDatFile(dirsToSearch, "OMRTraceFormat.dat");
+
+		if (omrFormatFilePath != null) {
+			/* we found a suitable dat file */
+			tryMessageFileInstantiation(omrFormatFilePath);
+		}
+
+		/*
 		 * Also load TraceFormat.dat as it contains the trace points for the class libraries.
 		 */
 		String filePath = findDatFile(dirsToSearch, "TraceFormat.dat");
@@ -489,7 +499,7 @@ final public class TraceFormat
 
 	private void prime() throws IOException
 	{
-		/* reinitialise class variables to allow reuse */
+		/* reinitialize class variables to allow reuse */
 		globalNumberOfBuffers = 0;
 		tempThreadArray = null;
 		tracedThreads = null;
@@ -529,7 +539,7 @@ final public class TraceFormat
 			}
 			if (((fileLength - dataStart) % bufferSize) != 0) {
 				outStream
-						.println("*** TraceFile is truncated, or corrupted, will ignore some incomplete data at the end, but process everything that is avaiable");
+						.println("*** TraceFile is truncated, or corrupted, will ignore some incomplete data at the end, but process everything that is available");
 				traceFileIsTruncatedOrCorrupt = true;
 			}
 			if (numberOfBuffers == 0) {
@@ -555,7 +565,7 @@ final public class TraceFormat
 				 */
 				traceRecord.processTraceBufferHeader(traceFile, (long)dataStart + (long)j * (long)bufferSize, bufferSize);
 
-				Long threadID = new Long(traceRecord.getThreadIDAsLong());
+				Long threadID = Long.valueOf(traceRecord.getThreadIDAsLong());
 				if (listOfThreadBuffers.containsKey(threadID)) {
 					TraceThread buffersForThread = (TraceThread) listOfThreadBuffers
 							.get(threadID);
@@ -676,7 +686,7 @@ final public class TraceFormat
 			tracePointsFormatted++;
 
 			threadID = tp.getThreadID();
-			if (Util.findThreadID(new Long(threadID))) {
+			if (Util.findThreadID(Long.valueOf(threadID))) {
 				String formattedTime = tp.getFormattedTime();
 				tempTPString.append(formattedTime);
 

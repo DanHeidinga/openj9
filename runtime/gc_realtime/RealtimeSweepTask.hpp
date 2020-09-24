@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -24,13 +23,12 @@
 #if !defined(REALTIMESWEEPTASK_HPP_)
 #define REALTIMESWEEPTASK_HPP_
 
-#include "j9.h"
-#include "j9cfg.h"
-#include "j9modron.h"
+#include "omr.h"
+#include "omrcfg.h"
 
 #include "IncrementalParallelTask.hpp"
 
-class MM_Dispatcher;
+class MM_ParallelDispatcher;
 class MM_EnvironmentBase;
 class MM_SweepSchemeRealtime;
 
@@ -47,13 +45,13 @@ private:
 
 /* Methods */
 public:
-	virtual UDATA getVMStateID() { return J9VMSTATE_GC_SWEEP; };
+	virtual UDATA getVMStateID() { return OMRVMSTATE_GC_SWEEP; };
 	
 	virtual void run(MM_EnvironmentBase *env);
 	virtual void setup(MM_EnvironmentBase *env);
 	virtual void cleanup(MM_EnvironmentBase *env);
 	
-	MM_RealtimeSweepTask(MM_EnvironmentBase *env, MM_Dispatcher *dispatcher, MM_SweepSchemeRealtime *sweepScheme) :
+	MM_RealtimeSweepTask(MM_EnvironmentBase *env, MM_ParallelDispatcher *dispatcher, MM_SweepSchemeRealtime *sweepScheme) :
 		MM_IncrementalParallelTask(env, dispatcher),
 		_sweepScheme(sweepScheme)
 	{

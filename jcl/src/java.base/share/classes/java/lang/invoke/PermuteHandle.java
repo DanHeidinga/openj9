@@ -1,6 +1,6 @@
-/*[INCLUDE-IF Sidecar17]*/
+/*[INCLUDE-IF Sidecar17 & !OPENJDK_METHODHANDLES]*/
 /*******************************************************************************
- * Copyright (c) 2011, 2011 IBM Corp. and others
+ * Copyright (c) 2011, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -21,6 +21,10 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
 package java.lang.invoke;
+
+/*[IF Java15]*/
+import java.util.List;
+/*[ENDIF] Java15 */
 
 final class PermuteHandle extends MethodHandle {
 	@VMCONSTANTPOOL_FIELD
@@ -47,12 +51,29 @@ final class PermuteHandle extends MethodHandle {
 	 */
 	@Override
 	MethodHandle permuteArguments(MethodType permuteType, int... permute2) {
+		if (isUnnecessaryPermute(permuteType, permute2)) {
+			return this;
+		}
+
 		int[] combinedPermute = new int[permute.length];
 		for (int i = 0; i < permute.length; i++) {
 			combinedPermute[i] = permute2[permute[i]];
 		}
+
+		if (next.isUnnecessaryPermute(permuteType, combinedPermute)) {
+			return next;
+		}
+
 		return new PermuteHandle(permuteType, next, combinedPermute);
 	}
+
+/*[IF Java15]*/
+	@Override
+	boolean addRelatedMHs(List<MethodHandle> relatedMHs) {
+		relatedMHs.add(next);
+		return true;
+	}
+/*[ENDIF] Java15 */
 
 	// {{{ JIT support
 

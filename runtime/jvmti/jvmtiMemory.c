@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -29,7 +29,7 @@ jvmtiAllocate(jvmtiEnv* env,
 	jlong size,
 	unsigned char** mem_ptr)
 {
-	void * allocatedMemory = NULL;
+	unsigned char *rv_mem = NULL;
 	jvmtiError rc;
 
 	Trc_JVMTI_jvmtiAllocate_Entry(env, mem_ptr);
@@ -46,17 +46,19 @@ jvmtiAllocate(jvmtiEnv* env,
 	if (size != 0) {
 		PORT_ACCESS_FROM_JVMTI(env);
 
-		allocatedMemory = j9mem_allocate_memory((UDATA) size, J9MEM_CATEGORY_JVMTI_ALLOCATE);
-		if (allocatedMemory == NULL) {
+		rv_mem = j9mem_allocate_memory((UDATA) size, J9MEM_CATEGORY_JVMTI_ALLOCATE);
+		if (rv_mem == NULL) {
 			JVMTI_ERROR(JVMTI_ERROR_OUT_OF_MEMORY);
 		}
 	}
 
-	*mem_ptr = (unsigned char *) allocatedMemory;
 	rc = JVMTI_ERROR_NONE;
-
 done:
-	Trc_JVMTI_jvmtiAllocate_Exit(rc, allocatedMemory);
+
+	if (NULL != mem_ptr) {
+		*mem_ptr = rv_mem;
+	}
+	Trc_JVMTI_jvmtiAllocate_Exit(rc, rv_mem);
 	return rc;
 }
 
@@ -78,4 +80,24 @@ jvmtiDeallocate(jvmtiEnv* env,
 	TRACE_JVMTI_RETURN(jvmtiDeallocate);
 }
 
+#if JAVA_SPEC_VERSION >= 11
+jvmtiError JNICALL 
+jvmtiSetHeapSamplingInterval(jvmtiEnv *env, 
+	jint samplingInterval)
+{
+	jvmtiError rc = JVMTI_ERROR_NONE;
+	J9JavaVM *vm = JAVAVM_FROM_ENV(env);
+	
+	Trc_JVMTI_jvmtiSetHeapSamplingInterval_Entry(env, samplingInterval);
+	
+	ENSURE_PHASE_ONLOAD_OR_LIVE(env);
+	ENSURE_CAPABILITY(env, can_generate_sampled_object_alloc_events);
+	ENSURE_NON_NEGATIVE(samplingInterval);
 
+	/* No negative samplingInterval, and there is no data lost when jint is casted to UDATA. */
+	vm->memoryManagerFunctions->j9gc_set_allocation_sampling_interval(vm, samplingInterval);
+
+done:
+	TRACE_JVMTI_RETURN(jvmtiSetHeapSamplingInterval);
+}
+#endif /* JAVA_SPEC_VERSION >= 11 */

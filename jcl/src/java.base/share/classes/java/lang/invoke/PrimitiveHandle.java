@@ -1,6 +1,6 @@
-/*[INCLUDE-IF Sidecar17]*/
+/*[INCLUDE-IF Sidecar17 & !OPENJDK_METHODHANDLES]*/
 /*******************************************************************************
- * Copyright (c) 2010, 2017 IBM Corp. and others
+ * Copyright (c) 2010, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -26,8 +26,13 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+
 import com.ibm.oti.vm.VM;
 import com.ibm.jit.JITHelpers;
+
+/*[IF Java15]*/
+import java.util.List;
+/*[ENDIF] Java15 */
 
 /**
  * PrimitiveHandle is a subclass of MethodHandle used for grouping MethodHandles that directly refer a Java-level method. 
@@ -192,9 +197,18 @@ abstract class PrimitiveHandle extends MethodHandle {
 			String signature = oldType.toMethodDescriptorString();
 			return lookupMethod(referenceClass, name, signature, kind, specialToken);
 		} catch (NoSuchMethodError e) {
-			throw new NoSuchMethodException(e.getMessage());
+			NoSuchMethodException eWrapper = new NoSuchMethodException();
+			eWrapper.initCause(e);
+			throw eWrapper;
 		} catch (IncompatibleClassChangeError e) {
 			throw new IllegalAccessException(e.getMessage());
 		}
 	}
+	
+/*[IF Java15]*/
+	@Override
+	boolean addRelatedMHs(List<MethodHandle> relatedMHs) {
+		return false;
+	}
+/*[ENDIF] Java15 */
 }

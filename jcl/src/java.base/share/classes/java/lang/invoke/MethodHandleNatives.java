@@ -1,7 +1,7 @@
-/*[INCLUDE-IF Sidecar18-SE-OpenJ9]*/
+/*[INCLUDE-IF Sidecar18-SE-OpenJ9 & !OPENJDK_METHODHANDLES]*/
 
 /*******************************************************************************
- * Copyright (c) 2017, 2018 IBM Corp. and others
+ * Copyright (c) 2017, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -22,18 +22,72 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
 /*[IF Java11]*/
-
 package java.lang.invoke;
 
-/*
- * Stub class for compilation
- */
+/*[IF Java15]*/
+import jdk.internal.access.JavaLangAccess;
+import jdk.internal.access.SharedSecrets;
+/*[ENDIF] Java15 */
 
 class MethodHandleNatives {
-
 	static LinkageError mapLookupExceptionToError(ReflectiveOperationException roe) {
+		String exMsg = roe.getMessage();
+		LinkageError linkageErr;
+		if (roe instanceof IllegalAccessException) {
+			linkageErr = new IllegalAccessError(exMsg);
+		} else if (roe instanceof NoSuchFieldException) {
+			linkageErr = new NoSuchFieldError(exMsg);
+		} else if (roe instanceof NoSuchMethodException) {
+			linkageErr = new NoSuchMethodError(exMsg);
+		} else {
+			linkageErr = new IncompatibleClassChangeError(exMsg);
+		}
+		Throwable th = roe.getCause();
+		linkageErr.initCause(th == null ? roe : th);
+		return linkageErr;
+	}
+
+	/*[IF Java14]*/
+	static long objectFieldOffset(MemberName memberName) {
 		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
 	}
-}
 
-/*[ENDIF]*/
+	static long staticFieldOffset(MemberName memberName) {
+		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
+	}
+
+	static Object staticFieldBase(MemberName memberName) {
+		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
+	}
+	/*[ENDIF] Java14 */
+	
+	/*[IF Java15]*/
+	static boolean refKindIsMethod(byte kind) {
+		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
+	}
+	
+	static boolean refKindIsField(byte kind) {
+		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
+	}
+	
+	static boolean refKindIsConstructor(byte kind) {
+		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
+	}
+	
+	private static final JavaLangAccess JLA = SharedSecrets.getJavaLangAccess();
+
+	/**
+	 * Returns the classData stored in the class.
+	 * 
+	 * @param the class from where to retrieve the classData.
+	 * 
+	 * @return the classData (Object).
+	 */
+	static Object classData(Class<?> c) {
+		return JLA.classData(c);
+	}
+
+	native static void checkClassBytes(byte[] bytes);
+	/*[ENDIF] Java15 */
+}
+/*[ENDIF] Java11 */

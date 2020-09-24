@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2000, 2017 IBM Corp. and others
+# Copyright (c) 2000, 2020 IBM Corp. and others
 #
 # This program and the accompanying materials are made available under
 # the terms of the Eclipse Public License 2.0 which accompanies this
@@ -31,7 +31,7 @@
 # Note to translators:
 #
 # This file uses printf style substitutions. Sequences such as %s, %.*s, %10d
-# etc. will be subsituted at runtime. The special case of %% is not a substitution.
+# etc. will be substituted at runtime. The special case of %% is not a substitution.
 # It indicates a single percent sign. Please do not modify the format specifiers, or
 # change their order. For instance, in a message like "from %d to %s", %d
 # MUST appear before %s in any translated message, or a run-time crash
@@ -244,7 +244,7 @@ J9NLS_JNICHK_FATAL_ERROR_ADVICE.user_response=As required, add the -Xcheck:jni:n
 # END NON-TRANSLATABLE
 
 # JNI, JNIEnv, -Xcheck:jni:nonfatal and JVM are not translatable
-J9NLS_JNICHK_INVALID_ENV=JNI hiba a(z) %s belsej\u00e9ben: a JNIEnv nem t\u0171nik \u00e9rv\u00e9nyes sz\u00e1lnak, a mem\u00f3ria s\u00e9r\u00fclt, vagy ez nem egy J9 virtu\u00e1lis g\u00e9p
+J9NLS_JNICHK_INVALID_ENV=A(z) %s JNI hib\u00e1t tartalmaz: a JNIEnv nem t\u0171nik \u00e9rv\u00e9nyes sz\u00e1lnak, a mem\u00f3ria s\u00e9r\u00fclt, vagy ez nem egy J9 virtu\u00e1lis g\u00e9p
 # START NON-TRANSLATABLE
 J9NLS_JNICHK_INVALID_ENV.sample_input_1=methodName
 J9NLS_JNICHK_INVALID_ENV.explanation=Validation of the JNIEnv passed on the named JNI function has failed.
@@ -253,7 +253,7 @@ J9NLS_JNICHK_INVALID_ENV.user_response=Check that the JNIEnv pointer passed in t
 # END NON-TRANSLATABLE
 
 # JNI, JNIEnv, -Xcheck:jni:nonfatal and JVM are not translatable
-J9NLS_JNICHK_WRONG_ENV=JNI hiba a(z) %s belsej\u00e9ben: a JNIEnv nem az akt\u00edv sz\u00e1l JNIEnv strukt\u00far\u00e1ja
+J9NLS_JNICHK_WRONG_ENV=A(z) %s JNI hib\u00e1t tartalmaz: a JNIEnv nem az akt\u00edv sz\u00e1l JNIEnv strukt\u00far\u00e1ja
 # START NON-TRANSLATABLE
 J9NLS_JNICHK_WRONG_ENV.sample_input_1=methodName
 J9NLS_JNICHK_WRONG_ENV.explanation=Validation of the JNIEnv passed on the named JNI function has failed.
@@ -262,7 +262,7 @@ J9NLS_JNICHK_WRONG_ENV.user_response=Check that the JNIEnv pointer passed in the
 # END NON-TRANSLATABLE
 
 # JNI, -Xcheck:jni:nonfatal and JVM are not translatable
-J9NLS_JNICHK_PENDING_EXCEPTION=JNI hiba %s belsej\u00e9ben: Ez a f\u00fcggv\u00e9ny nem h\u00edvhat\u00f3 meg f\u00fcgg\u0151ben l\u00e9v\u0151 kiv\u00e9tel k\u00f6zben
+J9NLS_JNICHK_PENDING_EXCEPTION=A(z) %s JNI hib\u00e1t tartalmaz: Ez a f\u00fcggv\u00e9ny nem h\u00edvhat\u00f3 meg f\u00fcgg\u0151ben l\u00e9v\u0151 kiv\u00e9tel k\u00f6zben
 # START NON-TRANSLATABLE
 J9NLS_JNICHK_PENDING_EXCEPTION.sample_input_1=methodName
 J9NLS_JNICHK_PENDING_EXCEPTION.explanation=The named JNI function has been called when there is an exception pending.
@@ -271,7 +271,7 @@ J9NLS_JNICHK_PENDING_EXCEPTION.user_response=Correct the JNI application code to
 # END NON-TRANSLATABLE
 
 # JNI, -Xcheck:jni:nonfatal and JVM are not translatable
-J9NLS_JNICHK_CRITICAL_UNSAFE_ERROR=JNI hiba %s belsej\u00e9ben: Ez a f\u00fcggv\u00e9ny nem h\u00edvhat\u00f3 meg kritikus szakaszban
+J9NLS_JNICHK_CRITICAL_UNSAFE_ERROR=A(z) %s JNI hib\u00e1t tartalmaz: Ez a f\u00fcggv\u00e9ny nem h\u00edvhat\u00f3 meg kritikus szakaszban
 # START NON-TRANSLATABLE
 J9NLS_JNICHK_CRITICAL_UNSAFE_ERROR.sample_input_1=methodName
 J9NLS_JNICHK_CRITICAL_UNSAFE_ERROR.explanation=The named JNI function has been called within a JNI critical section.
@@ -996,11 +996,27 @@ J9NLS_JNICHK_NON_ARRAY_REQUIRED.system_action=If -Xcheck:jni:nonfatal has been s
 J9NLS_JNICHK_NON_ARRAY_REQUIRED.user_response=Check and correct the JNI application code.
 # END NON-TRANSLATABLE
 
-J9NLS_JNICHK_NON_PACKED_API_USED_FOR_PACKED_OBJECTS=JNI tan\u00e1cs %1$s belsej\u00e9ben: Ez a funkci\u00f3 nem haszn\u00e1lhat\u00f3 t\u00f6m\u00f6r\u00edtett objektumokn\u00e1l. Haszn\u00e1lja helyette a k\u00f6vetkez\u0151t: %2$s
+J9NLS_JNICHK_NON_PACKED_API_USED_FOR_PACKED_OBJECTS=JNI tan\u00e1cs a k\u00f6vetkez\u0151ben: %1$s: Ez a f\u00fcggv\u00e9ny csomagolt objektumokkal nem haszn\u00e1lhat\u00f3. Haszn\u00e1lja helyette a k\u00f6vetkez\u0151t: %2$s
 # START NON-TRANSLATABLE
 J9NLS_JNICHK_NON_PACKED_API_USED_FOR_PACKED_OBJECTS.sample_input_1=GetPrimitiveArrayCritical
 J9NLS_JNICHK_NON_PACKED_API_USED_FOR_PACKED_OBJECTS.sample_input_2=GetPackedArrayElements
 J9NLS_JNICHK_NON_PACKED_API_USED_FOR_PACKED_OBJECTS.explanation=wrong api used.
 J9NLS_JNICHK_NON_PACKED_API_USED_FOR_PACKED_OBJECTS.system_action=JVM continues
 J9NLS_JNICHK_NON_PACKED_API_USED_FOR_PACKED_OBJECTS.user_response=Check and correct the JNI application code.
+# END NON-TRANSLATABLE
+
+J9NLS_JNICHK_NON_STATIC_FIELDID_PASSED=JNI hiba a(z) %1$s belsej\u00e9ben: a(z) #%2$d argumentum az elv\u00e1r\u00e1s szerint statikus, de a JNI nem statikus mez\u0151t kapott
+# START NON-TRANSLATABLE
+J9NLS_JNICHK_NON_STATIC_FIELDID_PASSED.sample_input_1=methodName
+J9NLS_JNICHK_NON_STATIC_FIELDID_PASSED.explanation=Validation of the field ID passed on the named JNI function has failed.
+J9NLS_JNICHK_NON_STATIC_FIELDID_PASSED.system_action=If -Xcheck:jni:nonfatal has been specified, the JVM continues, otherwise it terminates.
+J9NLS_JNICHK_NON_STATIC_FIELDID_PASSED.user_response=Check that the field ID passed in the function is correct.
+# END NON-TRANSLATABLE
+
+J9NLS_JNICHK_STATIC_FIELDID_PASSED=JNI hiba a(z) %1$s belsej\u00e9ben: a(z) #%2$d argumentum az elv\u00e1r\u00e1s szerint nem statikus, de a JNI statikus mez\u0151t kapott
+# START NON-TRANSLATABLE
+J9NLS_JNICHK_STATIC_FIELDID_PASSED.sample_input_1=methodName
+J9NLS_JNICHK_STATIC_FIELDID_PASSED.explanation=Validation of the field ID passed on the named JNI function has failed.
+J9NLS_JNICHK_STATIC_FIELDID_PASSED.system_action=If -Xcheck:jni:nonfatal has been specified, the JVM continues, otherwise it terminates.
+J9NLS_JNICHK_STATIC_FIELDID_PASSED.user_response=Check that the field ID passed in the function is correct.
 # END NON-TRANSLATABLE

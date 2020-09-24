@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar19-SE]*/
 /*******************************************************************************
- * Copyright (c) 2016, 2017 IBM Corp. and others
+ * Copyright (c) 2016, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -20,13 +20,18 @@
  *
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
-module openj9.dtfjview {
-	requires openj9.dtfj;
-	requires java.logging;
 
-	exports com.ibm.jvm.dtfjview.commands to openj9.dtfj;
-	exports com.ibm.jvm.dtfjview.commands.infocommands to openj9.dtfj;
-	exports com.ibm.jvm.dtfjview.commands.setcommands to openj9.dtfj;
-	exports com.ibm.jvm.dtfjview.commands.showcommands to openj9.dtfj;
-	exports com.ibm.jvm.dtfjview.commands.xcommands to openj9.dtfj;
+/** 
+ * Defines the jdmpview tool for reading system core and java core diagnostic files.
+ */
+@SuppressWarnings("module")
+module openj9.dtfjview {
+  requires openj9.dtfj;
+  requires java.logging;
+
+  exports com.ibm.jvm.dtfjview.commands to openj9.dtfj;
+  exports com.ibm.jvm.dtfjview.commands.infocommands to openj9.dtfj;
+  exports com.ibm.jvm.dtfjview.commands.setcommands to openj9.dtfj;
+  exports com.ibm.jvm.dtfjview.commands.showcommands to openj9.dtfj;
+  exports com.ibm.jvm.dtfjview.commands.xcommands to openj9.dtfj;
 }

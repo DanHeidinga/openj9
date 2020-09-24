@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2017 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -74,6 +74,8 @@
 #define READWRITEAREASTART(ca) (((BlockPtr)(ca)) + sizeof(J9SharedCacheHeader))
 
 #define FREEBYTES(ca) ((ca)->updateSRP - (ca)->segmentSRP)
+#define METADATASECTIONBYTES(ca) ((ca)->totalBytes - (ca)->debugRegionSize - (ca)->updateSRP)
+#define CLASSSECTIONBYTES(ca) ((ca)->segmentSRP - (ca)->readWriteBytes)
 #define FREEREADWRITEBYTES(ca) ((ca)->readWriteBytes - (U_32)(ca)->readWriteSRP)
 
 #define CC_TRACE(verboseLevel, nlsFlags, var1) if (_verboseFlags & verboseLevel) j9nls_printf(PORTLIB, nlsFlags, var1)
@@ -176,12 +178,12 @@ SH_CompositeCacheImpl::SH_SharedCacheHeaderInit::init(BlockPtr data, U_32 len, I
  * @return A pointer to the new instance
  */
 SH_CompositeCacheImpl*
-SH_CompositeCacheImpl::newInstance(J9JavaVM* vm, J9SharedClassConfig* sharedClassConfig, SH_CompositeCacheImpl* memForConstructor, const char* cacheName, I_32 cacheTypeRequired, bool startupForStats)
+SH_CompositeCacheImpl::newInstance(J9JavaVM* vm, J9SharedClassConfig* sharedClassConfig, SH_CompositeCacheImpl* memForConstructor, const char* cacheName, I_32 cacheTypeRequired, bool startupForStats, I_8 layer)
 {
 	SH_CompositeCacheImpl* newCC = (SH_CompositeCacheImpl*)memForConstructor;
 
 	new(newCC) SH_CompositeCacheImpl();
-	newCC->initializeWithCommonInfo(vm, sharedClassConfig, ((BlockPtr)memForConstructor + sizeof(SH_CompositeCacheImpl)), cacheName, cacheTypeRequired, startupForStats);
+	newCC->initializeWithCommonInfo(vm, sharedClassConfig, ((BlockPtr)memForConstructor + sizeof(SH_CompositeCacheImpl)), cacheName, cacheTypeRequired, startupForStats, layer);
 
 	return newCC;
 }
@@ -256,6 +258,7 @@ SH_CompositeCacheImpl::commonInit(J9JavaVM* vm)
 	_metadataSegmentPtr = NULL;
 	_currentROMSegment = NULL;
 	_next = NULL;
+	_previous = NULL;
 	_ccHead = NULL;
 	_cacheFullFlags = 0;
 #if defined(J9SHR_CACHELET_SUPPORT)
@@ -264,6 +267,10 @@ SH_CompositeCacheImpl::commonInit(J9JavaVM* vm)
 	_doMetaProtect = _doSegmentProtect = _doHeaderProtect = _doHeaderReadWriteProtect = _doReadWriteSync = _doPartialPagesProtect = false;
 	_useWriteHash = false;
 	_reduceStoreContentionDisabled = false;
+	_initializingNewCache = false;
+	_minimumAccessedShrCacheMetadata = 0;
+	_maximumAccessedShrCacheMetadata = 0;
+	_layer = 0;
 }
 
 #if defined(J9SHR_CACHELET_SUPPORT)
@@ -305,7 +312,7 @@ SH_CompositeCacheImpl::getFreeBlockBytes(void)
 	I_32 minJIT = _theca->minJIT;
 	I_32 aotBytes = (I_32)_theca->aotBytes;
 	I_32 jitBytes = (I_32)_theca->jitBytes;
-    I_32 freeBytes = (I_32) FREEBYTES(_theca);
+	I_32 freeBytes = (I_32) FREEBYTES(_theca);
 
 
 	if (((-1 == minAOT) && (-1 == minJIT)) ||
@@ -345,7 +352,7 @@ SH_CompositeCacheImpl::getFreeBlockBytes(void)
 }
 
 void
-SH_CompositeCacheImpl::initializeWithCommonInfo(J9JavaVM* vm, J9SharedClassConfig* sharedClassConfig, BlockPtr memForConstructor, const char* cacheName, I_32 cacheTypeRequired, bool startupForStats)
+SH_CompositeCacheImpl::initializeWithCommonInfo(J9JavaVM* vm, J9SharedClassConfig* sharedClassConfig, BlockPtr memForConstructor, const char* cacheName, I_32 cacheTypeRequired, bool startupForStats, I_8 layer)
 {
 	const char * ctrlDirName = NULL;
 	BlockPtr memToUse = (BlockPtr)memForConstructor;
@@ -355,23 +362,23 @@ SH_CompositeCacheImpl::initializeWithCommonInfo(J9JavaVM* vm, J9SharedClassConfi
 		ctrlDirName = sharedClassConfig->ctrlDirName;
 	}
 
-	Trc_SHR_CC_initializeWithCommonInfo_Entry1(memForConstructor, ctrlDirName, cacheName, cacheTypeRequired);
+	Trc_SHR_CC_initializeWithCommonInfo_Entry2(memForConstructor, ctrlDirName, cacheName, cacheTypeRequired, layer);
 
 	_commonCCInfo = (J9ShrCompositeCacheCommonInfo *)memToUse;
 	initCommonCCInfoHelper();
 
 	memToUse += sizeof(J9ShrCompositeCacheCommonInfo);
-	initialize(vm, memToUse, sharedClassConfig, cacheName, cacheTypeRequired, startupForStats);
+	initialize(vm, memToUse, sharedClassConfig, cacheName, cacheTypeRequired, startupForStats, layer);
 
 	Trc_SHR_CC_initializeWithCommonInfo_Exit();
 }
 
 void
-SH_CompositeCacheImpl::initialize(J9JavaVM* vm, BlockPtr memForConstructor, J9SharedClassConfig* sharedClassConfig, const char* cacheName, I_32 cacheTypeRequired, bool startupForStats)
+SH_CompositeCacheImpl::initialize(J9JavaVM* vm, BlockPtr memForConstructor, J9SharedClassConfig* sharedClassConfig, const char* cacheName, I_32 cacheTypeRequired, bool startupForStats, I_8 layer)
 {
 	J9PortShcVersion versionData;
 
-	Trc_SHR_CC_initialize_Entry1(memForConstructor, sharedClassConfig, cacheName, cacheTypeRequired, UnitTest::unitTest);
+	Trc_SHR_CC_initialize_Entry2(memForConstructor, sharedClassConfig, cacheName, cacheTypeRequired, layer, UnitTest::unitTest);
 
 	commonInit(vm);
 	setCurrentCacheVersion(vm, J2SE_VERSION(vm), &versionData);
@@ -398,9 +405,9 @@ SH_CompositeCacheImpl::initialize(J9JavaVM* vm, BlockPtr memForConstructor, J9Sh
 		_osPageSize = 0;
 	} else {
 		if ((sharedClassConfig->runtimeFlags & J9SHR_RUNTIMEFLAG_CREATE_OLD_GEN) != 0) {
-			_oscache = SH_OSCache::newInstance(_portlib, (SH_OSCache*)memForConstructor, cacheName, SH_OSCache::getCurrentCacheGen()-1, &versionData);
+			_oscache = SH_OSCache::newInstance(_portlib, (SH_OSCache*)memForConstructor, cacheName, SH_OSCache::getCurrentCacheGen()-1, &versionData, layer);
 		} else {
-			_oscache = SH_OSCache::newInstance(_portlib, (SH_OSCache*)memForConstructor, cacheName, SH_OSCache::getCurrentCacheGen(), &versionData);
+			_oscache = SH_OSCache::newInstance(_portlib, (SH_OSCache*)memForConstructor, cacheName, SH_OSCache::getCurrentCacheGen(), &versionData, layer);
 		}
 		_newHdrPtr = (SH_SharedCacheHeaderInit*)((BlockPtr)memForConstructor + SH_OSCache::getRequiredConstrBytes());
 		_debugData = (ClassDebugDataProvider *)((BlockPtr)memForConstructor + SH_OSCache::getRequiredConstrBytes() + sizeof(SH_CompositeCacheImpl::SH_SharedCacheHeaderInit));
@@ -410,6 +417,7 @@ SH_CompositeCacheImpl::initialize(J9JavaVM* vm, BlockPtr memForConstructor, J9Sh
 	}
 	_parent = NULL;
 	_sharedClassConfig = sharedClassConfig;
+	_layer = layer;
 	
 	Trc_SHR_CC_initialize_Exit();
 }
@@ -443,7 +451,7 @@ SH_CompositeCacheImpl::getRequiredConstrBytes(bool isNested, bool startupForStat
 
 
 /**
- * Get required bytes for a constructor including the common info sturcture.
+ * Get required bytes for a constructor including the common info structure.
  *
  * @return Number of bytes required for getRequiredConstrBytesWithCommonInfo
  */
@@ -583,7 +591,7 @@ SH_CompositeCacheImpl::setCorruptCache(J9VMThread* currentThread)
 
 	if (_started) {
 		ccToUse->unprotectHeaderReadWriteArea(currentThread, false);
-    }
+	}
 
 	getCorruptionContext(&ccToUse->_theca->corruptionCode, &ccToUse->_theca->corruptValue);
 
@@ -594,8 +602,8 @@ SH_CompositeCacheImpl::setCorruptCache(J9VMThread* currentThread)
 		 */
 		ccToUse->_theca->corruptFlag = 1;
 	}
-    if (_started) {
-        ccToUse->protectHeaderReadWriteArea(currentThread, false);
+	if (_started) {
+		ccToUse->protectHeaderReadWriteArea(currentThread, false);
 	}
 	Trc_SHR_CC_setCorruptCache_Exit();
 }
@@ -1228,7 +1236,7 @@ SH_CompositeCacheImpl::startup(J9VMThread* currentThread, J9SharedClassPreinitCo
 		if (cacheMemory != NULL) {
 			_theca = (J9SharedCacheHeader*)cacheMemory;
 		} else {
-	    	_theca = (J9SharedCacheHeader*)_oscache->attach(currentThread, &versionData);
+			_theca = (J9SharedCacheHeader*)_oscache->attach(currentThread, &versionData);
 #ifndef J9SHR_CACHELET_SUPPORT
 			/* Verify that a non-realtime VM is not attaching to a Realtime cache when printing stats */
 			if ((_theca != 0) && getContainsCachelets() &&
@@ -1325,12 +1333,11 @@ SH_CompositeCacheImpl::startup(J9VMThread* currentThread, J9SharedClassPreinitCo
 				}
 			}
 			if (!isCacheCorrupt()) {
-				bool initializingNewCache = false;
 				IDATA retryCntr = 0;
 				
 				/* If we're running read-only, we have no write mutex. Resolve this race by waiting for ccInitComplete flag */
 				if (!_readOnlyOSCache) {
-	                /* The cache is about to undergo change, so mark the CRC as invalid */
+					/* The cache is about to undergo change, so mark the CRC as invalid */
 					_theca->crcValid = 0;
 				} else {
 					while ((isCacheInitComplete() == false) && (retryCntr < J9SH_OSCACHE_READONLY_RETRY_COUNT)) {
@@ -1355,9 +1362,11 @@ SH_CompositeCacheImpl::startup(J9VMThread* currentThread, J9SharedClassPreinitCo
 				 *  - store information regarding -Xnolinenumbers
 				 */
 				if (isCacheInitComplete() == false) {
-					initializingNewCache = true;
+					_initializingNewCache = true;
 					UDATA extraFlags = 0;
 					
+					Trc_SHR_CC_startup_Event_InitializingNewCache(currentThread);
+
 					if (J9_ARE_NO_BITS_SET(currentThread->javaVM->requiredDebugAttributes, (J9VM_DEBUG_ATTRIBUTE_LINE_NUMBER_TABLE | J9VM_DEBUG_ATTRIBUTE_SOURCE_FILE))) {
 						extraFlags |= J9SHR_EXTRA_FLAGS_NO_LINE_NUMBERS;
 					}
@@ -1463,9 +1472,15 @@ SH_CompositeCacheImpl::startup(J9VMThread* currentThread, J9SharedClassPreinitCo
 				_prevScan = _scan = (ShcItemHdr*)CCFIRSTENTRY(_theca);
 				/* For unit testing, there may not be a sharedClassConfig */
 				if (_sharedClassConfig && isFirstStart) {
-					_sharedClassConfig->cacheDescriptorList->cacheStartAddress = _theca;
-					/* TODO: The idea of having a single metadata segment is broken */
-					_metadataSegmentPtr = &(_sharedClassConfig->metadataMemorySegment);
+					if (NULL == _previous) {
+						/* Set _sharedClassConfig->cacheDescriptorList->cacheStartAddress to _theca of _ccHead.
+						 * Do NULL check on _previous instead of _sharedClassConfig->cacheDescriptorList->cacheStartAddress because:
+						 * 1. unit test may call into here twice with different _theca, the cacheStartAddress should be updated by the second call.
+						 * 2. JVM may call into here twice if it detected an existing cache created by another JVM with a different buildID/Sha
+						 */
+						_sharedClassConfig->cacheDescriptorList->cacheStartAddress = _theca;
+						_metadataSegmentPtr = &(_sharedClassConfig->cacheDescriptorList->metadataMemorySegment);
+					}
 				}
 				/* TODO: Maybe move _commonCCInfo->vmID into CacheMap */
 				if (isFirstStart) {
@@ -1634,7 +1649,7 @@ SH_CompositeCacheImpl::startup(J9VMThread* currentThread, J9SharedClassPreinitCo
 				 * used by shrtest which doesn't enable protection until after startup
 				 */
 				setRomClassProtectEnd(SEGUPDATEPTR(_theca));
-				if (initializingNewCache) {
+				if (_initializingNewCache) {
 					*cacheHasIntegrity = true;
 					_theca->ccInitComplete |= CC_STARTUP_COMPLETE;
 				}
@@ -1696,6 +1711,15 @@ releaseLockCheck:
 	}
 	if (rc == CC_STARTUP_OK) {
 		_started = true;
+		/* We don't need to compute the cache id for the top layer. */
+		if ((NULL == cacheMemory) && (NULL != _previous)) {
+			Trc_SHR_CC_startup_getCacheUniqueID_before(currentThread, getCreateTime(), getMetadataBytes(), getClassesBytes(), getLineNumberTableBytes(), getLocalVariableTableBytes());
+			const char* uniqueId = getCacheUniqueID(currentThread);
+			Trc_SHR_CC_startup_getCacheUniqueID_after(currentThread, uniqueId);
+			if (NULL == uniqueId) {
+				rc = CC_STARTUP_FAILED;
+			}
+		}
 		protectHeaderReadWriteArea(currentThread, false);
 	}
 	Trc_SHR_CC_startup_Exit5(currentThread, rc);
@@ -1706,7 +1730,7 @@ releaseLockCheck:
  * Checks whether existing cache is compatible with options specified on command-line.
  * This is called by startup().
  *
- * @param [in] curretThread  current VM thread
+ * @param [in] currentThread  current VM thread
  *
  * @return true if cache is compatible, else false.
  */
@@ -1831,7 +1855,7 @@ SH_CompositeCacheImpl::next(J9VMThread* currentThread)
 }
 
 /**
- * Initialise ShcItem Block data.
+ * Initialize ShcItem Block data.
  *
  * Simply initializes an "item" to the values set. Hides the _commonCCInfo->vmID in the dataType.
  *
@@ -2218,7 +2242,7 @@ SH_CompositeCacheImpl::testAndSetWriteHash(J9VMThread *currentThread, UDATA hash
 		 */
 		setWriteHash(currentThread, hashValue);
 	} else
-	if ((maskedHash == (cacheValue & WRITEHASH_MASK))) {
+	if (maskedHash == (cacheValue & WRITEHASH_MASK)) {
 		UDATA vmInCache = (cacheValue >> WRITEHASH_SHIFT);
 
 		if (vmInCache != _commonCCInfo->vmID) {
@@ -2380,6 +2404,8 @@ SH_CompositeCacheImpl::decReaderCount(J9VMThread* currentThread)
  * @param [in] caller  A string representing the caller of this method
  *
  * @return 0 if call succeeded and -1 for failure
+ * 
+ * THREADING: Do not acquire class segment mutex inside read mutex.
  */
 IDATA
 SH_CompositeCacheImpl::enterReadMutex(J9VMThread* currentThread, const char* caller)
@@ -2407,6 +2433,9 @@ SH_CompositeCacheImpl::enterReadMutex(J9VMThread* currentThread, const char* cal
 	}
 
 	Trc_SHR_Assert_NotEquals(currentThread, _commonCCInfo->hasWriteMutexThread);
+	if (UnitTest::COMPOSITE_CACHE_TEST != UnitTest::unitTest) {
+		Trc_SHR_Assert_False(hasReadMutex(currentThread));
+	}
 
 	/* THREADING: Important to increment readerCount before checking isLocked(), as the incremented
 	 * reader count prevents a lock from occurring.
@@ -2441,8 +2470,12 @@ SH_CompositeCacheImpl::enterReadMutex(J9VMThread* currentThread, const char* cal
 			if (rc != 0) {
 				PORT_ACCESS_FROM_PORT(_portlib);
 				CC_ERR_TRACE1(J9NLS_SHRC_CC_FAILED_EXIT_MUTEX, rc);
+				decReaderCount(currentThread);
 			}
 		}
+	}
+	if (0 == rc) {
+		currentThread->privateFlags2 |= J9_PRIVATE_FLAGS2_IN_SHARED_CACHE_READ_MUTEX;
 	}
 	Trc_SHR_CC_enterReadMutex_Exit(currentThread, caller, rc);
 	return rc;
@@ -2453,6 +2486,8 @@ SH_CompositeCacheImpl::enterReadMutex(J9VMThread* currentThread, const char* cal
  *
  * @param [in] currentThread  Pointer to J9VMThread structure for the current thread
  * @param [in] caller  A string representing the caller of this method
+ * 
+ * THREADING: Do not acquire class segment mutex inside read mutex.
  */
 void
 SH_CompositeCacheImpl::exitReadMutex(J9VMThread* currentThread, const char* caller)
@@ -2470,8 +2505,12 @@ SH_CompositeCacheImpl::exitReadMutex(J9VMThread* currentThread, const char* call
 	}
 
 	Trc_SHR_Assert_NotEquals(currentThread, _commonCCInfo->hasWriteMutexThread);
+	if (UnitTest::COMPOSITE_CACHE_TEST != UnitTest::unitTest) {
+		Trc_SHR_Assert_True(hasReadMutex(currentThread));
+	}
 
 	decReaderCount(currentThread);
+	currentThread->privateFlags2 &= ~J9_PRIVATE_FLAGS2_IN_SHARED_CACHE_READ_MUTEX;
 	Trc_SHR_CC_exitReadMutex_Exit(currentThread, caller);
 }
 
@@ -2815,9 +2854,9 @@ SH_CompositeCacheImpl::allocate(J9VMThread* currentThread, U_8 type, ShcItem* it
 		Trc_SHR_CC_allocate_softMaxBytesReached(currentThread, softMaxValue);
 		if (ALLOCATE_TYPE_BLOCK == type) {
 			/* Similar to the behaviour when setting J9SHR_BLOCK_SPACE_FULL,
-			 * if avalible bytes < CC_MIN_SPACE_BEFORE_CACHE_FULL, J9SHR_AVAILABLE_SPACE_FULL is set in the previous commit. J9SHR_RUNTIMEFLAG_AVAILABLE_SPACE_FULL is checked in 
-			 * higher level APIs in SH_CacheMap. If it is set, higher level APIs will return direcly and we would not reach here. 
-			 * if avalible bytes >= CC_MIN_SPACE_BEFORE_CACHE_FULL, do not set J9SHR_AVAILABLE_SPACE_FULL here as it is above the threshold.
+			 * if available bytes < CC_MIN_SPACE_BEFORE_CACHE_FULL, J9SHR_AVAILABLE_SPACE_FULL is set in the previous commit. J9SHR_RUNTIMEFLAG_AVAILABLE_SPACE_FULL is checked in 
+			 * higher level APIs in SH_CacheMap. If it is set, higher level APIs will return directly and we would not reach here. 
+			 * if available bytes >= CC_MIN_SPACE_BEFORE_CACHE_FULL, do not set J9SHR_AVAILABLE_SPACE_FULL here as it is above the threshold.
 			 */
 			Trc_SHR_Assert_True((softMaxValue - usedBytes) >= CC_MIN_SPACE_BEFORE_CACHE_FULL);
 			/* If allocating block data, we would reach here only when allocating something that requires more than CC_MIN_SPACE_BEFORE_CACHE_FULL bytes. As free available space
@@ -3042,7 +3081,7 @@ SH_CompositeCacheImpl::rollbackUpdate(J9VMThread* currentThread)
 }
 
 /**
- * Updatte value of _storedSegmentUsedBytes
+ * Update value of _storedSegmentUsedBytes
  *
  * Called before ::commitUpdate() if ROM Classes builder allocated more than it needed.
  *
@@ -3086,7 +3125,7 @@ SH_CompositeCacheImpl::commitUpdateHelper(J9VMThread* currentThread, bool isCach
 
 	/* The cache is changing and so mark the CRC as invalid. */
 	/* TODO: This will not work for cachelets - need to reorganised how the CRCing is done */
-    _theca->crcValid = 0;
+	_theca->crcValid = 0;
 
 	if (_storedSegmentUsedBytes) {
 		BlockPtr startAddress = SEGUPDATEPTR(_theca);
@@ -3255,6 +3294,14 @@ SH_CompositeCacheImpl::markStale(J9VMThread* currentThread, BlockPtr blockEnd, b
 	}
 	Trc_SHR_Assert_Equals(currentThread, _commonCCInfo->hasWriteMutexThread);
 	Trc_SHR_CC_markStale_Event(currentThread, ih);
+
+	if (0 != _theca->crcValid) {
+		/* _theca->crcValid is set to 0 when locking the cache. isCacheLocked cannot be true here */
+		Trc_SHR_Assert_False(isCacheLocked);
+		unprotectHeaderReadWriteArea(currentThread, false);
+		_theca->crcValid = 0;
+		protectHeaderReadWriteArea(currentThread, false);
+	}
 
 	/* If the cache is locked, don't bother to unprotect the page as the whole metadata area will be unprotected */
 	if (_doMetaProtect && !isCacheLocked) {
@@ -3626,8 +3673,39 @@ SH_CompositeCacheImpl::getFreeBytes(void)
 	return FREEBYTES(_theca);
 }
 
+
 /**
- * Get the number of free availabe bytes within softmx (softmx - usedBytes).
+ * Get the number of bytes in the shared classes cache between UPDATEPTR and CADEBUGSTART
+ *
+ * @return the size of the metadata section in cache.
+ */
+UDATA
+SH_CompositeCacheImpl::getMetadataBytes(void) const
+{
+	if (!_started) {
+		Trc_SHR_Assert_ShouldNeverHappen();
+		return 0;
+	}
+	return METADATASECTIONBYTES(_theca);
+}
+
+/**
+ * Get the number of bytes in the shared classes cache between CASTART and SEGUPDATEPTR
+ *
+ * @return the size of the classes section in cache.
+ */
+UDATA
+SH_CompositeCacheImpl::getClassesBytes(void) const
+{
+	if (!_started) {
+		Trc_SHR_Assert_ShouldNeverHappen();
+		return 0;
+	}
+	return CLASSSECTIONBYTES(_theca);
+}
+
+/**
+ * Get the number of free available bytes within softmx (softmx - usedBytes).
  *
  * @return free available bytes in cache (for stats)
  */
@@ -3711,7 +3789,7 @@ SH_CompositeCacheImpl::getFreeDebugSpaceBytes(void)
  * @return number of bytes
  */
 U_32
-SH_CompositeCacheImpl::getLineNumberTableBytes(void)
+SH_CompositeCacheImpl::getLineNumberTableBytes(void) const
 {
 	if (!_started) {
 		Trc_SHR_Assert_ShouldNeverHappen();
@@ -3726,7 +3804,7 @@ SH_CompositeCacheImpl::getLineNumberTableBytes(void)
  * @return number of bytes
  */
 U_32
-SH_CompositeCacheImpl::getLocalVariableTableBytes(void)
+SH_CompositeCacheImpl::getLocalVariableTableBytes(void) const
 {
 	if (!_started) {
 		Trc_SHR_Assert_ShouldNeverHappen();
@@ -3768,21 +3846,42 @@ SH_CompositeCacheImpl::isAddressInROMClassSegment(const void* address)
 }
 
 /**
- * Check whether given address is in the Shared Classes cache
- * Note - does not include the cache header
+ * Checks whether given address is in the metadata area of this shared cache
  *
- * @param [in] address  Address of cache item
+ * @param [in] address  Address to be checked
  *
- * @return true if address is within the shared class cache boundaries, false otherwise
+ * @return true if address is within the shared metadata area, false otherwise
  */
 bool
-SH_CompositeCacheImpl::isAddressInCache(const void* address)
+SH_CompositeCacheImpl::isAddressInMetaDataArea(const void* address) const
 {
 	if (!_started) {
 		Trc_SHR_Assert_ShouldNeverHappen();
 		return false;
 	}
-	return ((address >= CASTART(_theca)) && (address <= getCacheLastEffectiveAddress()));
+	return ((address >= UPDATEPTR(_theca)) && (address < CADEBUGSTART(_theca)));
+}
+
+/**
+ * Check whether given address is in the Shared Classes cache
+ *
+ * @param [in] address  Address of cache item
+ * @param [in] includeHeaderReadWriteArea  Whether to check cache header and read write area.
+ *
+ * @return true if address is within the shared class cache boundaries, false otherwise
+ */
+bool
+SH_CompositeCacheImpl::isAddressInCache(const void* address, bool includeHeaderReadWriteArea)
+{
+	if (!_started) {
+		Trc_SHR_Assert_ShouldNeverHappen();
+		return false;
+	}
+	if (includeHeaderReadWriteArea) {
+		return ((address >= _theca) && (address <= CAEND(_theca)));
+	} else {
+		return (address >= CASTART(_theca)) && (address <= CAEND(_theca));
+	}
 }
 
 /**
@@ -3814,7 +3913,7 @@ SH_CompositeCacheImpl::runExitCode(J9VMThread *currentThread)
 	unprotectHeaderReadWriteArea(currentThread, false);
 	Trc_SHR_Assert_Equals(_readWriteProtectCntr, 0);
 #endif
-	/* If mprotect=all is not set, then final value of _headerProtectCntr should be same is its inital value (= 1).
+	/* If mprotect=all is not set, then final value of _headerProtectCntr should be same is its initial value (= 1).
 	 * If mprotect=all is set, then above call to unprotectHeaderReadWriteArea() will set it to 1.
 	 */
 	Trc_SHR_Assert_Equals(_headerProtectCntr, 1);
@@ -4017,7 +4116,7 @@ SH_CompositeCacheImpl::enterReadWriteAreaMutex(J9VMThread* currentThread, BOOLEA
 
 /**
  * Exit readWrite area mutex
- * Note that when the function returns, the readWrite area will be proected if mprotect is enabled.
+ * Note that when the function returns, the readWrite area will be protected if mprotect is enabled.
  * It will also have been msync'd if msync is enabled.
  *
  * @param [in] currentThread  Point to the J9VMThread struct for the current thread
@@ -4074,15 +4173,15 @@ SH_CompositeCacheImpl::exitReadWriteAreaMutex(J9VMThread* currentThread, UDATA r
 		}
 
 		/**
-		 * Do assertion checks before relasing the lock to prevent others threads changing the values of
+		 * Do assertion checks before releasing the lock to prevent others threads changing the values of
 		 * _headerProtectCntr and _readWriteProtectCntr
 		 */
 		if (0 != (*_runtimeFlags & J9SHR_RUNTIMEFLAG_ENABLE_MPROTECT_ALL)) {
-	    	Trc_SHR_Assert_Equals(_headerProtectCntr, 0);
-	    } else {
-	    	/* If mprotect=all is not set, _headerProtectCntr should be same as initial value (= 1). */
-	    	Trc_SHR_Assert_Equals(_headerProtectCntr, 1);
-	    }
+			Trc_SHR_Assert_Equals(_headerProtectCntr, 0);
+		} else {
+			/* If mprotect=all is not set, _headerProtectCntr should be same as initial value (= 1). */
+			Trc_SHR_Assert_Equals(_headerProtectCntr, 1);
+		}
 		Trc_SHR_Assert_Equals(_readWriteProtectCntr, 0);
 
 		/* Clear hasReadWriteMutexThread just before calling releaseWriteLock() */
@@ -4150,7 +4249,7 @@ SH_CompositeCacheImpl::notifyRefreshMutexExited(J9VMThread* currentThread)
 }
 
 /* Since the cache header and the readWrite area may in the same page, protecting and unprotecting
- * these areas must be co-ordinated. On entry to this function, it should be possible for 3 states:
+ * these areas must be coordinated. On entry to this function, it should be possible for 3 states:
  * 1) Neither area is protected (another thread is changing the areas)
  * 2) Only the readWrite area is protected (another thread is changing the header)
  * 3) Both areas are protected
@@ -4535,7 +4634,6 @@ SH_CompositeCacheImpl::checkCacheCRC(bool* cacheHasIntegrity, UDATA *crcValue)
 			 * then the crc is failed, and the test flag is disabled.
 			 */
 			if ((true == *cacheHasIntegrity) && (0 != (*_runtimeFlags & J9SHR_RUNTIMEFLAG_FAKE_CORRUPTION))) {
-				*_runtimeFlags &= ~(J9SHR_RUNTIMEFLAG_FAKE_CORRUPTION);
 				*cacheHasIntegrity = false;
 				return false;	
 			}
@@ -4614,7 +4712,9 @@ SH_CompositeCacheImpl::updateMetadataSegment(J9VMThread* currentThread)
 {
 	J9JavaVM* vm = currentThread->javaVM;
 
-	if (_metadataSegmentPtr == NULL) {
+	if ((NULL == _metadataSegmentPtr)
+		|| (NULL == (*_metadataSegmentPtr))
+	) {
 		return;
 	}
 
@@ -4661,6 +4761,24 @@ SH_CompositeCacheImpl::setNext(SH_CompositeCacheImpl* next)
 	_next = next;
 }
 
+/*
+ * Set the previous SH_CompositeCacheImpl
+ */
+void
+SH_CompositeCacheImpl::setPrevious(SH_CompositeCacheImpl* previous)
+{
+	_previous = previous;
+}
+
+/*
+ * Return the previous SH_CompositeCacheImpl
+ */
+SH_CompositeCacheImpl*
+SH_CompositeCacheImpl::getPrevious(void)
+{
+	return _previous;
+}
+
 J9MemorySegment*
 SH_CompositeCacheImpl::getCurrentROMSegment(void)
 {
@@ -4671,6 +4789,13 @@ void
 SH_CompositeCacheImpl::setCurrentROMSegment(J9MemorySegment* segment)
 {
 	_currentROMSegment = segment;
+}
+
+void
+SH_CompositeCacheImpl::setMetadataMemorySegment(J9MemorySegment** segment)
+{
+	Trc_SHR_Assert_True(NULL == _metadataSegmentPtr);
+	_metadataSegmentPtr = segment;
 }
 
 #if defined(J9SHR_CACHELET_SUPPORT)
@@ -5097,7 +5222,7 @@ SH_CompositeCacheImpl::fixupSerializedCompiledMethods(J9VMThread* currentThread,
 	while (NULL != (it = (ShcItem*)this->nextEntry(currentThread, NULL))) {
 		if (TYPE_COMPILED_METHOD == ITEMTYPE(it)) {
 			wrapper = (CompiledMethodWrapper*)ITEMDATA(it);
-			if (jitConfig->updateROMClassOffsetsInAOTMethod(currentThread->javaVM, CMWDATA(wrapper), (J9ROMMethod*)CMWROMMETHOD(wrapper), serializedROMClassStartAddress)) {
+			if (jitConfig->updateROMClassOffsetsInAOTMethod(currentThread->javaVM, CMWDATA(wrapper), (J9ROMMethod*)(wrapper->romMethodOffset + (UDATA)getCacheHeaderAddress()) , serializedROMClassStartAddress)) {
 				rc = -1;
 				break;
 			}
@@ -5339,7 +5464,7 @@ SH_CompositeCacheImpl::allocateClassDebugData(J9VMThread* currentThread, U_16 cl
 }
 
 /**
- * Roll back uncommited changes made by the last call too 'allocateClassDebugData()'
+ * Roll back uncommitted changes made by the last call too 'allocateClassDebugData()'
  *
  * @param [in] currentThread the thread calling this function
  * @param [in] classnameLength ROMClass class name length
@@ -5494,7 +5619,7 @@ SH_CompositeCacheImpl::startupForStats(J9VMThread* currentThread, SH_OSCache * o
 		notifyPagesRead(CASTART(_theca), CAEND(_theca), DIRECTION_FORWARD, true);
 	}
 
-	/* _started is set to true if the write area mutex was entered. Becuase _started 
+	/* _started is set to true if the write area mutex was entered. Because _started 
 	 * is used in ::shutdownForStats() to decide if '::exitWriteMutex()' needs to be called,
 	 * _started will still be set if any of the below code finds the cache to be corrupt.
 	 * 
@@ -5524,6 +5649,146 @@ done:
 }
 
 /**
+ * Starts up a non-top layer cache to get cache statistics.
+ * 
+ * @param[in] currentThread Pointer to J9VMThread structure for the current thread
+ * @param[in] ctrlDirName The cache control directory
+ * @param[in] cacheName The cache name
+ * @param[in] cacheName The cache type
+ * @param[in] layer The cache layer number
+ * @param[in] runtimeFlags  The runtime Flags
+ * @param[in] verboseFlags The flags controling verbose output
+  *
+ * @return CC_STARTUP_OK(0) for success, CC_STARTUP_FAILED(-1) for failure and CC_STARTUP_CORRUPT(-2) for corrupted cache.
+ */
+IDATA
+SH_CompositeCacheImpl::startupNonTopLayerForStats(J9VMThread* currentThread, const char* ctrlDirName, const char* cacheName, U_32 cacheType, I_8 layer, U_64* runtimeFlags, UDATA verboseFlags)
+{
+	IDATA retval = CC_STARTUP_OK;
+	const char* fnName = "CC startupForStats";
+	bool cacheHasIntegrity = true;
+	J9PortShcVersion versionData;
+	J9SharedClassPreinitConfig piconfig;
+	PORT_ACCESS_FROM_VMC(currentThread);
+	J9JavaVM* vm = currentThread->javaVM;
+	SH_OSCache* memForConstructor = NULL;
+	UDATA memSize = 0;
+	bool osCacheStarted = false;
+
+	Trc_SHR_CC_startupNonTopLayerForStats_Entry(currentThread, ctrlDirName, cacheName, cacheType, layer, *runtimeFlags, verboseFlags);
+	
+	if (_started == true) {
+		goto done;
+	}
+
+	_runtimeFlags = runtimeFlags;
+	memSize = SH_OSCache::getRequiredConstrBytes();
+	memForConstructor = (SH_OSCache*)j9mem_allocate_memory(memSize, J9MEM_CATEGORY_VM);
+	if (NULL == memForConstructor) {
+		retval = CC_STARTUP_FAILED;
+		goto done;
+	}
+
+	setCurrentCacheVersion(vm, J2SE_VERSION(vm), &versionData);
+	versionData.cacheType = cacheType;
+	_oscache = SH_OSCache::newInstance(PORTLIB, memForConstructor, cacheName, OSCACHE_CURRENT_CACHE_GEN, &versionData, layer);
+
+	if (J9PORT_SHR_CACHE_TYPE_NONPERSISTENT == cacheType) {
+		/* only startup non-top layer nonpersistent cache in read-write mode in order to get semid */
+		if (_oscache->startup(vm, ctrlDirName, vm->sharedCacheAPI->cacheDirPerm, cacheName, &piconfig, SH_CompositeCacheImpl::getNumRequiredOSLocks(), J9SH_OSCACHE_OPEXIST_STATS, 0, 0/*runtime flags*/, 0, 0, &versionData, NULL, SHR_STARTUP_REASON_NORMAL)) {
+			osCacheStarted = true;
+		}
+	}
+	
+	if (!osCacheStarted) {
+		/* try to open the cache read-only */
+		if (!_oscache->startup(vm, ctrlDirName, vm->sharedCacheAPI->cacheDirPerm, cacheName, &piconfig, 0, J9SH_OSCACHE_OPEXIST_STATS, 0, 0/*runtime flags*/, J9OSCACHE_OPEN_MODE_DO_READONLY, 0, &versionData, NULL, SHR_STARTUP_REASON_NORMAL)) {
+			_oscache->cleanup();
+			retval = CC_STARTUP_FAILED;
+			goto done;
+		}
+	}
+	
+	_osPageSize = _oscache->getPermissionsRegionGranularity(_portlib);
+
+	_readOnlyOSCache = _oscache->isRunningReadOnly();
+	if (_readOnlyOSCache) {
+		_commonCCInfo->writeMutexID = CC_READONLY_LOCK_VALUE;
+		_commonCCInfo->readWriteAreaMutexID = CC_READONLY_LOCK_VALUE;
+	} else {
+		IDATA lockID;
+		if ((lockID = _oscache->getWriteLockID()) >= 0) {
+			_commonCCInfo->writeMutexID = (U_32)lockID;
+		} else {
+			retval = CC_STARTUP_FAILED;
+			goto done;
+		}
+		if ((lockID = _oscache->getReadWriteLockID()) >= 0) {
+			_commonCCInfo->readWriteAreaMutexID = (U_32)lockID;
+		} else {
+			retval = CC_STARTUP_FAILED;
+			goto done;
+		}
+	}
+
+	if (omrthread_tls_alloc(&(_commonCCInfo->writeMutexEntryCount)) != 0) {
+		retval = CC_STARTUP_FAILED;
+		goto done;
+	}
+
+	_theca = (J9SharedCacheHeader*)_oscache->attach(currentThread, &versionData);
+
+	if (isCacheInitComplete() == false) {
+		retval = CC_STARTUP_CORRUPT;
+		goto done;
+	}
+
+	if (enterWriteMutex(currentThread, false, fnName) != 0) {
+		retval = CC_STARTUP_FAILED;
+		goto done;
+	}
+
+	if (!_readOnlyOSCache && _theca->roundedPagesFlag && ((currentThread->javaVM->sharedCacheAPI->runtimeFlags & J9SHR_RUNTIMEFLAG_ENABLE_MPROTECT) != 0)) {
+		/* If mprotection is globally enabled, protect the entire cache body. Although
+		 * we have the write lock, the header may still be written by other JVMs to
+		 * take the read lock. The read-write area can also be written since we don't
+		 * have the read-write lock.
+		 */
+		*_runtimeFlags |= J9SHR_RUNTIMEFLAG_ENABLE_MPROTECT;
+		notifyPagesRead(CASTART(_theca), CAEND(_theca), DIRECTION_FORWARD, true);
+	}
+	/* _started is set to true if the write area mutex was entered. Because _started 
+	 * is used in ::shutdownForStats() to decide if '::exitWriteMutex()' needs to be called,
+	 * _started will still be set if any of the below code finds the cache to be corrupt.
+	 * 
+	 * All other failures after this point are a result of a corrupt cache.
+	 */
+	_started = true;
+
+	if (!checkCacheCRC(&cacheHasIntegrity, NULL)) {
+		retval = CC_STARTUP_CORRUPT;
+		goto done;
+	}
+
+	/* Needs to be set or 'SH_CompositeCacheImpl::next' will always return nothing.
+	 * This is a problem during 'SH_CacheMap::readCache' when collecting stats for
+	 * the cache.
+	 */
+	_prevScan = _scan = (ShcItemHdr*)CCFIRSTENTRY(_theca);
+
+	if (_debugData->Init(currentThread, _theca, (AbstractMemoryPermission *)this, verboseFlags, _runtimeFlags, true) == false) {
+		retval = CC_STARTUP_CORRUPT;
+		goto done;
+	}
+
+done:
+	/*Calling ::shutdownForStats() calls 'exitWriteMutex()'*/
+	Trc_SHR_CC_startupNonTopLayerForStats_Exit(currentThread, retval);
+	return retval;
+}
+
+
+/**
  * Shut down a CompositeCache started with startupForStats().
  *
  * THREADING: Only ever single threaded
@@ -5543,16 +5808,18 @@ SH_CompositeCacheImpl::shutdownForStats(J9VMThread* currentThread)
 	if (_started == true) {
 
 		if ((*_runtimeFlags & J9SHR_RUNTIMEFLAG_ENABLE_MPROTECT) != 0) {
-			/* If the cache was protected, unprotect it */
-			notifyPagesRead(CASTART(_theca), CAEND(_theca), DIRECTION_FORWARD, false);
+			/* If the cache was protected, unprotect it. But Only do this if _readOnlyOSCache is false. */
+			if (!_readOnlyOSCache) {
+				notifyPagesRead(CASTART(_theca), CAEND(_theca), DIRECTION_FORWARD, false);
+			}
 		}
 
-		_started = false;
-
-		if (exitWriteMutex(currentThread, fnName) != 0) {
+		if (exitWriteMutex(currentThread, fnName, false) != 0) {
+			_started = false;
 			retval = -1;
 			goto done;
 		}
+		_started = false;
 	}
 
 	if (_commonCCInfo->writeMutexEntryCount != 0) {
@@ -5563,6 +5830,11 @@ SH_CompositeCacheImpl::shutdownForStats(J9VMThread* currentThread)
 		_commonCCInfo->writeMutexEntryCount = 0;
 	}
 	done:
+	if (NULL != getPrevious()) {
+		/* detach non-top layers only, top layer is detached in SH_OSCachemmap::getCacheStats()/SH_OSCachesysv::getCacheStats() */
+		_oscache->detach();
+	}
+	
 	return retval;
 }
 
@@ -5699,6 +5971,7 @@ SH_CompositeCacheImpl::setCorruptionContext(IDATA corruptionCode, UDATA corruptV
 /**
  * Sets runtime cache full flag corresponding to cache full flags set in cache header.
  * It should hold either of write mutex or refresh mutex.
+ * It must hold the _runtimeFlagsProtectMutex mutex.
  *
  * Note that this method takes actions only for those cache full flags that are not already set.
  *
@@ -5711,12 +5984,11 @@ SH_CompositeCacheImpl::setRuntimeCacheFullFlags(J9VMThread* currentThread)
 {
 	PORT_ACCESS_FROM_PORT(_portlib);
 	Trc_SHR_Assert_True(hasWriteMutex(currentThread));
+	Trc_SHR_Assert_True(omrthread_monitor_owned_by_self(_runtimeFlagsProtectMutex));
 
 	if (0 != (_theca->cacheFullFlags & J9SHR_ALL_CACHE_FULL_BITS)) {
 		bool allRuntimeCacheFullFlagsSet = false;
 		U_64 cacheFullFlags = 0;
-
-		omrthread_monitor_enter(_runtimeFlagsProtectMutex);
 
 		/* don't set DENY_CACHE_UPDATES - we still need updates for timestamp optimizations */
 		if ((0 == (*_runtimeFlags & J9SHR_RUNTIMEFLAG_BLOCK_SPACE_FULL)) &&
@@ -5774,8 +6046,6 @@ SH_CompositeCacheImpl::setRuntimeCacheFullFlags(J9VMThread* currentThread)
 				protectPartiallyFilledPages(currentThread, false, false, true, false);
 			}
 		}
-
-		omrthread_monitor_exit(_runtimeFlagsProtectMutex);
 
 		if (0 != cacheFullFlags) {
 			if (true == allRuntimeCacheFullFlagsSet) {
@@ -5881,17 +6151,20 @@ SH_CompositeCacheImpl::setCacheHeaderFullFlags(J9VMThread *currentThread, UDATA 
 	Trc_SHR_Assert_True(hasWriteMutex(currentThread));
 
 	if (0 != flags) {
+		/* We are taking _runtimeFlagsProtectMutex here and then _headerProtectMutex inside (un)protectHeaderReadWriteArea().
+		 * So assert we do not hold _headerProtectMutex before taking _runtimeFlagsProtectMutex.
+		 */
+		Trc_SHR_Assert_True(1 != omrthread_monitor_owned_by_self(_headerProtectMutex));
+		omrthread_monitor_enter(_runtimeFlagsProtectMutex);
 		unprotectHeaderReadWriteArea(currentThread, false);
-
 		_theca->cacheFullFlags |= flags;
-		
 		_cacheFullFlags = _theca->cacheFullFlags;
-		
 		protectHeaderReadWriteArea(currentThread, false);
 
 		if (true == setRuntimeFlags) {
 			setRuntimeCacheFullFlags(currentThread);
 		}
+		omrthread_monitor_exit(_runtimeFlagsProtectMutex);
 	}
 	return;
 }
@@ -6105,8 +6378,16 @@ SH_CompositeCacheImpl::restoreFromSnapshot(J9JavaVM* vm, const char* cacheName, 
  * Advise the OS to release resources used by a section of the shared classes cache
  */
 void
-SH_CompositeCacheImpl::dontNeedMetadata(J9VMThread *currentThread, const void* startAddress, size_t length) {
-	_oscache->dontNeedMetadata(currentThread, startAddress, length);
+SH_CompositeCacheImpl::dontNeedMetadata(J9VMThread *currentThread)
+{
+	UDATA  min = _minimumAccessedShrCacheMetadata;
+	UDATA  max = _maximumAccessedShrCacheMetadata;
+	size_t length = (size_t) (max - min);
+	if ((0 != min)
+		&& (0 != length)
+	) {
+		_oscache->dontNeedMetadata(currentThread, (const void *)min, length);
+	}
 }
 /**
  * This function changes the permission of the page containing given address by marking the page as read-only or read-write.
@@ -6339,7 +6620,7 @@ SH_CompositeCacheImpl::tryAdjustMinMaxSizes(J9VMThread *currentThread, bool isJC
 		goto done;
 	}
 
-	/* set the variables inside the wirte mutex */
+	/* set the variables inside the write mutex */
 	adjustMinAOT = (_sharedClassConfig->minAOT >= 0);
 	adjustMaxAOT = (_sharedClassConfig->maxAOT >= 0);
 	adjustMinJIT = (_sharedClassConfig->minJIT >= 0);
@@ -6417,7 +6698,7 @@ SH_CompositeCacheImpl::tryAdjustMinMaxSizes(J9VMThread *currentThread, bool isJC
 		I_32 freeDebugBytes = (I_32)(_theca->localVariableTableNextSRP - _theca->lineNumberTableNextSRP);
 		U_32 maxUsedBytes = (maxLimit < (totalBytes - freeDebugBytes - J9SHR_MIN_GAP_BEFORE_METADATA)) ? maxLimit : (totalBytes - freeDebugBytes - J9SHR_MIN_GAP_BEFORE_METADATA);
 		/* The reserved AOT/JIT data space can only come from space between updateSRP and segmentSRP, so free space in debug area should be subtracted.
-		 * Leave at leaset J9SHR_MIN_GAP_BEFORE_METADATA, so J9SHR_MIN_GAP_BEFORE_METADATA should also be subtracted.
+		 * Leave at least J9SHR_MIN_GAP_BEFORE_METADATA, so J9SHR_MIN_GAP_BEFORE_METADATA should also be subtracted.
 		 */
 		if ((usedAOTBytesAfter - usedAOTBytesBefore + usedJITBytesAfter - usedJIBytesBefore + usedBytesBefore) > maxUsedBytes) {
 			CC_WARNING_TRACE(J9NLS_SHRC_CC_TOTAL_USED_BYTES_GRTHAN_MAXLIMIT, isJCLCall);
@@ -6505,7 +6786,7 @@ SH_CompositeCacheImpl::tryAdjustMinMaxSizes(J9VMThread *currentThread, bool isJC
 	protectHeaderReadWriteArea(currentThread, false);
 
 	if (adjustMinJIT || adjustMinAOT || adjustSoftMax) {
-		/* The free block bytes and avaliable bytes (softmx - usedBytes) can be changed if minAOT, minJIT or softmx has been adjusted. fillCacheIfNearlyFull() needs to be called.
+		/* The free block bytes and available bytes (softmx - usedBytes) can be changed if minAOT, minJIT or softmx has been adjusted. fillCacheIfNearlyFull() needs to be called.
 		 */
 		fillCacheIfNearlyFull(currentThread);
 	}
@@ -6526,7 +6807,7 @@ done:
 }
 
 /* Another JVM may have adjusted the softMaxBytes/minAOT/maxAOT/minJIT/maxJIT in the cache header.
- * Update the runtime cache full flags accroding to cache full flags in the cache header
+ * Update the runtime cache full flags according to cache full flags in the cache header
  *
  * @param [in] currentThread Pointer to J9VMThread structure for the current thread
  *
@@ -6535,7 +6816,6 @@ done:
 void
 SH_CompositeCacheImpl::updateRuntimeFullFlags(J9VMThread *currentThread)
 {
-	UDATA cacheFullFlags = _theca->cacheFullFlags;
 	bool holdWriteMutex = hasWriteMutex(currentThread);
 	const char* fnName = "CC updateRuntimeFullFlags";
 	U_64 flagSet = 0;
@@ -6549,16 +6829,19 @@ SH_CompositeCacheImpl::updateRuntimeFullFlags(J9VMThread *currentThread)
 	if (_readOnlyOSCache || J9_ARE_ALL_BITS_SET(*_runtimeFlags, J9SHR_RUNTIMEFLAG_ENABLE_READONLY)) {
 		goto done;
 	}
-
-	if (_cacheFullFlags == cacheFullFlags) {
-		goto done;
-	} else {
-		_cacheFullFlags = cacheFullFlags;
-	}
-
+	
+	/* It is possible we take _headerProtectMutex inside _runtimeFlagsProtectMutex.
+	 * So assert we do not hold _headerProtectMutex before taking _runtimeFlagsProtectMutex.
+	 */
+	Trc_SHR_Assert_True(1 != omrthread_monitor_owned_by_self(_headerProtectMutex));
 	omrthread_monitor_enter(_runtimeFlagsProtectMutex);
+	if (_cacheFullFlags == _theca->cacheFullFlags) {
+		omrthread_monitor_exit(_runtimeFlagsProtectMutex);
+		goto done;
+	}
+	_cacheFullFlags = _theca->cacheFullFlags;
 
-	if (J9_ARE_NO_BITS_SET(cacheFullFlags, J9SHR_BLOCK_SPACE_FULL)) {
+	if (J9_ARE_NO_BITS_SET(_cacheFullFlags, J9SHR_BLOCK_SPACE_FULL)) {
 		if (J9_ARE_ALL_BITS_SET(*_runtimeFlags, J9SHR_RUNTIMEFLAG_BLOCK_SPACE_FULL)) {
 			Trc_SHR_CC_updateRuntimeFullFlags_flagUnset(currentThread, J9SHR_RUNTIMEFLAG_BLOCK_SPACE_FULL);
 			flagUnset |= J9SHR_RUNTIMEFLAG_BLOCK_SPACE_FULL;
@@ -6570,16 +6853,9 @@ SH_CompositeCacheImpl::updateRuntimeFullFlags(J9VMThread *currentThread)
 		}
 	}
 
-	if (J9_ARE_NO_BITS_SET(cacheFullFlags, J9SHR_AVAILABLE_SPACE_FULL)) {
+	if (J9_ARE_NO_BITS_SET(_cacheFullFlags, J9SHR_AVAILABLE_SPACE_FULL)) {
 		if (J9_ARE_ALL_BITS_SET(*_runtimeFlags, J9SHR_RUNTIMEFLAG_AVAILABLE_SPACE_FULL)) {
 			if (J9_ARE_NO_BITS_SET(*_runtimeFlags, J9SHR_RUNTIMEFLAG_BLOCK_SPACE_FULL)) {
-				/* J9SHR_BLOCK_SPACE_FULL is always unset together with J9SHR_AVAILABLE_SPACE_FULL, do not need to remove J9AVLTREE_DISABLE_SHARED_TREE_UPDATES
-				 * when unseting J9SHR_RUNTIMEFLAG_BLOCK_SPACE_FULL, do it here is enough.
-				 */
-				if (NULL != currentThread->javaVM->sharedInvariantInternTable) {
-					Trc_SHR_CC_updateRuntimeFullFlags_flagUnset(currentThread, J9AVLTREE_DISABLE_SHARED_TREE_UPDATES);
-					currentThread->javaVM->sharedInvariantInternTable->flags &= ~J9AVLTREE_DISABLE_SHARED_TREE_UPDATES;
-				}
 				if (_reduceStoreContentionDisabled) {
 					Trc_SHR_CC_updateRuntimeFullFlags_flagSet(currentThread, J9SHR_RUNTIMEFLAG_ENABLE_REDUCE_STORE_CONTENTION);
 					*_runtimeFlags |= J9SHR_RUNTIMEFLAG_ENABLE_REDUCE_STORE_CONTENTION;
@@ -6605,7 +6881,7 @@ SH_CompositeCacheImpl::updateRuntimeFullFlags(J9VMThread *currentThread)
 		}
 	}
 
-	if (J9_ARE_NO_BITS_SET(cacheFullFlags, J9SHR_AOT_SPACE_FULL)) {
+	if (J9_ARE_NO_BITS_SET(_cacheFullFlags, J9SHR_AOT_SPACE_FULL)) {
 		if (J9_ARE_ALL_BITS_SET(*_runtimeFlags, J9SHR_RUNTIMEFLAG_AOT_SPACE_FULL)) {
 			Trc_SHR_CC_updateRuntimeFullFlags_flagUnset(currentThread, J9SHR_RUNTIMEFLAG_AOT_SPACE_FULL);
 			flagUnset |= J9SHR_RUNTIMEFLAG_AOT_SPACE_FULL;
@@ -6625,7 +6901,7 @@ SH_CompositeCacheImpl::updateRuntimeFullFlags(J9VMThread *currentThread)
 		}
 	}
 
-	if (J9_ARE_NO_BITS_SET(cacheFullFlags, J9SHR_JIT_SPACE_FULL)) {
+	if (J9_ARE_NO_BITS_SET(_cacheFullFlags, J9SHR_JIT_SPACE_FULL)) {
 		if (J9_ARE_ALL_BITS_SET(*_runtimeFlags, J9SHR_RUNTIMEFLAG_JIT_SPACE_FULL)) {
 			Trc_SHR_CC_updateRuntimeFullFlags_flagUnset(currentThread, J9SHR_RUNTIMEFLAG_JIT_SPACE_FULL);
 			flagUnset |= J9SHR_RUNTIMEFLAG_JIT_SPACE_FULL;
@@ -6647,7 +6923,7 @@ SH_CompositeCacheImpl::updateRuntimeFullFlags(J9VMThread *currentThread)
 
 	*_runtimeFlags &= ~flagUnset;
 	*_runtimeFlags |= flagSet;
-	/* JAZZ103 108287 Add wirte barrier to ensure the setting/unsetting of runtime flags happens before resetting 
+	/* JAZZ103 108287 Add write barrier to ensure the setting/unsetting of runtime flags happens before resetting 
 	 * _maxAOTUnstoredBytes/_maxJITUnstoredBytes/_softmxUnstoredBytes to 0.
 	 */
 	VM_AtomicSupport::writeBarrier();
@@ -6861,3 +7137,201 @@ SH_CompositeCacheImpl::increaseUnstoredBytes(U_32 blockBytes, U_32 aotBytes, U_3
 
 	Trc_SHR_CC_increaseUnstoredBytes_Exit();
 }
+
+/* Query whether the cache is being created by the current VM,
+ * which we assume to be in cold run.
+ *
+ * @return true if cache is being created, false otherwise
+ */
+bool
+SH_CompositeCacheImpl::isNewCache(void)
+{
+	if (!_started) {
+		Trc_SHR_Assert_ShouldNeverHappen();
+		return false;
+	}
+	return _initializingNewCache;
+}
+
+/**
+ * Record the minimum and maximum boundaries of accessed address in this shared classes cache.
+ * @param [in] metadataAddress address accessed in metadata
+ * @return true if the boundaries are updated, false otherwise
+ */
+bool
+SH_CompositeCacheImpl::updateAccessedShrCacheMetadataBounds(J9VMThread* currentThread, uintptr_t const * metadataAddress)
+{
+	if (!_started) {
+		Trc_SHR_Assert_ShouldNeverHappen();
+		return false;
+	}
+
+	if (!isAddressInMetaDataArea((const void*)metadataAddress)) {
+		return false;
+	}
+
+	uintptr_t* updateAddress = (uintptr_t *) &_minimumAccessedShrCacheMetadata;
+	uintptr_t currentValue = (uintptr_t) _minimumAccessedShrCacheMetadata;
+	uintptr_t const newValue = (uintptr_t const) metadataAddress;
+
+	if (0 == currentValue) { /* set initial value.  Don't care if someone beats us to this  */
+		Trc_SHR_CM_updateAccessedShrCacheMetadataMinimum(currentThread, metadataAddress);
+		compareAndSwapUDATA(
+				updateAddress,
+				currentValue,
+				newValue
+		);
+	}
+
+	currentValue = (uintptr_t) _minimumAccessedShrCacheMetadata;
+	while (newValue < (uintptr_t) currentValue) {
+		Trc_SHR_CM_updateAccessedShrCacheMetadataMinimum(currentThread, metadataAddress);
+
+		compareAndSwapUDATA(
+				updateAddress,
+				currentValue,
+				newValue
+		);
+		currentValue = (uintptr_t) _minimumAccessedShrCacheMetadata;
+	}
+
+	updateAddress = (uintptr_t *) &_maximumAccessedShrCacheMetadata;
+	currentValue = (uintptr_t) _maximumAccessedShrCacheMetadata;
+	while (newValue > (uintptr_t) _maximumAccessedShrCacheMetadata) {
+		Trc_SHR_CM_updateAccessedShrCacheMetadataMaximum(currentThread, metadataAddress);
+
+		compareAndSwapUDATA(
+				updateAddress,
+				currentValue,
+				newValue
+		);
+		currentValue = (uintptr_t) _maximumAccessedShrCacheMetadata;
+	}
+
+	return true;
+}
+
+/**
+ * Checks whether the address is inside the released metadata boundaries.
+ *
+ * @param [in] currentThread The current JVM thread
+ * @param [in] metadataAddress The address to be checked
+ *
+ * @return true if the _minimumAccessedShrCacheMetadata <= metadataAddress <= _maximumAccessedShrCacheMetadata, false otherwise.
+ */
+bool
+SH_CompositeCacheImpl::isAddressInReleasedMetaDataBounds(J9VMThread* currentThread, UDATA metadataAddress) const
+{
+	bool rc = false;
+	if (!_started) {
+		Trc_SHR_Assert_ShouldNeverHappen();
+		return rc;
+	}
+	if ((0 != _minimumAccessedShrCacheMetadata)
+		&& (0 != _maximumAccessedShrCacheMetadata)
+	) {
+		rc = ((_minimumAccessedShrCacheMetadata <= metadataAddress) && (metadataAddress <= _maximumAccessedShrCacheMetadata));
+	}
+
+	return rc;
+}
+
+/**
+ * Return the unique ID of the current cache
+ *
+ * @param [in] currentThread The current JVM thread
+ * @param [in] createtime The cache create time which is stored in OSCache_header2.
+ * @param [in] metadataBytes  The size of the metadata section of current oscache.
+ * @param [in] classesBytes  The size of the classes section of current oscache.
+ * @param [in] lineNumTabBytes  The size of the line number table section of current oscache.
+ * @param [in] varTabBytes  The size of the variable table section of current oscache.
+ *
+ * @return NULL if the cache is not started. Otherwise, return the unique ID of the current cache.
+ *
+ */
+const char*
+SH_CompositeCacheImpl::getCacheUniqueID(J9VMThread* currentThread) const
+{
+	if (!_started) {
+		return NULL;
+	}
+	return _oscache->getCacheUniqueID(currentThread, getCreateTime(), getMetadataBytes(), getClassesBytes(), getLineNumberTableBytes(), getLocalVariableTableBytes());
+}
+
+/**
+ * Compare the unique ID of the current cache to unique ID passed in
+ *
+ * @param [in] currentThread The current JVM thread
+ * @param [in] prereqCacheUniqueID The unique ID to be compared
+ *
+ * @return True if the current cache has the same unique ID as the one passed in. False otherwise.
+ *
+ */
+bool
+SH_CompositeCacheImpl::verifyCacheUniqueID(J9VMThread* currentThread, const char* expectedCacheUniqueID) const
+{
+	const char* actualCacheUniqueID = getCacheUniqueID(currentThread);
+	bool rc = (0 == strcmp(expectedCacheUniqueID, actualCacheUniqueID));
+	if (false == rc) {
+		Trc_SHR_CC_verifyCacheUniqueID_Failed(currentThread, expectedCacheUniqueID, actualCacheUniqueID);
+	}
+	return rc;
+}
+
+/**
+ * Return the cache name
+ */
+const char*
+SH_CompositeCacheImpl::getCacheName(void) const
+{
+	return _cacheName;
+}
+
+/**
+ * Return the cache layer number.
+ */
+I_8
+SH_CompositeCacheImpl::getLayer(void) const
+{
+	return _layer;
+}
+
+/**
+ * Return the cache file name.
+ */
+const char* 
+SH_CompositeCacheImpl::getCacheNameWithVGen(void) const
+{
+	return _oscache->getCacheNameWithVGen();
+}
+
+/* Get a SH_OSCache_Info of a non-top layer cache.
+ * 
+ * @param[in] vm The current J9JavaVM
+ * @param[in] ctrlDirName The cache control directory 
+ * @param[in] groupPerm Group permissions to open the cache directory
+ * @param[out] SH_OSCache_Info of the non-top layer cache
+ * 
+ * @return 0 on success and -1 on failure
+ */
+IDATA
+SH_CompositeCacheImpl::getNonTopLayerCacheInfo(J9JavaVM* vm, const char* ctrlDirName, UDATA groupPerm, SH_OSCache_Info *cacheInfo) 
+{
+	return SH_OSCache::getCacheStatistics(vm, ctrlDirName, _oscache->getCacheNameWithVGen(), groupPerm, 0, J2SE_VERSION(vm), cacheInfo, SHR_STATS_REASON_ITERATE, true, false, NULL, _oscache);
+}
+
+/**
+ * Return the cache create time.
+ */
+U_64
+SH_CompositeCacheImpl::getCreateTime(void) const
+{
+	return _oscache->getCreateTime();
+}
+
+bool
+SH_CompositeCacheImpl::hasReadMutex(J9VMThread* currentThread) const
+{
+	return J9_ARE_ALL_BITS_SET(currentThread->privateFlags2, J9_PRIVATE_FLAGS2_IN_SHARED_CACHE_READ_MUTEX);
+}
+

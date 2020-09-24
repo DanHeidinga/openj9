@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -100,7 +100,7 @@ IDATA j9bcutil_dumpBytecodes(J9PortLibrary * portLib, J9ROMClass * romClass,
 	IDATA result;
 	U_32 resultArray[8192];
 	U_32 localsCount = J9_ARG_COUNT_FROM_ROM_METHOD(romMethod) + J9_TEMP_COUNT_FROM_ROM_METHOD(romMethod);
-	char environment[128] = "\0";
+	char environment[128];
 	BOOLEAN envVarDefined = FALSE;
 
 	if (0 == j9sysinfo_get_env("j9bcutil_dumpBytecodes", environment, sizeof(environment))) {
@@ -387,6 +387,9 @@ IDATA j9bcutil_dumpBytecodes(J9PortLibrary * portLib, J9ROMClass * romClass,
 		case JBputstatic:
 		case JBgetfield:
 		case JBputfield:
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+		case JBwithfield:
+#endif
 			_GETNEXT_U16(index, bcIndex);
 			info = &constantPool[index];
 			outputFunction(userData, "%i ", index);
@@ -468,6 +471,9 @@ IDATA j9bcutil_dumpBytecodes(J9PortLibrary * portLib, J9ROMClass * romClass,
 		case JBanewarray:
 		case JBcheckcast:
 		case JBinstanceof:
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+		case JBdefaultvalue:
+#endif
 			_GETNEXT_U16(index, bcIndex);
 			info = &constantPool[index];
 			outputFunction(userData, "%i ", index);
@@ -586,7 +592,3 @@ static void cfdumpBytecodePrintFunction(void *userData, char *format, ...)
 
 	j9tty_printf(PORTLIB, "%s", outputBuffer);
 }
-
-
-
-

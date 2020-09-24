@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -39,13 +39,13 @@
  * @return NULL if there are no more object references
  */
 j9object_t *
-GC_ConstantPoolObjectSlotIterator::nextSlot()
-{
+GC_ConstantPoolObjectSlotIterator::nextSlot() {
 	U_32 slotType;
 	j9object_t *slotPtr;
+	j9object_t *result = NULL;
 
-	while(_cpEntryCount) {
-		if(0 == _cpDescriptionIndex) {
+	while (_cpEntryCount) {
+		if (0 == _cpDescriptionIndex) {
 			_cpDescription = *_cpDescriptionSlots;
 			_cpDescriptionSlots += 1;
 			_cpDescriptionIndex = J9_CP_DESCRIPTIONS_PER_U32;
@@ -54,72 +54,42 @@ GC_ConstantPoolObjectSlotIterator::nextSlot()
 		slotType = _cpDescription & J9_CP_DESCRIPTION_MASK;
 		slotPtr = _cpEntry;
 
+		/* Determine if the slot should be processed */
+		switch (slotType) {
+		case J9CPTYPE_STRING: /* fall through */
+		case J9CPTYPE_ANNOTATION_UTF8:
+			result = &(((J9RAMStringRef *) slotPtr)->stringObject);
+			break;
+		case J9CPTYPE_METHOD_TYPE:
+			result = &(((J9RAMMethodTypeRef *) slotPtr)->type);
+			break;
+		case J9CPTYPE_METHODHANDLE:
+			result = &(((J9RAMMethodHandleRef *) slotPtr)->methodHandle);
+			break;
+		case J9CPTYPE_CONSTANT_DYNAMIC:
+			if (NULL != (result = _constantDynamicSlotIterator.nextSlot(slotPtr))) {
+				/* Do not progress through the function.
+				 * Avoids advancing the slot while a constant dynamic is being iterated */
+				return result;
+			}
+			break;
+		default:
+			break;
+		}
+
 		/* Adjust the CP slot and description information */
-		_cpEntry = (j9object_t *)( ((U_8 *)_cpEntry) + sizeof(J9RAMConstantPoolItem) );
+		_cpEntry = (j9object_t *) (((U_8 *) _cpEntry)
+				+ sizeof(J9RAMConstantPoolItem));
 		_cpEntryCount -= 1;
 
 		_cpDescription >>= J9_CP_BITS_PER_DESCRIPTION;
 		_cpDescriptionIndex -= 1;
 
-		/* Determine if the slot should be processed */
-		if((slotType == J9CPTYPE_STRING)
-			|| (slotType == J9CPTYPE_ANNOTATION_UTF8)
-		) {
-			return &(((J9RAMStringRef *) slotPtr)->stringObject);
+		if (NULL != result) {
+			break;
 		}
-		if(slotType == J9CPTYPE_METHOD_TYPE) {
-			return &(((J9RAMMethodTypeRef *) slotPtr)->type);
-		}
-		if(slotType == J9CPTYPE_METHODHANDLE) {
-			return &(((J9RAMMethodHandleRef *) slotPtr)->methodHandle);
-		}
+
 	}
-	return NULL;
+	return result;
 }
 
-bool
-GC_ConstantPoolObjectSlotIterator::isSlotInConstantPool(j9object_t *slot)
-{
-	/* we can only call this if nextSlot has not yet been called */
-	/* TODO (JAZZ 47325): Fix how we link GCCheck such that it can find these trace symbols (otherwise, uncommenting these will cause link failures on AIX and z/OS)
-	Assert_MM_true(_cpEntryTotal == _cpEntryCount);
-	Assert_MM_true(0 == _cpDescriptionIndex);
-	*/
-
-	J9RAMConstantPoolItem *newPointer = (J9RAMConstantPoolItem *)slot;
-	J9RAMConstantPoolItem *oldPointer = (J9RAMConstantPoolItem *)_cpEntry;
-	bool isInConstantPool = false;
-	if (newPointer >= oldPointer) {
-		UDATA entriesToSkip = (newPointer - oldPointer);
-		isInConstantPool = (entriesToSkip <= _cpEntryCount);
-	}
-	return isInConstantPool;
-}
-
-void
-GC_ConstantPoolObjectSlotIterator::setNextSlot(j9object_t *slot)
-{
-	/* we can only call this if nextSlot has not yet been called */
-	/* TODO (JAZZ 47325): Fix how we link GCCheck such that it can find these trace symbols (otherwise, uncommenting these will cause link failures on AIX and z/OS)
-	Assert_MM_true(_cpEntryTotal == _cpEntryCount);
-	Assert_MM_true(0 == _cpDescriptionIndex);
-	*/
-
-	J9RAMConstantPoolItem *newPointer = (J9RAMConstantPoolItem *)slot;
-	J9RAMConstantPoolItem *oldPointer = (J9RAMConstantPoolItem *)_cpEntry;
-	/* TODO (JAZZ 47325): Fix how we link GCCheck such that it can find these trace symbols (otherwise, uncommenting these will cause link failures on AIX and z/OS)
-	Assert_MM_true(newPointer >= oldPointer);
-	*/
-
-	UDATA entriesToSkip = (newPointer - oldPointer);
-	UDATA descriptionSlotsToAdvance = entriesToSkip / J9_CP_DESCRIPTIONS_PER_U32;
-	UDATA offsetIntoDescription = entriesToSkip % J9_CP_DESCRIPTIONS_PER_U32;
-
-	_cpDescriptionSlots += descriptionSlotsToAdvance;
-	_cpDescription = *_cpDescriptionSlots;
-	_cpDescriptionSlots += 1;
-	_cpDescription >>= (offsetIntoDescription * J9_CP_BITS_PER_DESCRIPTION);
-	_cpDescriptionIndex = J9_CP_DESCRIPTIONS_PER_U32 - offsetIntoDescription;
-	_cpEntryCount -= (U_32)entriesToSkip;
-	_cpEntry = slot;
-}

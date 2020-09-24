@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2014 IBM Corp. and others
+ * Copyright (c) 2001, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -51,7 +51,7 @@ SH_ROMClassManagerImpl::localHashTableCreate(J9VMThread* currentThread, U_32 ini
 	J9HashTable* returnVal;
 
 	Trc_SHR_RMI_localHashTableCreate_Entry(currentThread, initialEntries);
-	returnVal = hashTableNew(OMRPORT_FROM_J9PORT(_portlib), J9_GET_CALLSITE(), initialEntries, sizeof(SH_ROMClassManagerImpl::RcLinkedListImpl*), sizeof(char *), 0, J9MEM_CATEGORY_CLASSES, SH_Manager::hllHashFn, SH_Manager::hllHashEqualFn, NULL, (void*)currentThread->javaVM->internalVMFunctions);
+	returnVal = hashTableNew(OMRPORT_FROM_J9PORT(_portlib), J9_GET_CALLSITE(), initialEntries, sizeof(SH_Manager::HashLinkedListImpl*), sizeof(char *), 0, J9MEM_CATEGORY_CLASSES, SH_Manager::hllHashFn, SH_Manager::hllHashEqualFn, NULL, (void*)currentThread->javaVM->internalVMFunctions);
 	_hashTableGetNumItemsDoFn = SH_ROMClassManagerImpl::customCountItemsInList;
 	Trc_SHR_RMI_localHashTableCreate_Exit(currentThread, returnVal);
 	return returnVal;
@@ -120,7 +120,7 @@ SH_ROMClassManagerImpl::localInitializePools(J9VMThread* currentThread)
 {
 	Trc_SHR_RMI_localInitializePools_Entry(currentThread);
 
-	_linkedListImplPool = pool_new(sizeof(SH_ROMClassManagerImpl::RcLinkedListImpl),  0, 0, 0, J9_GET_CALLSITE(), J9MEM_CATEGORY_CLASSES, POOL_FOR_PORT(_portlib));
+	_linkedListImplPool = pool_new(sizeof(SH_Manager::HashLinkedListImpl),  0, 0, 0, J9_GET_CALLSITE(), J9MEM_CATEGORY_CLASSES, POOL_FOR_PORT(_portlib));
 	if (!_linkedListImplPool) {
 		PORT_ACCESS_FROM_PORT(_portlib);
 		M_ERR_TRACE(J9NLS_SHRC_RMI_FAILED_CREATE_POOL);
@@ -165,7 +165,7 @@ SH_ROMClassManagerImpl::getHashTableEntriesFromCacheSize(UDATA cacheSizeBytes)
 bool 
 SH_ROMClassManagerImpl::storeNew(J9VMThread* currentThread, const ShcItem* itemInCache, SH_CompositeCache* cachelet)
 {
-	RcLinkedListImpl* result = NULL;
+	HashLinkedListImpl* result = NULL;
 	bool orphanReunited = false;
 	J9ROMClass* romClass = NULL;
 	J9UTF8* utf8Name = NULL;
@@ -176,9 +176,9 @@ SH_ROMClassManagerImpl::storeNew(J9VMThread* currentThread, const ShcItem* itemI
 	Trc_SHR_RMI_storeNew_Entry(currentThread, itemInCache);
 
 	if (ITEMTYPE(itemInCache) == TYPE_ORPHAN) {
-		romClass = (J9ROMClass*)OWROMCLASS(((OrphanWrapper*)ITEMDATA(itemInCache)));
+		romClass = (J9ROMClass*)_cache->getAddressFromJ9ShrOffset(&(((OrphanWrapper*)ITEMDATA(itemInCache))->romClassOffset));
 	} else {
-		romClass = (J9ROMClass*)RCWROMCLASS(((ROMClassWrapper*)ITEMDATA(itemInCache)));
+		romClass = (J9ROMClass*)_cache->getAddressFromJ9ShrOffset(&(((ROMClassWrapper*)ITEMDATA(itemInCache))->romClassOffset));
 	}
 
 	utf8Name = J9ROMCLASS_CLASSNAME(romClass);
@@ -193,13 +193,10 @@ SH_ROMClassManagerImpl::storeNew(J9VMThread* currentThread, const ShcItem* itemI
 		orphanReunited = reuniteOrphan(currentThread, (const char*)J9UTF8_DATA(utf8Name), J9UTF8_LENGTH(utf8Name), itemInCache, romClass);
 	}
 	if (!orphanReunited) {
-		result = (RcLinkedListImpl*)hllTableUpdate(currentThread, _linkedListImplPool, utf8Name, itemInCache, cachelet);
+		result = hllTableUpdate(currentThread, _linkedListImplPool, utf8Name, itemInCache, cachelet);
 		if (!result) {
 			Trc_SHR_RMI_storeNew_ExitFalse(currentThread);
 			return false;
-		}
-		if (ITEMTYPE(itemInCache) == TYPE_ORPHAN) {
-			result->_isOrphan = true;
 		}
 	}
 	Trc_SHR_RMI_storeNew_ExitTrue(currentThread);
@@ -214,14 +211,14 @@ SH_ROMClassManagerImpl::storeNew(J9VMThread* currentThread, const ShcItem* itemI
 bool
 SH_ROMClassManagerImpl::reuniteOrphan(J9VMThread* currentThread, const char* romClassName, UDATA nameLen, const ShcItem* item, const J9ROMClass* romClassPtr)
 {
-	RcLinkedListImpl* found, *walk;
+	HashLinkedListImpl* found, *walk;
 
 	if (getState() != MANAGER_STATE_STARTED) {
 		return false;
 	}
 	Trc_SHR_RMI_reuniteOrphan_Entry(currentThread, nameLen, romClassName);
 
-	found = (RcLinkedListImpl*)hllTableLookup(currentThread, romClassName, (U_16)nameLen, false);
+	found = hllTableLookup(currentThread, romClassName, (U_16)nameLen, false);
 	walk = found;
 
 	if (!found) {
@@ -231,18 +228,17 @@ SH_ROMClassManagerImpl::reuniteOrphan(J9VMThread* currentThread, const char* rom
 	do {
 		const ShcItem* currentItem = walk->_item;
 
-		if (walk->_isOrphan) {
-			J9ROMClass* orphanRc = (J9ROMClass*)OWROMCLASS(((OrphanWrapper*)ITEMDATA(currentItem)));
+		if (TYPE_ORPHAN == ITEMTYPE(currentItem)) {
+			J9ROMClass* orphanRc = (J9ROMClass*)_cache->getAddressFromJ9ShrOffset(&(((OrphanWrapper*)ITEMDATA(currentItem))->romClassOffset));
 
 			if (orphanRc == romClassPtr) {
 				Trc_SHR_RMI_reuniteOrphan_Event1(currentThread, nameLen, romClassName, romClassPtr, item);
-				walk->_isOrphan = false;
 				walk->_item = item;			/* Fix up to real item */
 				Trc_SHR_RMI_reuniteOrphan_ExitTrue(currentThread);
 				return true;
 			}
 		}
-		walk = (RcLinkedListImpl*)walk->_next;
+		walk = (HashLinkedListImpl*)walk->_next;
 	} while (found!=walk);
 	Trc_SHR_RMI_reuniteOrphan_ExitFalse(currentThread);
 	return false;
@@ -263,8 +259,8 @@ SH_ROMClassManagerImpl::reuniteOrphan(J9VMThread* currentThread, const char* rom
 const J9ROMClass*
 SH_ROMClassManagerImpl::findNextExisting(J9VMThread* currentThread, void * &findNextIterator, void * &firstFound, U_16 classnameLength, const char* classnameData)
 {
-	RcLinkedListImpl * walk = NULL;
-	RcLinkedListImpl * prev = NULL;
+	HashLinkedListImpl * walk = NULL;
+	HashLinkedListImpl * prev = NULL;
 	const ShcItem* currentItem = NULL;
 	const ShcItem* prevItem = NULL;
 	const J9ROMClass* returnVal = NULL;
@@ -280,14 +276,14 @@ SH_ROMClassManagerImpl::findNextExisting(J9VMThread* currentThread, void * &find
 
 	if (findNextIterator == NULL) {
 		Trc_SHR_RMI_findNextROMClass_FirstElem_Event(currentThread);
-		walk = (RcLinkedListImpl*) hllTableLookup(currentThread, classnameData, classnameLength, true);
+		walk = hllTableLookup(currentThread, classnameData, classnameLength, true);
 		firstFound = (void *)walk;
 		findNextIterator = (void *)walk;
 	} else {
 		Trc_SHR_RMI_findNextROMClass_NextElem_Event(currentThread);
-		walk = (RcLinkedListImpl*) findNextIterator;
+		walk = (HashLinkedListImpl*) findNextIterator;
 		prev = walk;
-		walk = (RcLinkedListImpl*) walk->_next;
+		walk = (HashLinkedListImpl*) walk->_next;
 		findNextIterator = (void *)walk;
 
 		if (firstFound == walk) {
@@ -309,21 +305,25 @@ SH_ROMClassManagerImpl::findNextExisting(J9VMThread* currentThread, void * &find
 
 	currentItem = walk->_item;
 
-	if (walk->_isOrphan) {
+	if (TYPE_ORPHAN == ITEMTYPE(currentItem)) {
 		Trc_SHR_RMI_findNextROMClass_FoundOrphan_Event(currentThread);
-		returnVal = (J9ROMClass*) OWROMCLASS(((OrphanWrapper*) ITEMDATA(currentItem)));
+		OrphanWrapper* owr = (OrphanWrapper*) ITEMDATA(currentItem);
+		returnVal = (J9ROMClass*) _cache->getAddressFromJ9ShrOffset(&(owr->romClassOffset));
 	} else {
 		Trc_SHR_RMI_findNextROMClass_FoundClass_Event(currentThread);
-		returnVal = (J9ROMClass*) RCWROMCLASS(((ROMClassWrapper*) ITEMDATA(currentItem)));
+		ROMClassWrapper* rcw = (ROMClassWrapper*) ITEMDATA(currentItem);
+		returnVal = (J9ROMClass*) _cache->getAddressFromJ9ShrOffset(&(rcw->romClassOffset));
 	}
 	
 	if (prev != NULL) {
 		/*If returnVal is the same as the last one returned then move on.*/
 		prevItem = prev->_item;
-		if (prev->_isOrphan) {
-			prevVal = (J9ROMClass*) OWROMCLASS(((OrphanWrapper*) ITEMDATA(prevItem)));
+		if (TYPE_ORPHAN == ITEMTYPE(prevItem)) {
+			OrphanWrapper* owr = (OrphanWrapper*) ITEMDATA(prevItem);
+			prevVal = (J9ROMClass*) _cache->getAddressFromJ9ShrOffset(&(owr->romClassOffset));
 		} else {
-			prevVal = (J9ROMClass*) RCWROMCLASS(((ROMClassWrapper*) ITEMDATA(prevItem)));
+			ROMClassWrapper* rcw = (ROMClassWrapper*) ITEMDATA(prevItem);
+			prevVal = (J9ROMClass*) _cache->getAddressFromJ9ShrOffset(&(rcw->romClassOffset));
 		}
 		if (prevVal == returnVal) {
 			Trc_SHR_RMI_findNextROMClass_MatchPrev_Event(currentThread);
@@ -377,8 +377,8 @@ UDATA
 SH_ROMClassManagerImpl::locateROMClass(J9VMThread* currentThread, const char* path, U_16 pathLen, ClasspathItem* cp, I_16 cpeIndex, IDATA confirmedEntries, IDATA callerHelperID, 
 						const J9ROMClass* cachedROMClass, const J9UTF8* partition, const J9UTF8* modContext, LocateROMClassResult* result) 
 {
-	RcLinkedListImpl* found = NULL;
-	RcLinkedListImpl* walk = NULL;
+	HashLinkedListImpl* found = NULL;
+	HashLinkedListImpl* walk = NULL;
 	ROMClassWrapper* match = NULL;
 	bool localFoundUnmodifiedOrphan = false;
 	UDATA foundResult = LOCATE_ROMCLASS_RETURN_NOTFOUND;
@@ -399,7 +399,7 @@ SH_ROMClassManagerImpl::locateROMClass(J9VMThread* currentThread, const char* pa
 	result->foundAtIndex = -1;
 	result->staleCPEI = NULL;
 
-	found = (RcLinkedListImpl*)hllTableLookup(currentThread, path, (U_16)pathLen, true);
+	found = hllTableLookup(currentThread, path, (U_16)pathLen, true);
 
 	if (!found) {
 		/*** NOTHING IS FOUND, TELL THE CALLER THAT IT MIGHT BE WORTH WAITING ***/
@@ -415,12 +415,12 @@ SH_ROMClassManagerImpl::locateROMClass(J9VMThread* currentThread, const char* pa
 
 		Trc_SHR_RMI_locateROMClass_TestItem(currentThread, currentItem);
 
-		if (walk->_isOrphan) {
+		if (TYPE_ORPHAN == ITEMTYPE(currentItem)) {
 
 			/*** IF AN UNMODIFIED ORPHAN IS FOUND, REMEMBER IT AND CARRY ON SEARCHING ***/
 
 			if (!localFoundUnmodifiedOrphan) {
-				J9ROMClass* orphanRC = (J9ROMClass*)OWROMCLASS(((OrphanWrapper*)ITEMDATA(currentItem)));
+				J9ROMClass* orphanRC = (J9ROMClass*)_cache->getAddressFromJ9ShrOffset(&((OrphanWrapper*)ITEMDATA(currentItem))->romClassOffset);
 				bool romClassIsModified = J9ROMCLASS_HAS_MODIFIED_BYTECODES(orphanRC);
 
 				if (!romClassIsModified) {
@@ -437,11 +437,11 @@ SH_ROMClassManagerImpl::locateROMClass(J9VMThread* currentThread, const char* pa
 				/*** IF THE ROMCLASS IS NOT STALE, PROCEED TO VALIDATE THAT IT IS THE ONE WE WANT ***/
 
 				ROMClassWrapper* wrapper = ((ROMClassWrapper*)ITEMDATA(walk->_item));
-				ClasspathItem* cpInCache = (ClasspathItem*)CPWDATA(RCWCLASSPATH(wrapper));
+				ClasspathItem* cpInCache = (ClasspathItem*)CPWDATA(_cache->getAddressFromJ9ShrOffset(&(wrapper->theCpOffset)));
 				I_16 localFoundAtIndex = -1;				/* Important to initialize to -1 as this indicates "not found" */
 
 				/* If we have a cachedROMClass (ie. the exact ROMClass we want is already in the cache) we can use that to eliminate non-matches */
-				if ((cachedROMClass != NULL) && (cachedROMClass != (J9ROMClass*)RCWROMCLASS(wrapper))) {
+				if ((cachedROMClass != NULL) && (cachedROMClass != (J9ROMClass*)_cache->getAddressFromJ9ShrOffset(&(wrapper->romClassOffset)))) {
 					/* Only interested in an exact pointer-match, keep searching */
 					Trc_SHR_RMI_locateROMClass_ElimatedWalkNext(currentThread);
 					goto _continueNext;
@@ -563,7 +563,7 @@ SH_ROMClassManagerImpl::locateROMClass(J9VMThread* currentThread, const char* pa
 		}
 
 _continueNext:
-		walk = (RcLinkedListImpl*)walk->_next;
+		walk = (HashLinkedListImpl*)walk->_next;
 	} while (found!=walk);
 
 	if (localFoundUnmodifiedOrphan) {
@@ -592,7 +592,7 @@ SH_ROMClassManagerImpl::checkTimestamp(J9VMThread* currentThread, const char* pa
 
 	Trc_SHR_RMI_checkTimestamp_Entry(currentThread, pathLen, path);
 
-	cpw = (ClasspathWrapper*)RCWCLASSPATH(rcw);
+	cpw = (ClasspathWrapper*)_cache->getAddressFromJ9ShrOffset(&(rcw->theCpOffset));
 	cpeiInCache = ((ClasspathItem*)CPWDATA(cpw))->itemAt(rcw->cpeIndex);
 
 	if (_tsm->checkROMClassTimeStamp(currentThread, path, pathLen, cpeiInCache, rcw) != TIMESTAMP_UNCHANGED) {

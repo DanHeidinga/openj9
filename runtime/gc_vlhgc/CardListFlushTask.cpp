@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -32,23 +31,24 @@
 
 #include "CardTable.hpp"
 #include "CycleState.hpp"
-#include "Dispatcher.hpp"
 #include "EnvironmentVLHGC.hpp"
 #include "HeapRegionIteratorVLHGC.hpp"
 #include "HeapRegionManager.hpp"
 #include "InterRegionRememberedSet.hpp"
+#include "ParallelDispatcher.hpp"
 #include "RememberedSetCardListBufferIterator.hpp"
 #include "RememberedSetCardListCardIterator.hpp"
-
+#include "MarkMap.hpp"
+#include "SchedulingDelegate.hpp"
 
 void
-MM_CardListFlushTask::masterSetup(MM_EnvironmentBase *env)
+MM_CardListFlushTask::mainSetup(MM_EnvironmentBase *env)
 {
 	Assert_MM_true(MM_CycleState::CT_PARTIAL_GARBAGE_COLLECTION == env->_cycleState->_collectionType);
 }
 
 void
-MM_CardListFlushTask::masterCleanup(MM_EnvironmentBase *env)
+MM_CardListFlushTask::mainCleanup(MM_EnvironmentBase *env)
 {
 }
 
@@ -97,6 +97,10 @@ MM_CardListFlushTask::run(MM_EnvironmentBase *envBase)
 {
 	MM_EnvironmentVLHGC *env = MM_EnvironmentVLHGC::getEnvironment(envBase);
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
+	MM_MarkMap *markMap = NULL;
+	if (static_cast<MM_CycleStateVLHGC*>(envBase->_cycleState)->_schedulingDelegate->isFirstPGCAfterGMP()) {
+		markMap = env->_cycleState->_markMap;
+	}
 
 	/* this function has knowledge of the collection set, which is only valid during a PGC */
 	Assert_MM_true(MM_CycleState::CT_PARTIAL_GARBAGE_COLLECTION == env->_cycleState->_collectionType);
@@ -115,11 +119,11 @@ MM_CardListFlushTask::run(MM_EnvironmentBase *envBase)
 					Assert_MM_true(region->getRememberedSetCardList()->isAccurate());
 					/* Iterate non-overflowed buckets of the list */
 					GC_RememberedSetCardListCardIterator rsclCardIterator(region->getRememberedSetCardList());
-					MM_RememberedSetCard card = 0;
+					UDATA card = 0;
 					while(0 != (card = rsclCardIterator.nextReferencingCard(env))) {
 						/* For Marking purposes we do not need to track references within Collection Set */
 						MM_HeapRegionDescriptorVLHGC *referencingRegion = interRegionRememberedSet->tableDescriptorForRememberedSetCard(card);
-						if (referencingRegion->containsObjects() && !referencingRegion->_markData._shouldMark) {
+						if (interRegionRememberedSet->cardMayContainObjects(card, referencingRegion, markMap) && !referencingRegion->_markData._shouldMark) {
 							Card *cardAddress = interRegionRememberedSet->rememberedSetCardToCardAddr(env, card);
 							writeFlushToCardState(cardAddress, gmpIsActive);
 						}
@@ -133,6 +137,7 @@ MM_CardListFlushTask::run(MM_EnvironmentBase *envBase)
 			} else if (shouldFlushBuffersForUnregisteredRegions) {
 				if (J9MODRON_HANDLE_NEXT_WORK_UNIT(env)) {
 					/* flush the content of buffers owned by decommitted regions (but used/borrowed by other active regions) */
+					bool const compressed = env->compressObjectReferences();
 					UDATA toRemoveCount = 0;
 					UDATA totalCountBefore = region->getRememberedSetCardList()->getSize(env);
 					MM_RememberedSetCard *lastCardInCurrentBuffer = NULL;
@@ -145,10 +150,10 @@ MM_CardListFlushTask::run(MM_EnvironmentBase *envBase)
 						if (!bufferOwningRegion->isCommitted()) {
 							Assert_MM_true(NULL != bufferOwningRegion->getRsclBufferPool());
 							rsclBufferIterator.unlinkCurrentBuffer(env);
-							for (MM_RememberedSetCard *cardSlot = cardBufferControlBlockCurrent->_card; cardSlot < lastCardInCurrentBuffer; cardSlot++) {
-								MM_RememberedSetCard card = *cardSlot;
+							for (MM_RememberedSetCard *cardSlot = cardBufferControlBlockCurrent->_card; cardSlot < lastCardInCurrentBuffer; cardSlot = MM_RememberedSetCard::addToCardAddress(cardSlot, 1, compressed)) {
+								UDATA card = MM_RememberedSetCard::readCard(cardSlot, compressed);
 								MM_HeapRegionDescriptorVLHGC *referencingRegion = interRegionRememberedSet->tableDescriptorForRememberedSetCard(card);
-								if (referencingRegion->containsObjects() && !referencingRegion->_markData._shouldMark) {
+								if (interRegionRememberedSet->cardMayContainObjects(card, referencingRegion, markMap) && !referencingRegion->_markData._shouldMark) {
 									Card *cardAddress = interRegionRememberedSet->rememberedSetCardToCardAddr(env, card);
 									writeFlushToCardState(cardAddress, gmpIsActive);
 								}
@@ -167,7 +172,7 @@ MM_CardListFlushTask::run(MM_EnvironmentBase *envBase)
 void
 MM_CardListFlushTask::setup(MM_EnvironmentBase *env)
 {
-	if (env->isMasterThread()) {
+	if (env->isMainThread()) {
 		Assert_MM_true(_cycleState == env->_cycleState);
 	} else {
 		Assert_MM_true(NULL == env->_cycleState);
@@ -178,7 +183,7 @@ MM_CardListFlushTask::setup(MM_EnvironmentBase *env)
 void
 MM_CardListFlushTask::cleanup(MM_EnvironmentBase *env)
 {
-	if (env->isMasterThread()) {
+	if (env->isMainThread()) {
 		Assert_MM_true(_cycleState == env->_cycleState);
 	} else {
 		env->_cycleState = NULL;
@@ -194,7 +199,7 @@ MM_CardListFlushTask::synchronizeGCThreads(MM_EnvironmentBase *env, const char *
 }
 
 bool
-MM_CardListFlushTask::synchronizeGCThreadsAndReleaseMaster(MM_EnvironmentBase *env, const char *id)
+MM_CardListFlushTask::synchronizeGCThreadsAndReleaseMain(MM_EnvironmentBase *env, const char *id)
 {
 	/* unused in this task */
 	Assert_MM_unreachable();

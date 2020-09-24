@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar17]*/
 /*******************************************************************************
- * Copyright (c) 2016, 2017 IBM Corp. and others
+ * Copyright (c) 2016, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -25,11 +25,16 @@ package com.ibm.lang.management.internal;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.MemoryPoolMXBean;
 import java.lang.management.MemoryType;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-import javax.management.ObjectName;
+import javax.management.NotificationFilter;
+import javax.management.NotificationListener;
 
 import com.ibm.java.lang.management.internal.MemoryMXBeanImpl;
 import com.ibm.lang.management.MemoryMXBean;
+import com.ibm.oti.vm.VM;
 
 /**
  * Runtime type for {@link com.ibm.lang.management.MemoryMXBean}.
@@ -44,19 +49,48 @@ public final class ExtendedMemoryMXBeanImpl extends MemoryMXBeanImpl implements 
 		return instance;
 	}
 
-	private final MemoryNotificationThread notificationThread;
+	/*
+	 * This remembers whether the notification thread has been started:
+	 * There's no point in sending notifications before we have any listeners.
+	 */
+	private final AtomicBoolean notificationThreadStarted;
 
 	private ExtendedMemoryMXBeanImpl() {
 		super();
-		notificationThread = new MemoryNotificationThread(this);
-    	notificationThread.setDaemon(true);
-    	notificationThread.setName("MemoryMXBean notification dispatcher"); //$NON-NLS-1$
-		notificationThread.setPriority(Thread.NORM_PRIORITY + 1);
-		notificationThread.start();
+		notificationThreadStarted = new AtomicBoolean();
 	}
 
 	/**
-	 * Deprecated.  Use getTotalPhysicalMemorySize().
+	 * {@inheritDoc}
+	 */
+	@Override
+	public void addNotificationListener(NotificationListener listener, NotificationFilter filter, Object handback)
+			throws IllegalArgumentException {
+		// Start the notification thread when we have our first listener.
+		startNotificationThread();
+		super.addNotificationListener(listener, filter, handback);
+	}
+
+	/**
+	 * Ensure the notification thread is running.
+	 */
+	@Override
+	protected void startNotificationThread() {
+		if (!notificationThreadStarted.getAndSet(true)) {
+			PrivilegedAction<Thread> createThread = () -> {
+				Thread thread = VM.getVMLangAccess().createThread(new MemoryNotificationThread(this),
+					"MemoryMXBean notification dispatcher", true, false, true, ClassLoader.getSystemClassLoader()); //$NON-NLS-1$
+				thread.setPriority(Thread.NORM_PRIORITY + 1);
+				return thread;
+			};
+
+			Thread notifier = AccessController.doPrivileged(createThread);
+			notifier.start();
+		}
+	}
+
+	/**
+	 * Deprecated. Use getTotalPhysicalMemorySize().
 	 */
 	/*[IF Sidecar19-SE]
 	@Deprecated(forRemoval = true, since = "1.8")
@@ -82,8 +116,8 @@ public final class ExtendedMemoryMXBeanImpl extends MemoryMXBeanImpl implements 
 	 * {@inheritDoc}
 	 */
 	@Override
-	protected GarbageCollectorMXBean makeGCBean(ObjectName objName, String name, int internalID) {
-		return new ExtendedGarbageCollectorMXBeanImpl(objName, name, internalID, this);
+	protected GarbageCollectorMXBean makeGCBean(String domainName, String name, int internalID) {
+		return new ExtendedGarbageCollectorMXBeanImpl(domainName, name, internalID, this);
 	}
 
 	/**

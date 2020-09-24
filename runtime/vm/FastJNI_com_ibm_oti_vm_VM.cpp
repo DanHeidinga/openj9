@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2017 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -47,17 +47,18 @@ Fast_java_lang_VMAccess_findClassOrNull(J9VMThread *currentThread, j9object_t cl
 		} else {
 			loader = vm->systemClassLoader;
 		}
-		if (CLASSNAME_VALID_NON_ARRARY == verifyQualifiedName(currentThread, className)) {
-			j9Class = internalFindClassString(currentThread, NULL, className, loader, J9_FINDCLASS_FLAG_USE_LOADER_CP_ENTRIES);
-			if (VM_VMHelpers::exceptionPending(currentThread)) {
-				J9Class *exceptionClass = J9VMJAVALANGCLASSNOTFOUNDEXCEPTION(vm);
-				/* If the current exception is ClassNotFoundException, discard it. */
-				if (exceptionClass == J9OBJECT_CLAZZ(currentThread, currentThread->currentException)) {
-					VM_VMHelpers::clearException(currentThread);
-				}
-			} else {
-				classObject = J9VM_J9CLASS_TO_HEAPCLASS(j9Class);
+
+		j9Class = internalFindClassString(currentThread, NULL, className, loader,
+											J9_FINDCLASS_FLAG_USE_LOADER_CP_ENTRIES,
+											CLASSNAME_VALID_NON_ARRARY);
+		if (VM_VMHelpers::exceptionPending(currentThread)) {
+			J9Class *exceptionClass = J9VMJAVALANGCLASSNOTFOUNDEXCEPTION(vm);
+			/* If the current exception is ClassNotFoundException, discard it. */
+			if (exceptionClass == J9OBJECT_CLAZZ(currentThread, currentThread->currentException)) {
+				VM_VMHelpers::clearException(currentThread);
 			}
+		} else {
+			classObject = J9VM_J9CLASS_TO_HEAPCLASS(j9Class);
 		}
 	}
 	return classObject;
@@ -106,17 +107,17 @@ Fast_com_ibm_oti_vm_VM_getCPIndexImpl(J9VMThread *currentThread, j9object_t targ
 	}
 }
 
-/* com.ibm.oti.vm.VM: public static final native void initializeClassLoader(ClassLoader classLoader, boolean bootLoader, boolean parallelCapable); */
+/* com.ibm.oti.vm.VM: public static final native void initializeClassLoader(ClassLoader classLoader, int loaderType, boolean parallelCapable); */
 void JNICALL
-Fast_com_ibm_oti_vm_VM_initializeClassLoader(J9VMThread *currentThread, j9object_t classLoaderObject, jboolean bootLoader, jboolean parallelCapable)
+Fast_com_ibm_oti_vm_VM_initializeClassLoader(J9VMThread *currentThread, j9object_t classLoaderObject, jint loaderType, jboolean parallelCapable)
 {
 	if (NULL != J9VMJAVALANGCLASSLOADER_VMREF(currentThread, classLoaderObject)) {
 internalError:
 		setCurrentException(currentThread, J9VMCONSTANTPOOL_JAVALANGINTERNALERROR, NULL);
 	} else {
 		J9JavaVM *vm = currentThread->javaVM;
-		/* if called with bootLoader, assign the system one to this instance */
-		if (bootLoader) {
+		if (J9_CLASSLOADER_TYPE_BOOT == loaderType) {
+			/* if called with bootLoader, assign the system one to this instance */
 			J9ClassLoader *classLoaderStruct = vm->systemClassLoader;
 			j9object_t loaderObject = J9CLASSLOADER_CLASSLOADEROBJECT(currentThread, classLoaderStruct);
 			if (NULL != loaderObject) {
@@ -138,7 +139,11 @@ internalError:
 			}
 			allClassesEndDo(&classWalkState);
 		} else {
-			internalAllocateClassLoader(vm, classLoaderObject);
+			J9ClassLoader *classLoaderStruct = internalAllocateClassLoader(vm, classLoaderObject);
+			if (J9_CLASSLOADER_TYPE_PLATFORM == loaderType) {
+				/* extensionClassLoader holds the platform class loader in Java 11+ */
+				vm->extensionClassLoader = classLoaderStruct;
+			}
 		}
 	}
 }
@@ -168,7 +173,7 @@ J9_FAST_JNI_METHOD_TABLE(com_ibm_oti_vm_VM)
 	J9_FAST_JNI_METHOD("getCPIndexImpl", "(Ljava/lang/Class;)I", Fast_com_ibm_oti_vm_VM_getCPIndexImpl,
 		J9_FAST_JNI_RETAIN_VM_ACCESS | J9_FAST_JNI_NOT_GC_POINT | J9_FAST_JNI_NO_NATIVE_METHOD_FRAME | J9_FAST_JNI_NO_EXCEPTION_THROW |
 		J9_FAST_JNI_NO_SPECIAL_TEAR_DOWN | J9_FAST_JNI_DO_NOT_WRAP_OBJECTS | J9_FAST_JNI_DO_NOT_PASS_RECEIVER)
-	J9_FAST_JNI_METHOD("initializeClassLoader", "(Ljava/lang/ClassLoader;ZZ)V", Fast_com_ibm_oti_vm_VM_initializeClassLoader,
+	J9_FAST_JNI_METHOD("initializeClassLoader", "(Ljava/lang/ClassLoader;IZ)V", Fast_com_ibm_oti_vm_VM_initializeClassLoader,
 		J9_FAST_JNI_RETAIN_VM_ACCESS | J9_FAST_JNI_DO_NOT_WRAP_OBJECTS | J9_FAST_JNI_DO_NOT_PASS_RECEIVER)
 	J9_FAST_JNI_METHOD("isBootstrapClassLoader", "(Ljava/lang/ClassLoader;)Z", Fast_com_ibm_oti_vm_VM_isBootstrapClassLoader,
 		J9_FAST_JNI_RETAIN_VM_ACCESS | J9_FAST_JNI_NOT_GC_POINT | J9_FAST_JNI_NO_NATIVE_METHOD_FRAME | J9_FAST_JNI_NO_EXCEPTION_THROW |

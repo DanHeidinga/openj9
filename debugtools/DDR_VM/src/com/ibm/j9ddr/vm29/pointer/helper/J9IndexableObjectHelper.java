@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2014 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -25,6 +25,7 @@ import java.io.StringWriter;
 
 import com.ibm.j9ddr.CorruptDataException;
 import com.ibm.j9ddr.vm29.j9.ObjectModel;
+import com.ibm.j9ddr.vm29.pointer.I16Pointer;
 import com.ibm.j9ddr.vm29.pointer.I32Pointer;
 import com.ibm.j9ddr.vm29.pointer.I64Pointer;
 import com.ibm.j9ddr.vm29.pointer.ObjectReferencePointer;
@@ -35,11 +36,21 @@ import com.ibm.j9ddr.vm29.pointer.generated.J9ArrayClassPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9BuildFlags;
 import com.ibm.j9ddr.vm29.pointer.generated.J9ClassPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9IndexableObjectContiguousPointer;
+import com.ibm.j9ddr.vm29.pointer.generated.J9IndexableObjectContiguousCompressedPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9IndexableObjectDiscontiguousPointer;
+import com.ibm.j9ddr.vm29.pointer.generated.J9IndexableObjectDiscontiguousCompressedPointer;
+import com.ibm.j9ddr.vm29.pointer.generated.J9IndexableObjectContiguousFullPointer;
+import com.ibm.j9ddr.vm29.pointer.generated.J9IndexableObjectDiscontiguousFullPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9IndexableObjectPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9ObjectPointer;
 import com.ibm.j9ddr.vm29.types.U32;
 import com.ibm.j9ddr.vm29.types.UDATA;
+import com.ibm.j9ddr.vm29.structure.J9IndexableObjectContiguous;
+import com.ibm.j9ddr.vm29.structure.J9IndexableObjectContiguousCompressed;
+import com.ibm.j9ddr.vm29.structure.J9IndexableObjectContiguousFull;
+import com.ibm.j9ddr.vm29.structure.J9IndexableObjectDiscontiguous;
+import com.ibm.j9ddr.vm29.structure.J9IndexableObjectDiscontiguousCompressed;
+import com.ibm.j9ddr.vm29.structure.J9IndexableObjectDiscontiguousFull;
 
 public class J9IndexableObjectHelper extends J9ObjectHelper 
 {
@@ -63,18 +74,34 @@ public class J9IndexableObjectHelper extends J9ObjectHelper
 		return J9ArrayClassHelper.getName(clazz(objPointer));
 	}
 
+	public static U32 rawSize(J9IndexableObjectPointer objPointer) throws CorruptDataException 
+	{
+		if (mixedReferenceMode) {
+			if (compressObjectReferences) {
+				return (U32)J9IndexableObjectContiguousCompressedPointer.cast(objPointer).size();
+			}
+			return (U32)J9IndexableObjectContiguousFullPointer.cast(objPointer).size();
+		}
+		return (U32)J9IndexableObjectContiguousPointer.cast(objPointer).size();
+	}
+
 	public static U32 size(J9IndexableObjectPointer objPointer) throws CorruptDataException 
 	{
-		U32 size = J9IndexableObjectContiguousPointer.cast(objPointer).size();
-		if(J9BuildFlags.gc_hybridArraylets) {
-			if(size.eq(0)) {
-				size = J9IndexableObjectDiscontiguousPointer.cast(objPointer).size();	 
+		U32 size = rawSize(objPointer);
+		if (size.eq(0)) {
+			if (mixedReferenceMode) {
+				if (compressObjectReferences) {
+					size = (U32)J9IndexableObjectDiscontiguousCompressedPointer.cast(objPointer).size();
+				} else {
+					size = (U32)J9IndexableObjectDiscontiguousFullPointer.cast(objPointer).size();
+				}
+			} else {
+				size = (U32)J9IndexableObjectDiscontiguousPointer.cast(objPointer).size();
 			}
 		}
 		if (size.anyBitsIn(0x80000000)) {
 			throw new CorruptDataException("java array size with sign bit set");
 		}
-
 		return size;
 	}
 	
@@ -82,8 +109,31 @@ public class J9IndexableObjectHelper extends J9ObjectHelper
 	{
 		return size(J9IndexableObjectPointer.cast(objPointer));
 	}
-	
+
+	public static long contiguousHeaderSize()
+	{
+		if (mixedReferenceMode) {
+			if (compressObjectReferences) {
+				return J9IndexableObjectContiguousCompressed.SIZEOF;
+			}
+			return J9IndexableObjectContiguousFull.SIZEOF;
+		}
+		return J9IndexableObjectContiguous.SIZEOF;
+	}
+
+	public static long discontiguousHeaderSize()
+	{
+		if (mixedReferenceMode) {
+			if (compressObjectReferences) {
+				return J9IndexableObjectDiscontiguousCompressed.SIZEOF;
+			}
+			return J9IndexableObjectDiscontiguousFull.SIZEOF;
+		}
+		return J9IndexableObjectDiscontiguous.SIZEOF;
+	}
+
 	/**
+	 * @param objPointer array object who's elements we are outputting to dst
 	 * @param index the desired index within then array
 	 * @param dataSize size of the data held in the array
 	 * @return the address for the desired element in the array
@@ -95,7 +145,7 @@ public class J9IndexableObjectHelper extends J9ObjectHelper
 	}
 	
 	/**
-	 *  @param objPointer array object who's elements we are outputing to dst
+	 *  @param objPointer array object who's elements we are outputting to dst
 	 *  @param dst destination array where we will output the elements
 	 *  @param start starting index of the elements we are interested in
 	 *  @param length number of elements to output 
@@ -212,7 +262,7 @@ public class J9IndexableObjectHelper extends J9ObjectHelper
 			throw new ArrayIndexOutOfBoundsException("Supplied destination array too small. Requires: " + destStart + length + ", was " + dst.length);
 		}
 		for (int i = 0; i < length; i++) {
-			dst[destStart + i] = (byte)U8Pointer.cast(ObjectModel.getElementAddress(objPointer, start + i, 1)).at(0).intValue();
+			dst[destStart + i] = U8Pointer.cast(ObjectModel.getElementAddress(objPointer, start + i, 1)).at(0).byteValue();
 		}
 	}
 	
@@ -274,7 +324,7 @@ public class J9IndexableObjectHelper extends J9ObjectHelper
 			throw new ArrayIndexOutOfBoundsException("Supplied destination array too small. Requires: " + destStart + length + ", was " + dst.length);
 		}
 		for (int i = 0; i < length; i++) {
-			dst[destStart + i] = (short)U16Pointer.cast(ObjectModel.getElementAddress(objPointer, start + i, 2)).at(0).intValue();
+			dst[destStart + i] = I16Pointer.cast(ObjectModel.getElementAddress(objPointer, start + i, 2)).at(0).shortValue();
 		}
 	}
 	

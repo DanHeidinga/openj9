@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1998, 2017 IBM Corp. and others
+ * Copyright (c) 1998, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -35,6 +35,8 @@
 /* required for memset */
 #include <string.h>
 
+#include "ut_j9jcl.h"
+
 typedef enum {
 	CLASS_MEMORY=0,
 	MISC_MEMORY,
@@ -63,7 +65,7 @@ static void gcEndEvent(J9JavaVM *vm, UDATA heapSize, UDATA heapUsed, UDATA *tota
 static jint initMemoryManagement(J9JavaVM *vm);
 static U_32 getNumberSupported(U_32 supportedIDs);
 static UDATA getArrayIndexFromManagerID(J9JavaLangManagementData *mgmt, UDATA id);
-static void getSegmentSizes(J9JavaVM *javaVM, J9MemorySegmentList *segList, U_64 *storedSize, U_64 *storedUsed, U_64 *storedPeakSize, U_64 *storedPeakUsed);
+static void getSegmentSizes(J9JavaVM *javaVM, J9MemorySegmentList *segList, U_64 *storedSize, U_64 *storedUsed, U_64 *storedPeakSize, U_64 *storedPeakUsed, BOOLEAN isCodeCacheSegment);
 static void updateNonHeapMemoryPoolSizes(J9JavaVM *vm, J9JavaLangManagementData *mgmt, BOOLEAN isGCEnd);
 
 /* initialize java.lang.management data structures and hooks */
@@ -479,6 +481,7 @@ gcStartEvent(J9JavaVM *vm, UDATA heapSize, UDATA heapUsed, UDATA *totals, UDATA 
 	J9MemoryPoolData *memoryPools = mgmt->memoryPools;
 	J9MemoryNotification *notification = NULL;
 	J9MemoryNotification *last = NULL;
+	J9GarbageCollectionInfo* gcInfo = NULL;
 
 	UDATA total = 0;
 	UDATA used = 0;
@@ -490,12 +493,13 @@ gcStartEvent(J9JavaVM *vm, UDATA heapSize, UDATA heapUsed, UDATA *totals, UDATA 
 
 	/* check the wall clock */
 	/* the start time in milliseconds since the Java virtual machine was started */
-	gcData->lastGcInfo.startTime = j9time_current_time_millis();
-	if (gcData->lastGcInfo.startTime < (U_64)mgmt->vmStartTime) {
+	gcInfo = &gcData->lastGcInfo;
+	gcInfo->startTime = j9time_current_time_millis();
+	if (gcInfo->startTime < (U_64)mgmt->vmStartTime) {
 		/* startTime is earlier than vmStartTime in case of wall clock correction while interval is measuring */
-		gcData->lastGcInfo.startTime = 0;
+		gcInfo->startTime = 0;
 	} else {
-		gcData->lastGcInfo.startTime -= mgmt->vmStartTime;
+		gcInfo->startTime -= mgmt->vmStartTime;
 	}
 
 	mgmt->preCollectionHeapSize = heapSize;
@@ -506,15 +510,25 @@ gcStartEvent(J9JavaVM *vm, UDATA heapSize, UDATA heapUsed, UDATA *totals, UDATA 
 		total = totals[idx];
 		used = totals[idx] - frees[idx];
 
-		memoryPool->preCollectionSize = total;
-		memoryPool->preCollectionUsed = used;
-		memoryPool->preCollectionMaxSize = memoryPool->postCollectionMaxSize;
+		/* update pre Memory Usage of last GcInfo for the collector */
+		gcInfo->preUsed[idx] = used;
+		gcInfo->preCommitted[idx] = total;
+
+		gcInfo->preMax[idx] = 0;
+		if (0 != mgmt->lastGCID) {
+			J9GarbageCollectorData *lastGcData = &mgmt->garbageCollectors[getArrayIndexFromManagerID(mgmt, mgmt->lastGCID)];
+			J9GarbageCollectionInfo* lastGcInfo = &lastGcData->lastGcInfo;
+			gcInfo->preMax[idx] = lastGcInfo->postMax[idx];
+		}
+		if (0 == gcInfo->preMax[idx]) {
+			gcInfo->preMax[idx] = memoryPool->postCollectionMaxSize;
+		}
 
 		/* check the peak usage and update */
 		if (memoryPool->peakUsed < used) {
 			memoryPool->peakUsed = used;
 			memoryPool->peakSize = total;
-			memoryPool->peakMax = memoryPool->preCollectionMaxSize;
+			memoryPool->peakMax = gcInfo->preMax[idx];
 		}
 
 		/* if a heap usage threshold is set, check whether we are above or below */
@@ -546,7 +560,7 @@ gcStartEvent(J9JavaVM *vm, UDATA heapSize, UDATA heapUsed, UDATA *totals, UDATA 
 							notification->usageThreshold->poolID = memoryPool->id;
 							notification->usageThreshold->usedSize = used;
 							notification->usageThreshold->totalSize = total;
-							notification->usageThreshold->maxSize = memoryPool->preCollectionMaxSize;
+							notification->usageThreshold->maxSize = gcInfo->preMax[idx];
 							notification->usageThreshold->thresholdCrossingCount = memoryPool->usageThresholdCrossedCount;
 							notification->sequenceNumber = mgmt->notificationCount++;
 
@@ -601,6 +615,7 @@ gcEndEvent(J9JavaVM *vm, UDATA heapSize, UDATA heapUsed, UDATA *totals, UDATA *f
 
 	UDATA total = 0;
 	UDATA used = 0;
+	UDATA max = 0;
 	UDATA idx = 0;
 	U_32 notificationEnabled = 0;
 
@@ -613,27 +628,31 @@ gcEndEvent(J9JavaVM *vm, UDATA heapSize, UDATA heapUsed, UDATA *totals, UDATA *f
 	/* lock the management struct */
 	omrthread_rwmutex_enter_write(mgmt->managementDataLock);
 
+	mgmt->lastGCID = (U_32)collectorID;
 	mgmt->postCollectionHeapSize = heapSize;
 	mgmt->postCollectionHeapUsed = heapUsed;
+	gcInfo = &gcData->lastGcInfo;
 
 	for (idx = 0; idx < mgmt->supportedMemoryPools; ++idx) {
 		J9MemoryPoolData *memoryPool = &memoryPools[idx];
 		total = totals[idx];
 		used = totals[idx] - frees[idx];
+		max = maxs[idx];
 
-		memoryPool->postCollectionSize = total;
-		memoryPool->postCollectionUsed = used;
-		memoryPool->postCollectionMaxSize = maxs[idx];
+		/* update post Memory Usage of last GcInfo for the collector */
+		gcInfo->postUsed[idx] = used;
+		gcInfo->postCommitted[idx] = total;
+		gcInfo->postMax[idx] = max;
 
 		/* check the peak usage and update */
 		if (memoryPool->peakUsed < used) {
 			memoryPool->peakUsed = used;
 			memoryPool->peakSize = total;
-			memoryPool->peakMax = memoryPool->postCollectionMaxSize;
+			memoryPool->peakMax = max;
 		}
 
-		/* if a heap collection threshold is set, check whether we are above or below */
-		if (0 < memoryPool->collectionUsageThreshold) {
+		/* if a memory pool collection threshold is set and the memory pool is managed by the collector, check whether we are above or below */
+		if ((0 < memoryPool->collectionUsageThreshold) && mmFuncs->j9gc_is_managedpool_by_collector(vm, (UDATA)(gcData->id & J9VM_MANAGEMENT_GC_HEAP_ID_MASK), (UDATA)(memoryPool->id & J9VM_MANAGEMENT_POOL_HEAP_ID_MASK))) {
 			if (memoryPool->collectionUsageThreshold < used) {
 				/* usage above threshold now, was it below threshold last time? */
 				if (0 == (memoryPool->notificationState & COLLECTION_THRESHOLD_EXCEEDED)) {
@@ -661,7 +680,7 @@ gcEndEvent(J9JavaVM *vm, UDATA heapSize, UDATA heapUsed, UDATA *totals, UDATA *f
 							notification->usageThreshold->poolID = memoryPool->id;
 							notification->usageThreshold->usedSize = used;
 							notification->usageThreshold->totalSize = total;
-							notification->usageThreshold->maxSize = memoryPool->postCollectionMaxSize;
+							notification->usageThreshold->maxSize = max;
 							notification->usageThreshold->thresholdCrossingCount = memoryPool->collectionUsageThresholdCrossedCount;
 							notification->sequenceNumber = mgmt->notificationCount++;
 
@@ -726,12 +745,11 @@ gcEndEvent(J9JavaVM *vm, UDATA heapSize, UDATA heapUsed, UDATA *totals, UDATA *f
 	gcData->totalMemoryFreed += (I_64)(mgmt->preCollectionHeapUsed - mgmt->postCollectionHeapUsed);
 	
 	/* update the GC CPU usage */
-	mmFuncs->j9gc_get_CPU_times(vm, &mgmt->gcMasterCpuTime, &mgmt->gcSlaveCpuTime, &mgmt->gcMaxThreads, &mgmt->gcCurrentThreads);
+	mmFuncs->j9gc_get_CPU_times(vm, &mgmt->gcMainCpuTime, &mgmt->gcWorkerCpuTime, &mgmt->gcMaxThreads, &mgmt->gcCurrentThreads);
 	
 	/* update nonHeap memory pools for postCollection */
 	updateNonHeapMemoryPoolSizes(vm, mgmt, TRUE);
 	/* update J9GarbageCollectionInfo for the collector */
-	gcInfo = &gcData->lastGcInfo;
 
 	gcInfo->gcID = gcData->id;
 	gcInfo->gcAction = mmFuncs->j9gc_get_gc_action(vm, (gcInfo->gcID & J9VM_MANAGEMENT_GC_HEAP_ID_MASK));
@@ -741,12 +759,19 @@ gcEndEvent(J9JavaVM *vm, UDATA heapSize, UDATA heapUsed, UDATA *totals, UDATA *f
 	for (idx = 0; supportedMemoryPools > idx; ++idx) {
 		J9MemoryPoolData *memoryPool = &memoryPools[idx];
 		gcInfo->initialSize[idx] = memoryPool->initialSize;
-		gcInfo->preUsed[idx] = memoryPool->preCollectionUsed;
-		gcInfo->preCommitted[idx] = memoryPool->preCollectionSize;
-		gcInfo->preMax[idx] = (I_64) memoryPool->preCollectionMaxSize;
-		gcInfo->postUsed[idx] = memoryPool->postCollectionUsed;
-		gcInfo->postCommitted[idx] = memoryPool->postCollectionSize;
-		gcInfo->postMax[idx] = (I_64) memoryPool->postCollectionMaxSize;
+		if (mmFuncs->j9gc_is_managedpool_by_collector(vm, (UDATA)(gcData->id & J9VM_MANAGEMENT_GC_HEAP_ID_MASK), (UDATA)(memoryPool->id & J9VM_MANAGEMENT_POOL_HEAP_ID_MASK))) {
+			/**
+			 * the memoryPool is managed by this collection, update preCollection postCollection Memory Usage of this memory Pool
+			 * gcInfo keep memory Usage before and after this gc
+			 *  preCollection postCollection Memory Usage in memoryPool only keep information for the GC, which recycle the memory pool
+			 */
+			memoryPool->preCollectionUsed = gcInfo->preUsed[idx];
+			memoryPool->preCollectionSize = gcInfo->preCommitted[idx];
+			memoryPool->preCollectionMaxSize = (U_64)gcInfo->preMax[idx];
+			memoryPool->postCollectionUsed = gcInfo->postUsed[idx];
+			memoryPool->postCollectionSize = gcInfo->postCommitted[idx];
+			memoryPool->postCollectionMaxSize = (U_64)gcInfo->postMax[idx];
+		}
 	}
 	/* non heap memory pools */
 	for (; supportedMemoryPools + supportedNonHeapMemoryPools > idx; ++idx) {
@@ -754,10 +779,10 @@ gcEndEvent(J9JavaVM *vm, UDATA heapSize, UDATA heapUsed, UDATA *totals, UDATA *f
 		gcInfo->initialSize[idx] = nonHeapMemory->initialSize;
 		gcInfo->preUsed[idx] = nonHeapMemory->preCollectionUsed;
 		gcInfo->preCommitted[idx] = nonHeapMemory->preCollectionSize;
-		gcInfo->preMax[idx] = -1;
+		gcInfo->preMax[idx] = nonHeapMemory->maxSize;
 		gcInfo->postUsed[idx] = nonHeapMemory->postCollectionUsed;
 		gcInfo->postCommitted[idx] = nonHeapMemory->postCollectionSize;
-		gcInfo->postMax[idx] = -1;
+		gcInfo->postMax[idx] = nonHeapMemory->maxSize;
 	}
 
 	/* garbage collection notification */
@@ -886,25 +911,31 @@ initMemoryManagement(J9JavaVM *vm)
 			mgmt->nonHeapMemoryPools[idx].id = J9VM_MANAGEMENT_POOL_NONHEAP_SEG_CLASSES;
 			strcpy(mgmt->nonHeapMemoryPools[idx].name, J9VM_MANAGEMENT_NONHEAPPOOL_NAME_CLASSES);
 			segList = vm->classMemorySegments;
+			mgmt->nonHeapMemoryPools[idx].maxSize = -1;
 			break;
 		case MISC_MEMORY:
 			mgmt->nonHeapMemoryPools[idx].id = J9VM_MANAGEMENT_POOL_NONHEAP_SEG_MISC;
 			strcpy(mgmt->nonHeapMemoryPools[idx].name, J9VM_MANAGEMENT_NONHEAPPOOL_NAME_MISC);
 			segList = vm->memorySegments;
+			mgmt->nonHeapMemoryPools[idx].maxSize = -1;
 			break;
 		case JIT_CODECACHE:
 			mgmt->nonHeapMemoryPools[idx].id = J9VM_MANAGEMENT_POOL_NONHEAP_SEG_JIT_CODE;
 			strcpy(mgmt->nonHeapMemoryPools[idx].name, J9VM_MANAGEMENT_NONHEAPPOOL_NAME_JITCODE);
 			segList = vm->jitConfig->codeCacheList;
+			mgmt->nonHeapMemoryPools[idx].maxSize = vm->jitConfig->codeCacheTotalKB * 1024;
 			break;
 		case JIT_DATACACHE:
-		default:
 			mgmt->nonHeapMemoryPools[idx].id = J9VM_MANAGEMENT_POOL_NONHEAP_SEG_JIT_DATA;
 			strcpy(mgmt->nonHeapMemoryPools[idx].name, J9VM_MANAGEMENT_NONHEAPPOOL_NAME_JITDATA);
 			segList = vm->jitConfig->dataCacheList;
+			mgmt->nonHeapMemoryPools[idx].maxSize = vm->jitConfig->dataCacheTotalKB * 1024;
 			break;
+		default:
+			/* Unreachable */
+			Assert_JCL_unreachable();
 		}
-		getSegmentSizes(vm, segList, &mgmt->nonHeapMemoryPools[idx].initialSize, &used, &mgmt->nonHeapMemoryPools[idx].peakSize, &mgmt->nonHeapMemoryPools[idx].peakUsed);
+		getSegmentSizes(vm, segList, &mgmt->nonHeapMemoryPools[idx].initialSize, &used, &mgmt->nonHeapMemoryPools[idx].peakSize, &mgmt->nonHeapMemoryPools[idx].peakUsed, (JIT_CODECACHE == idx));
 	}
 	return 0;
 
@@ -936,7 +967,7 @@ getArrayIndexFromManagerID(J9JavaLangManagementData *mgmt, UDATA id)
 }
 
 static void
-getSegmentSizes(J9JavaVM *javaVM, J9MemorySegmentList *segList, U_64 *storedSize, U_64 *storedUsed, U_64 *storedPeakSize, U_64 *storedPeakUsed)
+getSegmentSizes(J9JavaVM *javaVM, J9MemorySegmentList *segList, U_64 *storedSize, U_64 *storedUsed, U_64 *storedPeakSize, U_64 *storedPeakUsed, BOOLEAN isCodeCacheSegment)
 {
 	U_64 used = 0;
 	U_64 committed = 0;
@@ -945,8 +976,31 @@ getSegmentSizes(J9JavaVM *javaVM, J9MemorySegmentList *segList, U_64 *storedSize
 	omrthread_monitor_enter(segList->segmentMutex);
 
 	MEMORY_SEGMENT_LIST_DO(segList, seg)
+	if (isCodeCacheSegment) {
+		/* Set default values for warmAlloc and coldAlloc pointers */
+		UDATA warmAlloc = (UDATA)seg->heapBase;
+		UDATA coldAlloc = (UDATA)seg->heapTop;
+
+		/* The JIT code cache grows from both ends of the segment: the warmAlloc pointer upwards from the start of the segment
+		 * and the coldAlloc pointer downwards from the end of the segment. The free space in a JIT code cache segment is the
+		 * space between the warmAlloc and coldAlloc pointers. See compiler/runtime/OMRCodeCache.hpp, the contract with the JVM is
+		 * that the address of the TR::CodeCache structure is stored at the beginning of the segment.
+		 */
+#ifdef J9VM_INTERP_NATIVE_SUPPORT
+		UDATA *mccCodeCache = *((UDATA**)seg->heapBase);
+		if (mccCodeCache) {
+			J9JITConfig* jitConfig = javaVM->jitConfig;
+			if (jitConfig) {
+				warmAlloc = (UDATA)jitConfig->codeCacheWarmAlloc(mccCodeCache);
+				coldAlloc = (UDATA)jitConfig->codeCacheColdAlloc(mccCodeCache);
+			}
+		}
+#endif
+		used += seg->size - (coldAlloc - warmAlloc);
+	} else {
 		used += seg->heapAlloc - seg->heapBase;
-		committed += seg->size;
+	}
+	committed += seg->size;
 	END_MEMORY_SEGMENT_LIST_DO(seg)
 
 	omrthread_monitor_exit(segList->segmentMutex);
@@ -981,9 +1035,11 @@ updateNonHeapMemoryPoolSizes(J9JavaVM *vm, J9JavaLangManagementData *mgmt, BOOLE
 			segList = vm->jitConfig->codeCacheList;
 			break;
 		case JIT_DATACACHE:
-		default:
 			segList = vm->jitConfig->dataCacheList;
 			break;
+		default:
+			/* Unreachable */
+			Assert_JCL_unreachable();
 		}
 		if (isGCEND) {
 			storedSize = &mgmt->nonHeapMemoryPools[idx].postCollectionSize;
@@ -992,6 +1048,6 @@ updateNonHeapMemoryPoolSizes(J9JavaVM *vm, J9JavaLangManagementData *mgmt, BOOLE
 			storedSize = &mgmt->nonHeapMemoryPools[idx].preCollectionSize;
 			storedUsed = &mgmt->nonHeapMemoryPools[idx].preCollectionUsed;
 		}
-		getSegmentSizes(vm, segList, storedSize, storedUsed, &mgmt->nonHeapMemoryPools[idx].peakSize, &mgmt->nonHeapMemoryPools[idx].peakUsed);
+		getSegmentSizes(vm, segList, storedSize, storedUsed, &mgmt->nonHeapMemoryPools[idx].peakSize, &mgmt->nonHeapMemoryPools[idx].peakUsed, (JIT_CODECACHE== idx));
 	}
 }

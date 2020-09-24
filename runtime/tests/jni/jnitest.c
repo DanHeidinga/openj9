@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -29,13 +29,13 @@
  * https://github.com/eclipse/openj9/issues/1377
  */
 #include "../j9vm/jvm.h"
-#ifdef WIN32
+#if defined(WIN32)
 #include <stdlib.h>
 #include <malloc.h>
-#else
+#else /* defined(WIN32) */
 #include <pthread.h>
 #include <stdlib.h>
-#endif
+#endif /* defined(WIN32) */
 
 jboolean JNICALL
 Java_j9vm_test_jni_GetObjectRefTypeTest_getObjectRefTypeTest(JNIEnv *env, jclass clazz, jobject stackArg)
@@ -757,7 +757,6 @@ Java_j9vm_test_classloading_VMAccess_getNumberOfNodes(JNIEnv * env, jobject this
 
 #if defined(J9VM_OPT_JVMTI)
 jint JNICALL
-
 Java_com_ibm_jvmti_tests_util_TestRunner_callLoadAgentLibraryOnAttach(JNIEnv * env, jclass clazz, jstring libraryName, jstring libraryOptions)
 {
 	PORT_ACCESS_FROM_VMC( ((J9VMThread *) env) );
@@ -771,7 +770,7 @@ Java_com_ibm_jvmti_tests_util_TestRunner_callLoadAgentLibraryOnAttach(JNIEnv * e
 	libraryOptionsUTF = (*env)->GetStringUTFChars(env, libraryOptions, &isCopy);
 	return (javaVM->loadAgentLibraryOnAttach)(javaVM, libraryNameUTF, libraryOptionsUTF, TRUE) ;
 }
-#endif
+#endif /* defined(J9VM_OPT_JVMTI) */
 
 BOOLEAN isSystemPropertyEqual(JNIEnv* env, const char* utfPropName,  const char* expectedPropValue)
 {
@@ -865,37 +864,6 @@ Java_j9vm_test_memory_MemoryAllocator_allocateMemory32(JNIEnv * env, jclass claz
 	return (NULL != result);
 }
 
-jboolean JNICALL
-Java_j9vm_test_harmonyvmi_Test_testGetEnv(JNIEnv *env, jclass clazz)
-{
-	JavaVM* javaVM;
-	VMInterface* vmi;
-	vmiVersion version = VMI_VERSION_2_0;
-	vmiError vmiRc;
-	jclass java_lang_Exception = (*env)->FindClass(env, "java/lang/Exception");
-	jint rc;
-
-	rc = (*env)->GetJavaVM(env, &javaVM);
-	if (0 != rc) {
-		(*env)->ThrowNew(env, java_lang_Exception, "Could not navigate env->javaVM");
-		return JNI_FALSE;
-	}
-
-	rc = (*javaVM)->GetEnv(javaVM, (void**)&vmi, HARMONY_VMI_VERSION_2_0);
-	if (0 != rc) {
-		(*env)->ThrowNew(env, java_lang_Exception, "GetEnv(HARMONY_VMI_VERSION_2_0) failed!");
-		return JNI_FALSE;
-	}
-
-	vmiRc = (*vmi)->CheckVersion(vmi, &version);
-	if (VMI_ERROR_NONE != vmiRc) {
-		(*env)->ThrowNew(env, java_lang_Exception, "VMI CheckVersion() failed");
-		return JNI_FALSE;
-	}
-
-	return JNI_TRUE;
-}
-
 typedef struct JvmInfo {
 	JNIEnv *env;
 	jclass clazz;
@@ -903,7 +871,9 @@ typedef struct JvmInfo {
 	jint result;
 } JvmInfo;
 
-static void* callAttachCurrentThreadAsDaemon(void *arg) {
+static void *
+callAttachCurrentThreadAsDaemon(void *arg)
+{
 	JvmInfo *vmInfo = (JvmInfo*) arg;
 	JavaVM *javaVM;
 	JavaVMAttachArgs attachArgs = {JNI_VERSION_1_2, NULL, NULL};
@@ -921,7 +891,7 @@ static void* callAttachCurrentThreadAsDaemon(void *arg) {
 jint JNICALL
 Java_j9vm_test_jni_Utf8Test_testAttachCurrentThreadAsDaemon(JNIEnv *env, jclass clazz, jbyteArray threadName)
 {
-#ifdef LINUX
+#if defined(LINUX)
 	JvmInfo *vmInfo;
 	char *threadNameCopy;
 	pthread_t newThread;
@@ -950,10 +920,10 @@ Java_j9vm_test_jni_Utf8Test_testAttachCurrentThreadAsDaemon(JNIEnv *env, jclass 
 	free(vmInfo);
 	free(threadNameCopy);
 	return vmInfo->result;
-#else
+#else /* defined(LINUX) */
 	/* test runs only on linux */
 	return -1;
-#endif
+#endif /* defined(LINUX) */
 }
 
 jint JNICALL 
@@ -981,7 +951,7 @@ JNI_OnUnload(JavaVM * vm, void *reserved)
 	return;
 }
 
-#ifndef WIN32
+#if !defined(WIN32)
 
 static pthread_key_t key;
 static jboolean worked = JNI_FALSE;
@@ -1017,9 +987,11 @@ threadproc(void *p)
 	}
 	j9tty_printf(PORTLIB, "exitting pthread\n");
 	pthread_exit(NULL);
+	/* unreachable: silence compiler */
+	return NULL;
 }
 
-#endif
+#endif /* !defined(WIN32) */
 
 jboolean JNICALL
 Java_j9vm_test_jni_PthreadTest_attachAndDetach(JNIEnv *env, jclass clazz)
@@ -1028,7 +1000,7 @@ Java_j9vm_test_jni_PthreadTest_attachAndDetach(JNIEnv *env, jclass clazz)
 #if defined(WIN32)
     j9tty_printf(PORTLIB, "pthread test does not run on windows - skipping\n");
     return JNI_TRUE;
-#else
+#else /* defined(WIN32) */
     pthread_t thread;
     void *status;
     int rc;
@@ -1048,6 +1020,5 @@ Java_j9vm_test_jni_PthreadTest_attachAndDetach(JNIEnv *env, jclass clazz)
 		j9tty_printf(PORTLIB, "\n*** failed to create pthread key rc = %d ***\n", rc);
     }
     return worked;
-#endif
+#endif /* defined(WIN32) */
 }
-

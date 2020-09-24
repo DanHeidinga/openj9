@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -61,8 +61,8 @@ J9InternalVMFunctions J9InternalFunctions = {
 	deallocateVMThread,
 	allocateMemorySegment,
 	javaThreadProc,
-	copyFromStringIntoUTF8,
 	copyStringToUTF8WithMemAlloc,
+	copyStringToJ9UTF8WithMemAlloc,
 	internalAcquireVMAccess,
 	internalAcquireVMAccessWithMask,
 	internalAcquireVMAccessNoMutexWithMask,
@@ -112,7 +112,7 @@ J9InternalVMFunctions J9InternalFunctions = {
 	jniPopFrame,
 	resolveVirtualMethodRef,
 	resolveInterfaceMethodRef,
-	getVTableIndexForMethod,
+	getVTableOffsetForMethod,
 	checkVisibility,
 	sendClinit,
 	freeStackWalkCaches,
@@ -123,7 +123,6 @@ J9InternalVMFunctions J9InternalFunctions = {
 #if defined(J9VM_IVE_ROM_IMAGE_HELPERS) || (defined(J9VM_OPT_DYNAMIC_LOAD_SUPPORT) && defined(J9VM_OPT_ROM_IMAGE_SUPPORT))
 	romImageNewSegment,
 #endif /* J9VM_IVE_ROM_IMAGE_HELPERS || (J9VM_OPT_DYNAMIC_LOAD_SUPPORT && J9VM_OPT_ROM_IMAGE_SUPPORT) */
-	installJitBytecodes,
 	runCallInMethod,
 	catUtfToString4,
 	allocateMemorySegmentList,
@@ -196,6 +195,7 @@ J9InternalVMFunctions J9InternalFunctions = {
 	cleanUpClassLoader,
 #endif /* J9VM_GC_DYNAMIC_CLASS_UNLOADING */
 	iterateStackTrace,
+	getCompleteNPEMessage,
 	internalReleaseVMAccessNoMutex,
 	getVMHookInterface,
 	internalAttachCurrentThread,
@@ -228,7 +228,9 @@ J9InternalVMFunctions J9InternalFunctions = {
 	structuredSignalHandler,
 	structuredSignalHandlerVM,
 	addHiddenInstanceField,
+	reportHotField,
 	fieldOffsetsStartDo,
+	defaultValueWithUnflattenedFlattenables,
 	fieldOffsetsNextDo,
 	fullTraversalFieldOffsetsStartDo,
 	fullTraversalFieldOffsetsNextDo,
@@ -236,10 +238,7 @@ J9InternalVMFunctions J9InternalFunctions = {
 	compareStrings,
 	compareStringToUTF8,
 	prepareForExceptionThrow,
-	copyUTF8ToUnicode,
 	verifyQualifiedName,
-	copyCharsIntoUTF8Helper,
-	copyStringToUTF8,
 	copyStringToUTF8Helper,
 	sendCompleteInitialization,
 	J9RegisterAsyncEvent,
@@ -271,7 +270,6 @@ J9InternalVMFunctions J9InternalFunctions = {
 	initJVMRI,
 	shutdownJVMRI,
 	getOwnedObjectMonitors,
-	fixUnsafeMethods,
 #if !defined(J9VM_SIZE_SMALL_CODE)
 	fieldIndexTableRemove,
 #endif /* J9VM_SIZE_SMALL_CODE */
@@ -294,22 +292,21 @@ J9InternalVMFunctions J9InternalFunctions = {
 	queryLogOptions,
 	setLogOptions,
 	exitJavaThread,
-#if defined(J9VM_THR_LOCK_NURSERY)
 	cacheObjectMonitorForLookup,
-#endif /* J9VM_THR_LOCK_NURSERY */
 	jniArrayAllocateMemoryFromThread,
 	jniArrayFreeMemoryFromThread,
 	sendForGenericInvoke,
 	jitFillOSRBuffer,
 	sendResolveMethodHandle,
+	resolveConstantDynamic,
 	resolveInvokeDynamic,
+	sendResolveConstantDynamic,
 	sendResolveInvokeDynamic,
 	resolveMethodHandleRef,
 	resolveNativeAddress,
 	clearHaltFlag,
 	setHeapOutOfMemoryError,
 	initializeHeapOOMMessage,
-	copyUTF8ToCompressedUnicode,
 	threadAboutToStart,
 	mustHaveVMAccess,
 #if defined(J9VM_PORT_ZOS_CEEHDLRSUPPORT)
@@ -338,8 +335,8 @@ J9InternalVMFunctions J9InternalFunctions = {
 	internalEnterVMFromJNI,
 	internalExitVMToJNI,
 #endif /* J9VM_INTERP_ATOMIC_FREE_JNI */
-	internalReleaseVMAccessInJNI,
-	hashModuleTableNew,
+	hashModuleNameTableNew,
+	hashModulePointerTableNew,
 	hashPackageTableNew,
 	hashModuleExtraInfoTableNew,
 	hashClassLocationTableNew,
@@ -347,6 +344,7 @@ J9InternalVMFunctions J9InternalFunctions = {
 	findModuleForPackage,
 	findModuleInfoForModule,
 	findClassLocationForClass,
+	getJimModules,
 	initializeClassPath,
 	initializeClassPathEntry,
 	setBootLoaderModulePatchPaths,
@@ -361,4 +359,37 @@ J9InternalVMFunctions J9InternalFunctions = {
 #if defined(J9VM_RAS_EYECATCHERS)
 	j9rasSetServiceLevel,
 #endif /* J9VM_RAS_EYECATCHERS */
+#if defined(J9VM_INTERP_ATOMIC_FREE_JNI_USES_FLUSH)
+	flushProcessWriteBuffers,
+#endif /* J9VM_INTERP_ATOMIC_FREE_JNI_USES_FLUSH */
+	registerPredefinedHandler,
+	registerOSHandler,
+	throwNativeOOMError,
+	throwNewJavaIoIOException,
+#if JAVA_SPEC_VERSION >= 11
+	loadAndVerifyNestHost,
+	setNestmatesError,
+#endif /* JAVA_SPEC_VERSION >= 11 */
+	areValueTypesEnabled,
+	peekClassHashTable,
+#if defined(J9VM_OPT_JITSERVER)
+	isJITServerEnabled,
+#endif /* J9VM_OPT_JITSERVER */
+	createJoinableThreadWithCategory,
+	valueTypeCapableAcmp,
+	isNameOrSignatureQtype,
+	isClassRefQtype,
+	getFlattenableFieldOffset,
+	isFlattenableFieldFlattened,
+	getFlattenableFieldType,
+	getFlattenableFieldSize,
+	arrayElementSize,
+	getFlattenableField,
+	cloneValueType,
+	putFlattenableField,
+#if JAVA_SPEC_VERSION >= 15
+	checkClassBytes,
+#endif /* JAVA_SPEC_VERSION >= 15 */
+	storeFlattenableArrayElement,
+	loadFlattenableArrayElement,
 };

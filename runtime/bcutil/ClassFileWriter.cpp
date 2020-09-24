@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2018 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -62,10 +62,12 @@ DECLARE_UTF8_ATTRIBUTE_NAME(RUNTIME_VISIBLE_PARAMETER_ANNOTATIONS, "RuntimeVisib
 DECLARE_UTF8_ATTRIBUTE_NAME(RUNTIME_VISIBLE_TYPE_ANNOTATIONS, "RuntimeVisibleTypeAnnotations");
 DECLARE_UTF8_ATTRIBUTE_NAME(ANNOTATION_DEFAULT, "AnnotationDefault");
 DECLARE_UTF8_ATTRIBUTE_NAME(BOOTSTRAP_METHODS, "BootstrapMethods");
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+DECLARE_UTF8_ATTRIBUTE_NAME(RECORD, "Record");
+DECLARE_UTF8_ATTRIBUTE_NAME(PERMITTED_SUBCLASSES, "PermittedSubclasses");
+#if JAVA_SPEC_VERSION >= 11
 DECLARE_UTF8_ATTRIBUTE_NAME(NEST_MEMBERS, "NestMembers");
 DECLARE_UTF8_ATTRIBUTE_NAME(NEST_HOST, "NestHost");
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 
 void
 ClassFileWriter::analyzeROMClass()
@@ -88,6 +90,20 @@ ClassFileWriter::analyzeROMClass()
 		addClassEntry(J9ROMCLASS_SUPERCLASSNAME(_romClass), 0);
 	}
 
+	if (J9_ARE_ANY_BITS_SET(_romClass->extraModifiers, J9AccRecord)) {
+		analyzeRecordAttribute();
+	}
+
+	if (J9ROMCLASS_IS_SEALED(_romClass)) {
+		addEntry((void*) &PERMITTED_SUBCLASSES, 0, CFR_CONSTANT_Utf8);
+
+		U_32 *permittedSubclassesCountPtr = getNumberOfPermittedSubclassesPtr(_romClass);
+		for (U_32 i = 0; i < *permittedSubclassesCountPtr; i++) {
+			J9UTF8* permittedSubclassNameUtf8 = permittedSubclassesNameAtIndex(permittedSubclassesCountPtr, i);
+			addEntry(permittedSubclassNameUtf8, 0, CFR_CONSTANT_Utf8);
+		}
+	}
+
 	J9EnclosingObject * enclosingObject = getEnclosingMethodForROMClass(_javaVM, NULL, _romClass);
 	J9UTF8 * genericSignature = getGenericSignatureForROMClass(_javaVM, NULL, _romClass);
 	J9UTF8 * sourceFileName = getSourceFileNameForROMClass(_javaVM, NULL, _romClass);
@@ -96,9 +112,9 @@ ClassFileWriter::analyzeROMClass()
 	U_32 * typeAnnotationsData = getClassTypeAnnotationsDataForROMClass(_romClass);
 	J9UTF8 * outerClassName = J9ROMCLASS_OUTERCLASSNAME(_romClass);
 	J9UTF8 * simpleName = getSimpleNameForROMClass(_javaVM, NULL, _romClass);
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+#if JAVA_SPEC_VERSION >= 11
 	J9UTF8 *nestHost = J9ROMCLASS_NESTHOSTNAME(_romClass);
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 
 	/* For a local class only InnerClasses.class[i].inner_name_index is preserved as simpleName in its J9ROMClass */
 	if ((0 != _romClass->innerClassCount) || J9_ARE_ANY_BITS_SET(_romClass->extraModifiers, J9AccClassInnerClass)) {
@@ -119,7 +135,7 @@ ClassFileWriter::analyzeROMClass()
 		}
 	}
 
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+#if JAVA_SPEC_VERSION >= 11
 	/* Class can not have both a nest members and nest host attribute */
 	if (0 != _romClass->nestMemberCount) {
 		U_16 nestMemberCount = _romClass->nestMemberCount;
@@ -134,7 +150,7 @@ ClassFileWriter::analyzeROMClass()
 		addEntry((void *) &NEST_HOST, 0, CFR_CONSTANT_Utf8);
 		addClassEntry(nestHost, 0);
 	}
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 
 	if (NULL != enclosingObject) {
 		addEntry((void *) &ENCLOSING_METHOD, 0, CFR_CONSTANT_Utf8);
@@ -194,7 +210,7 @@ ClassFileWriter::analyzeROMClass()
 	 * If there are multiple call sites referring to same InvokeDynamic CP entry,
 	 * then the contents get duplicated as many times.
 	 *
-	 * Eg: Say there are two InvokeDynamic entris in .class
+	 * Eg: Say there are two InvokeDynamic entries in .class
 	 *
 	 * 		InvokeDynamic1
 	 * 			bootstrap_method_attr_index1
@@ -284,6 +300,8 @@ ClassFileWriter::analyzeConstantPool()
 		case J9CPTYPE_INSTANCE_METHOD:
 		case J9CPTYPE_STATIC_METHOD:
 		case J9CPTYPE_INTERFACE_METHOD:
+		case J9CPTYPE_INTERFACE_STATIC_METHOD:
+		case J9CPTYPE_INTERFACE_INSTANCE_METHOD:
 		case J9CPTYPE_HANDLE_METHOD:
 			addNASEntry(J9ROMMETHODREF_NAMEANDSIGNATURE((J9ROMMethodRef *) cpItem));
 			break;
@@ -307,6 +325,9 @@ ClassFileWriter::analyzeConstantPool()
 			break;
 		case J9CPTYPE_ANNOTATION_UTF8:
 			addEntry(J9ROMSTRINGREF_UTF8DATA((J9ROMStringRef *) cpItem), i, CFR_CONSTANT_Utf8);
+			break;
+		case J9CPTYPE_CONSTANT_DYNAMIC:
+			addNASEntry(J9ROMCONSTANTDYNAMICREF_NAMEANDSIGNATURE((J9ROMConstantDynamicRef *) cpItem));
 			break;
 		default:
 			Trc_BCU_Assert_ShouldNeverHappen();
@@ -444,7 +465,8 @@ ClassFileWriter::analyzeMethods()
 		if (J9ROMMETHOD_HAS_PARAMETER_ANNOTATIONS(method)) {
 			addEntry((void *) &RUNTIME_VISIBLE_PARAMETER_ANNOTATIONS, 0, CFR_CONSTANT_Utf8);
 		}
-		if (J9ROMMETHOD_HAS_METHOD_TYPE_ANNOTATIONS(getExtendedModifiersDataFromROMMethod(method))) {
+		U_32 extendedModifiers = getExtendedModifiersDataFromROMMethod(method);
+		if (J9ROMMETHOD_HAS_METHOD_TYPE_ANNOTATIONS(extendedModifiers) || J9ROMMETHOD_HAS_CODE_TYPE_ANNOTATIONS(extendedModifiers)) {
 			addEntry((void *) &RUNTIME_VISIBLE_TYPE_ANNOTATIONS, 0, CFR_CONSTANT_Utf8);
 		}
 		if (J9ROMMETHOD_HAS_DEFAULT_ANNOTATION(method)) {
@@ -485,6 +507,37 @@ ClassFileWriter::analyzeMethods()
 			}
 		}
 		method = nextROMMethod(method);
+	}
+}
+
+void
+ClassFileWriter::analyzeRecordAttribute()
+{
+	addEntry((void *) &RECORD, 0, CFR_CONSTANT_Utf8);
+
+	/* first 4 bytes contains number of record components */
+	U_32 numberOfRecords = getNumberOfRecordComponents(_romClass);
+	J9ROMRecordComponentShape* recordComponent = recordComponentStartDo(_romClass);
+	for (U_32 i = 0; i < numberOfRecords; i++) {
+
+		/* record component name and signature */
+		addEntry(J9ROMRECORDCOMPONENTSHAPE_NAME(recordComponent), 0, CFR_CONSTANT_Utf8);
+		addEntry(J9ROMRECORDCOMPONENTSHAPE_SIGNATURE(recordComponent), 0, CFR_CONSTANT_Utf8);
+
+		/* analyze attributes */
+		if (recordComponentHasSignature(recordComponent)) {
+			J9UTF8* genericSignature = getRecordComponentGenericSignature(recordComponent);
+			addEntry((void *) &SIGNATURE, 0, CFR_CONSTANT_Utf8);
+			addEntry(genericSignature, 0, CFR_CONSTANT_Utf8);
+		}
+		if (recordComponentHasAnnotations(recordComponent)) {
+			addEntry((void *) &RUNTIME_VISIBLE_ANNOTATIONS, 0, CFR_CONSTANT_Utf8);
+		}
+		if (recordComponentHasTypeAnnotations(recordComponent)) {
+			addEntry((void *) &RUNTIME_VISIBLE_TYPE_ANNOTATIONS, 0, CFR_CONSTANT_Utf8);
+		}
+
+		recordComponent = recordComponentNextDo(recordComponent);
 	}
 }
 
@@ -544,6 +597,8 @@ ClassFileWriter::writeConstantPool()
 			writeU16(indexForNAS(J9ROMMETHODREF_NAMEANDSIGNATURE((J9ROMMethodRef *) cpItem)));
 			break;
 		case J9CPTYPE_INTERFACE_METHOD:
+		case J9CPTYPE_INTERFACE_STATIC_METHOD:
+		case J9CPTYPE_INTERFACE_INSTANCE_METHOD:
 			writeU8(CFR_CONSTANT_InterfaceMethodref);
 			writeU16(U_16(((J9ROMMethodRef *) cpItem)->classRefCPIndex));
 			writeU16(indexForNAS(J9ROMMETHODREF_NAMEANDSIGNATURE((J9ROMMethodRef *) cpItem)));
@@ -590,6 +645,11 @@ ClassFileWriter::writeConstantPool()
 			writeU16(J9UTF8_LENGTH(J9ROMSTRINGREF_UTF8DATA((J9ROMStringRef *) cpItem)));
 			writeData(J9UTF8_LENGTH(J9ROMSTRINGREF_UTF8DATA((J9ROMStringRef *) cpItem)), J9UTF8_DATA(J9ROMSTRINGREF_UTF8DATA((J9ROMStringRef *) cpItem)));
 			break;
+		case J9CPTYPE_CONSTANT_DYNAMIC:
+			writeU8(CFR_CONSTANT_Dynamic);
+			writeU16(U_16((((J9ROMConstantDynamicRef *) cpItem)->bsmIndexAndCpType >> J9DescriptionCpTypeShift) & J9DescriptionCpBsmIndexMask));
+			writeU16(indexForNAS(J9ROMCONSTANTDYNAMICREF_NAMEANDSIGNATURE((J9ROMConstantDynamicRef *) cpItem)));
+			break;
 		default:
 			Trc_BCU_Assert_ShouldNeverHappen();
 			break;
@@ -608,7 +668,7 @@ ClassFileWriter::writeConstantPool()
 			case CFR_CONSTANT_Utf8:
 			{
 				J9UTF8 * utf8 = (J9UTF8 *) entry->address;
-				/* If this is an anonClass, we must build the classData with the origianl name, 
+				/* If this is an anonClass, we must build the classData with the original name, 
 				 * not the anonClass name. There is only one copy of the className in the ROMClass,
 				 * so replace the matching anonClassName reference with the originalClassName reference  
 				 */
@@ -877,10 +937,10 @@ ClassFileWriter::writeAttributes()
 	J9SourceDebugExtension * sourceDebugExtension = getSourceDebugExtensionForROMClass(_javaVM, NULL, _romClass);
 	U_32 * annotationsData = getClassAnnotationsDataForROMClass(_romClass);
 	U_32 * typeAnnotationsData = getClassTypeAnnotationsDataForROMClass(_romClass);
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+#if JAVA_SPEC_VERSION >= 11
 	J9UTF8 *nestHost = J9ROMCLASS_NESTHOSTNAME(_romClass);
 	U_16 nestMemberCount = _romClass->nestMemberCount;
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 
 	if ((0 != _romClass->innerClassCount) || J9_ARE_ANY_BITS_SET(_romClass->extraModifiers, J9AccClassInnerClass)) {
 		attributesCount += 1;
@@ -906,12 +966,18 @@ ClassFileWriter::writeAttributes()
 	if (0 != _romClass->bsmCount) {
 		attributesCount += 1;
 	}
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+	if (J9_ARE_ANY_BITS_SET(_romClass->extraModifiers, J9AccRecord)) {
+		attributesCount += 1;
+	}
+	if (J9ROMCLASS_IS_SEALED(_romClass)) {
+		attributesCount += 1;
+	}
+#if JAVA_SPEC_VERSION >= 11
 	/* Class can not have both a nest members and member of nest attribute */
 	if ((0 != _romClass->nestMemberCount) || (NULL != nestHost)) {
 		attributesCount += 1;
 	}
-#endif /* defined(J9VM_OPT_VALHALLA_NESTMATES) */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 	writeU16(attributesCount);
 
 	if ((0 != _romClass->innerClassCount) || J9_ARE_ANY_BITS_SET(_romClass->extraModifiers, J9AccClassInnerClass)) {
@@ -953,7 +1019,7 @@ ClassFileWriter::writeAttributes()
 		}
 	}
 
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+#if JAVA_SPEC_VERSION >= 11
 	/* A class can only have one of the nest mate attributes */
 	if (0 != nestMemberCount) {
 		J9SRP *nestMembers = (J9SRP *) J9ROMCLASS_NESTMEMBERS(_romClass);
@@ -968,9 +1034,9 @@ ClassFileWriter::writeAttributes()
 		}
 	} else if (NULL != nestHost) {
 		writeAttributeHeader((J9UTF8 *) &NEST_HOST, 2);
-		writeU16(indexForUTF8(nestHost));
+		writeU16(indexForClass(nestHost));
 	}
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 
 	if (NULL != enclosingObject) {
 		J9ROMNameAndSignature * nas = J9ENCLOSINGOBJECT_NAMEANDSIGNATURE(enclosingObject);
@@ -1029,6 +1095,95 @@ ClassFileWriter::writeAttributes()
 			}
 		}
 	}
+
+	/* record attribute */
+	if (J9_ARE_ANY_BITS_SET(_romClass->extraModifiers, J9AccRecord)) {
+		writeRecordAttribute();
+	}
+
+	/* write PermittedSubclasses attribute */
+	if (J9ROMCLASS_IS_SEALED(_romClass)) {
+		U_32 *permittedSubclassesCountPtr = getNumberOfPermittedSubclassesPtr(_romClass);
+		writeAttributeHeader((J9UTF8 *) &PERMITTED_SUBCLASSES, sizeof(U_16) + (*permittedSubclassesCountPtr * sizeof(U_16)));
+
+		writeU16(*permittedSubclassesCountPtr);
+
+		for (U_32 i = 0; i < *permittedSubclassesCountPtr; i++) {
+			J9UTF8* permittedSubclassNameUtf8 = permittedSubclassesNameAtIndex(permittedSubclassesCountPtr, i);
+
+			/* CONSTANT_Class_info index should be written. Find class entry that references the subclass name in constant pool. */
+			J9HashTableState hashTableState;
+			HashTableEntry * entry = (HashTableEntry *) hashTableStartDo(_cpHashTable, &hashTableState);
+			while (NULL != entry) {
+				if (CFR_CONSTANT_Class == entry->cpType) {
+					J9UTF8* classNameCandidate = (J9UTF8*)entry->address;
+					if (J9UTF8_EQUALS(classNameCandidate, permittedSubclassNameUtf8)) {
+						writeU16(entry->cpIndex);
+						break;
+					}
+				}
+				entry = (HashTableEntry *) hashTableNextDo(&hashTableState);
+			}
+		}
+	}
+}
+
+void ClassFileWriter::writeRecordAttribute()
+{
+	/* Write header - size calculation will be written specially at the end.
+	 * Write zero as a placeholder for length.
+	 */
+	writeU16(indexForUTF8((J9UTF8 *) &RECORD));
+	U_8* recordAttributeLengthAddr = _classFileCursor;
+	writeU32(0);
+	U_8* startLengthCalculationAddr = _classFileCursor;
+	
+	/* write number of record components (components_count).
+	 * Stored as U32 in the ROM class, U16 in class file.
+	 */
+	U_32 numberOfRecords = getNumberOfRecordComponents(_romClass);
+	writeU16(numberOfRecords);
+
+	/* write record components */
+	J9ROMRecordComponentShape* recordComponent = recordComponentStartDo(_romClass);
+	for (U_32 i = 0; i < numberOfRecords; i++) {
+		J9UTF8 * name = J9ROMRECORDCOMPONENTSHAPE_NAME(recordComponent);
+		J9UTF8 * signature = J9ROMRECORDCOMPONENTSHAPE_SIGNATURE(recordComponent);
+		J9UTF8 * genericSignature = getRecordComponentGenericSignature(recordComponent);
+		U_32 * annotationsData = getRecordComponentAnnotationData(recordComponent);
+		U_32 * typeAnnotationsData = getRecordComponentTypeAnnotationData(recordComponent);
+		U_16 attributesCount = 0;
+
+		writeU16(indexForUTF8(name));
+		writeU16(indexForUTF8(signature));
+
+		if (NULL != genericSignature) {
+			attributesCount += 1;
+		}
+		if (NULL != annotationsData) {
+			attributesCount += 1;
+		}
+		if (NULL != typeAnnotationsData) {
+			attributesCount += 1;
+		}
+		writeU16(attributesCount);
+
+		if (NULL != genericSignature) {
+			writeSignatureAttribute(genericSignature);
+		}
+		if (NULL != annotationsData) {
+			writeAnnotationsAttribute(annotationsData);
+		}
+		if (NULL != typeAnnotationsData) {
+			writeTypeAnnotationsAttribute(typeAnnotationsData);
+		}
+
+		recordComponent = recordComponentNextDo(recordComponent);
+	}
+
+	/* calculate and write record attribute length */
+	U_8* endLengthCalculationAddr = _classFileCursor;
+	writeU32At(U_32(endLengthCalculationAddr - startLengthCalculationAddr), recordAttributeLengthAddr);
 }
 
 U_8
@@ -1232,8 +1387,14 @@ ClassFileWriter::rewriteBytecode(J9ROMMethod * method, U_32 length, U_8 * code)
 		case JBldc2lw: {
 				code[index] = CFR_BC_ldc2_w;
 				U_16 cpIndex = *(U_16 *)(code + index + 1);
-				/* Adjust index of double/long CP entry */
-				cpIndex = cpIndex + (cpIndex - _romClass->ramConstantPoolCount);
+				U_32 * cpShapeDescription = J9ROMCLASS_CPSHAPEDESCRIPTION(_romClass);
+
+				if (J9CPTYPE_CONSTANT_DYNAMIC != J9_CP_TYPE(cpShapeDescription, cpIndex)) {
+					/* Adjust index of double/long CP entry. Not necessary for Constant_Dynamic as
+					 * its already in the RAM CP while double/long are sorted to the end.
+					 */
+					cpIndex = cpIndex + (cpIndex - _romClass->ramConstantPoolCount);
+				}
 				writeU16At(cpIndex, code + index + 1);
 			}
 			break;
@@ -1337,10 +1498,14 @@ readdWide:
 		case JBreturn0: /* Fall-through */
 		case JBreturn1: /* Fall-through */
 		case JBreturn2: /* Fall-through */
+		case JBreturnB: /* Fall-through */
+		case JBreturnC: /* Fall-through */
+		case JBreturnS: /* Fall-through */
+		case JBreturnZ: /* Fall-through */
 		case JBsyncReturn0: /* Fall-through */
 		case JBsyncReturn1: /* Fall-through */
 		case JBsyncReturn2: {
-			J9UTF8 * signature = J9ROMMETHOD_GET_SIGNATURE(_romClass, method);
+			J9UTF8 * signature = J9ROMMETHOD_SIGNATURE(method);
 			U_8 * sigData = J9UTF8_DATA(signature);
 			U_16 sigLength = J9UTF8_LENGTH(signature);
 

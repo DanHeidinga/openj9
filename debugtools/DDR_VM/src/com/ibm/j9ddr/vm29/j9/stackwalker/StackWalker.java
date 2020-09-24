@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2009, 2014 IBM Corp. and others
+ * Copyright (c) 2009, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -33,6 +33,7 @@ import com.ibm.j9ddr.vm29.pointer.generated.J9JITDecompilationInfoPointer;
 import com.ibm.j9ddr.vm29.j9.AlgorithmPicker;
 import com.ibm.j9ddr.vm29.j9.AlgorithmVersion;
 import com.ibm.j9ddr.vm29.j9.BaseAlgorithm;
+import com.ibm.j9ddr.vm29.j9.ConstantPoolHelpers;
 import com.ibm.j9ddr.vm29.j9.IAlgorithm;
 import com.ibm.j9ddr.vm29.pointer.PointerPointer;
 import com.ibm.j9ddr.vm29.pointer.U32Pointer;
@@ -55,7 +56,6 @@ import com.ibm.j9ddr.vm29.pointer.generated.J9SFMethodTypeFramePointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9SFSpecialFramePointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9SFStackFramePointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9VMEntryLocalStoragePointer;
-import com.ibm.j9ddr.vm29.pointer.generated.TRBuildFlags;
 import com.ibm.j9ddr.vm29.pointer.helper.J9ROMMethodHelper;
 import com.ibm.j9ddr.vm29.pointer.helper.J9ThreadHelper;
 import com.ibm.j9ddr.vm29.pointer.helper.J9UTF8Helper;
@@ -256,23 +256,27 @@ public class StackWalker
 
 						/* fetch the Java stack for the platform directly from the register file */
 						String javaSPName = "";
-						if (TRBuildFlags.host_POWER) {
+						if (J9BuildFlags.arch_power) {
 							/* AIX shows as POWER not PPC */
 							/* gpr14 */
 							javaSPName = "gpr14";
-						} else if (TRBuildFlags.host_S390) {
+						} else if (J9BuildFlags.arch_s390) {
 							/* r5 */
 							javaSPName = "r5";
-						} else if (TRBuildFlags.host_X86 && TRBuildFlags.host_64BIT) {
-							/* esp */
-							javaSPName = "rsp";
-						} else if (TRBuildFlags.host_X86 && TRBuildFlags.host_32BIT) {
-							/* rsp */
-							javaSPName = "esp";
+						} else if (J9BuildFlags.arch_x86) {
+							if (J9BuildFlags.env_data64) {
+								/* rsp */
+								javaSPName = "rsp";
+							} else {
+								/* esp */
+								javaSPName = "esp";
+							}
+						} else if (J9BuildFlags.arch_aarch64) {
+							javaSPName = "r20";
 						} else {
 							throw new IllegalArgumentException("Unsupported platform");
 						}
-						
+
 						for (IRegister reg : nativeThread.getRegisters()) {
 							if (reg.getName().equalsIgnoreCase(javaSPName)) {
 								javaSp = UDATAPointer.cast(reg.getValue().longValue());
@@ -469,6 +473,7 @@ public class StackWalker
 							break WALKING_LOOP;
 						}
 						walkState.previousFrameFlags = walkState.frameFlags;
+						walkState.resolveFrameFlags = new UDATA(0);
 	
 					} // End of (! startAtJITFrame)
 	
@@ -582,7 +587,7 @@ public class StackWalker
 			if (walkState.method.notNull()) {
 				J9ROMMethodPointer romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(walkState.method);
 	
-				walkState.constantPool = UNTAGGED_METHOD_CP(walkState.method);
+				walkState.constantPool = ConstantPoolHelpers.J9_CP_FROM_METHOD(walkState.method);
 				walkState.argCount = new UDATA(romMethod.argCount());
 					
 				if ((walkState.flags & J9_STACKWALK_ITERATE_O_SLOTS) != 0) {
@@ -656,7 +661,7 @@ public class StackWalker
 				}
 				WALK_O_SLOT(walkState, PointerPointer.cast(methodTypeFrame.methodType()));
 				walkState.argCount = methodTypeFrame.argStackSlots().add(1);
-				walkState.slotType = walkState.slotType = (int)J9_STACKWALK_SLOT_TYPE_METHOD_LOCAL;
+				walkState.slotType = (int)J9_STACKWALK_SLOT_TYPE_METHOD_LOCAL;
 				walkState.slotIndex = 0;
 				walkDescribedPushes(walkState, walkState.arg0EA, walkState.argCount.intValue(), descriptionSlots, walkState.argCount.intValue());
 			}
@@ -810,7 +815,7 @@ public class StackWalker
 				if ((walkState.flags & J9_STACKWALK_HIDE_EXCEPTION_FRAMES) != 0) {
 					J9ROMMethodPointer romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(walkState.method);
 	
-					if (!romMethod.modifiers().anyBitsIn(J9_JAVA_STATIC)) {
+					if (!romMethod.modifiers().anyBitsIn(J9AccStatic)) {
 						if (J9UTF8Helper.stringValue(romMethod.nameAndSignature().name())
 								.charAt(0) == '<') {
 							if (walkState.arg0EA.at(0).eq(
@@ -939,9 +944,9 @@ public class StackWalker
 				if (walkState.arg0EA.eq(walkState.j2iFrame)) {
 					walkState.bp = walkState.arg0EA;
 					walkState.unwindSP = walkState.bp.subOffset(J9SFJ2IFrame.SIZEOF)
-						.addOffset(UDATA.SIZEOF);
+							.addOffset(UDATA.SIZEOF);
 					walkState.frameFlags = J9SFJ2IFramePointer.cast(walkState.unwindSP)
-						.specialFrameFlags();
+							.specialFrameFlags();
 					//TODO do I need MARK_SLOT_AS_OBJECT here?
 					printFrameType(walkState, "invokeExact J2I");
 				} else {
@@ -956,7 +961,7 @@ public class StackWalker
 				J9ROMMethodPointer romMethod;
 				J9JavaVMPointer vm = walkState.walkThread.javaVM();
 				
-				walkState.constantPool = UNTAGGED_METHOD_CP(walkState.method);
+				walkState.constantPool = ConstantPoolHelpers.J9_CP_FROM_METHOD(walkState.method);
 				if ((walkState.pc != vm.impdep1PC()) && (walkState.pc != (vm.impdep1PC().addOffset(3)))) {
 					walkState.bytecodePCOffset = walkState.pc.sub(walkState.method.bytecodes().getAddress());	
 				} else {
@@ -1142,7 +1147,7 @@ public class StackWalker
 	
 			walkState.frameFlags = callInFrame.specialFrameFlags();
 			printFrameType(walkState, "JNI call-in");
-	
+
 			if ((walkState.flags & J9_STACKWALK_ITERATE_O_SLOTS) != 0) {
 				try {
 					/*
@@ -1231,7 +1236,7 @@ public class StackWalker
 			walkState.bp = UDATAPointer.cast(methodFrame.savedA0EA());
 			walkState.frameFlags = methodFrame.specialFrameFlags();
 			walkState.method = methodFrame.method();
-			walkState.constantPool = UNTAGGED_METHOD_CP(walkState.method);
+			walkState.constantPool = ConstantPoolHelpers.J9_CP_FROM_METHOD(walkState.method);
 	
 			printFrameType(walkState, "JIT JNI call-out");
 	
@@ -1258,7 +1263,7 @@ public class StackWalker
 			walkState.bp = UDATAPointer.cast(jitResolveFrame
 					.taggedRegularReturnSPEA());
 			walkState.frameFlags = jitResolveFrame.specialFrameFlags();
-	
+
 			try {
 				printFrameType(walkState, "JIT resolve");
 		
@@ -1288,9 +1293,9 @@ public class StackWalker
 	
 			walkState.bp = UDATAPointer.cast(specialFrame.savedA0EA());
 			walkState.frameFlags = specialFrame.specialFrameFlags();
-	
+
 			printFrameType(walkState, "Generic special");
-	
+
 			if (((walkState.flags & J9_STACKWALK_ITERATE_O_SLOTS) != 0)
 					&& walkState.literals.notNull()) {
 				try {

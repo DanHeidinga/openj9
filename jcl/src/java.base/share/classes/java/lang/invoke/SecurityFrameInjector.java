@@ -1,6 +1,6 @@
-/*[INCLUDE-IF Sidecar17]*/
+/*[INCLUDE-IF Sidecar18-SE & !OPENJDK_METHODHANDLES]*/
 /*******************************************************************************
- * Copyright (c) 2012, 2017 IBM Corp. and others
+ * Copyright (c) 2012, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -106,7 +106,7 @@ final class SecurityFrameInjector {
 								return Lookup.class.getResourceAsStream("/java/lang/invoke/SecurityFrame.class").readAllBytes(); //$NON-NLS-1$
 								/*[ELSE]*/
 								InputStream is = Lookup.class.getResourceAsStream("/java/lang/invoke/SecurityFrame.class"); //$NON-NLS-1$
-								return IOUtils.readFully(is, -1, true);
+								return IOUtils.readFully(is, Integer.MAX_VALUE, false);
 								/*[ENDIF]*/
 							} catch(java.io.IOException e) {
 								/*[MSG "K056A", "Unable to read java.lang.invoke.SecurityFrame.class bytes"]*/
@@ -240,7 +240,7 @@ final class SecurityFrameInjector {
 		final MethodType originalMT = potentialInjectFrame.type;
 		
 		// SecurityFrames are always represented as:
-		// 1) VaragsCollectHandle -> AsTypeHandle -> RBH with bound value being an instance of SecurityFrame
+		// 1) VarargsCollectHandle -> AsTypeHandle -> RBH with bound value being an instance of SecurityFrame
 		// 2) AsTypeHandle -> RBH with bound value being an instance of SecurityFrame
 		// 3) RBH with bound value being an instance of SecurityFrame if signature is (Object[])Object
 		boolean mustBeVarags = false;

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -179,6 +179,21 @@ bcutil_J9VMDllMain (J9JavaVM* vm, IDATA stage, void* reserved);
 I_32 
 j9bcutil_readClassFileBytes (J9PortLibrary *portLib, IDATA (*verifyFunction) (J9PortLibrary *aPortLib, J9CfrClassFile* classfile, U_8* segment, U_8* segmentLength, U_8* freePointer, U_32 vmVersionShifted, U_32 flags, I_32 *hasRET), U_8* data, UDATA dataLength, U_8* segment, UDATA segmentLength, U_32 flags, U_8** segmentFreePointer, void *verboseContext, UDATA findClassFlags, UDATA romClassSortingThreshold);
 
+#if JAVA_SPEC_VERSION >= 15
+/**
+ * check the class bytes that will be used to define a class.
+ * @param currentThread The current VM thread.
+ * @param classBytes Pointer to the class bytes that is to be checked.
+ * @param classBytesLength The length of class bytes.
+ * @param segment A memory segment that will be used to verify the class bytes.
+ * @param segmentLength The length of memory segment.
+ * 
+ * @param return 0 class bytes is legal or a negative value otherwise.
+ */
+I_32
+checkClassBytes(J9VMThread *currentThread, U_8* classBytes, UDATA classBytesLength, U_8* segment, U_32 segmentLength);
+#endif /* JAVA_SPEC_VERSION >= 15 */
+
 /* ---------------- defineclass.c ---------------- */
 
 #if (defined(J9VM_OPT_DYNAMIC_LOAD_SUPPORT))  /* File Level Build Flags */
@@ -245,13 +260,13 @@ internalLoadROMClass(J9VMThread *vmThread, J9LoadROMClassData *loadData, J9Trans
 * @param vmThread pointer to J9VMThread
 * @param moduleName name of the module containing the class; can be NULL
 * @param className name of the class to be located
-* @param classNameLength lenght of className
+* @param classNameLength length of className
 * @param classLoader pointer to J9ClassLoader loading the class
 * @param classPath pointer to class path entries
 * @param classPathEntryCount number of class path entries in classPath
 * @param options load options such as J9_FINDCLASS_FLAG_EXISTING_ONLY
 * @param flags flags such as BCU_BOOTSTRAP_ENTRIES_ONLY
-* @param [in/out] localBuffer contains values for entryInfex, loadLocationType and cpEntryUsed. This pointer can't be NULL.
+* @param [in/out] localBuffer contains values for entryIndex, loadLocationType and cpEntryUsed. This pointer can't be NULL.
 *
 * @return zero on success, -1 on failure.
 */
@@ -552,13 +567,6 @@ releaseInlineBuffers  (J9JSRIData * inlineBuffers);
 */
 const char * 
 buildVerifyErrorString ( J9JavaVM *javaVM, J9CfrError *error, U_8* className, UDATA classNameLength);
-
-
-typedef struct J9TenantIsolationFilter {
-	const U_8 *filter;		/**< The name or prefix to match */
-	BOOLEAN startsWith; 		/**< Specifies whether or not we want the filter to only match the beginning of the string */
-} J9TenantIsolationFilter;
-
 
 #ifdef __cplusplus
 }

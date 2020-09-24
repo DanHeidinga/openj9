@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -53,6 +53,7 @@ typedef struct MemRecord {
 
 static omrthread_monitor_t MemMonitor = NULL;
 static J9Pool* MemPoolGlobal = NULL;
+static BOOLEAN optionFatal = FALSE;
 
 static jboolean jniCheckIsSameObject (JNIEnv * env, jobject ref1, jobject ref2);
 static UDATA checkArrayCrc (JNIEnv * env, const char *acquireFunction, const char *releaseFunction, jobject object, const void *memory, jint mode, MemRecord * poolElement);
@@ -84,17 +85,12 @@ jniRecordMemoryAcquire(JNIEnv* env, const char* functionName, jobject object, co
 	if (recordCRC) {
 		U_32 length;
 		J9IndexableObject *arrayPtr;
-		BOOLEAN enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
 
-		if (enteredWithoutVMAccess) {
-			acquireVMAccess(vmThread);
-		}
+		enterVM(vmThread);
 		arrayPtr = *(J9IndexableObject**)object;
 		length = J9INDEXABLEOBJECT_SIZE(vmThread, arrayPtr);
 		length <<= ((J9ROMArrayClass*)(J9OBJECT_CLAZZ(vmThread, arrayPtr)->romClass))->arrayShape & 0x0000FFFF;
-		if (enteredWithoutVMAccess) {
-			releaseVMAccess(vmThread);
-		}
+		exitVM(vmThread);
 		crc = j9crc32(j9crc32(0, NULL, 0), (U_8*)memory, length);
 	}
 
@@ -105,6 +101,9 @@ jniRecordMemoryAcquire(JNIEnv* env, const char* functionName, jobject object, co
 
 	poolElement = pool_newElement(MemPoolGlobal);
 	if (poolElement == NULL) {
+		if (optionFatal) {
+			omrthread_monitor_exit(MemMonitor);
+		}
 		jniCheckFatalErrorNLS(env, J9NLS_JNICHK_OUT_OF_MEMORY, functionName);
 	} else {
 		poolElement->env = env;
@@ -127,6 +126,9 @@ jniCheckMemoryInit(J9JavaVM* javaVM)
 	PORT_ACCESS_FROM_JAVAVM(javaVM);
 
 	omrthread_monitor_t globalMonitor = omrthread_global_monitor();
+	if (J9_ARE_NO_BITS_SET(javaVM->checkJNIData.options, JNICHK_NONFATAL)) {
+		optionFatal = TRUE;
+	}
 	omrthread_monitor_enter(globalMonitor);
 	if (MemMonitor == NULL) {
 		if (omrthread_monitor_init_with_name(&MemMonitor, 0,"JNI Mem")) {
@@ -184,6 +186,9 @@ jniRecordMemoryRelease(JNIEnv* env, const char* acquireFunction, const char* rel
 	poolElement = pool_startDo(MemPoolGlobal, &poolState);
 	for(;;) {
 		if (poolElement == NULL) {
+			if (optionFatal) {
+				omrthread_monitor_exit(MemMonitor);
+			}
 			jniCheckFatalErrorNLS(env, J9NLS_JNICHK_BAD_POINTER, releaseFunction, memory);
 			break;
 		}
@@ -238,7 +243,6 @@ checkArrayCrc(JNIEnv * env, const char *acquireFunction, const char *releaseFunc
 	const void *memory, jint mode, MemRecord * poolElement)
 {
 	J9VMThread *vmThread = (J9VMThread *)env;
-	BOOLEAN enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
 	PORT_ACCESS_FROM_VMC(vmThread);
 
 	U_32 length;
@@ -247,14 +251,12 @@ checkArrayCrc(JNIEnv * env, const char *acquireFunction, const char *releaseFunc
 	J9IndexableObject *arrayPtr;
 	UDATA isContiguousArray = 0;
 
-	if (enteredWithoutVMAccess) {
-		acquireVMAccess(vmThread);
-	}
+	enterVM(vmThread);
 	arrayPtr = *(J9IndexableObject**)object;
 	length = J9INDEXABLEOBJECT_SIZE(vmThread, arrayPtr);
 	length <<= ((J9ROMArrayClass*)(J9OBJECT_CLAZZ(vmThread, arrayPtr)->romClass))->arrayShape & 0x0000FFFF;
 
-	isContiguousArray = J9ISCONTIGUOUSARRAY(vm, arrayPtr);
+	isContiguousArray = J9ISCONTIGUOUSARRAY(vmThread, arrayPtr);
 	if (isContiguousArray) {
 		U_8* arrayData = (U_8*)TMP_J9JAVACONTIGUOUSARRAYOFBYTE_EA(vmThread, arrayPtr, 0); 
 		isCopy = arrayData != memory;
@@ -264,9 +266,7 @@ checkArrayCrc(JNIEnv * env, const char *acquireFunction, const char *releaseFunc
 		arrayCrc = calculateArrayCrc(vmThread, arrayPtr);	
 	}
 
-	if (enteredWithoutVMAccess) {
-		releaseVMAccess(vmThread);
-	}
+	exitVM(vmThread);
 	bufCrc = isCopy ? j9crc32(j9crc32(0, NULL, 0), (U_8 *) memory, length) : arrayCrc;
 
 	if (!isCopy) {
@@ -353,18 +353,13 @@ static jobject
 jniCheckNewGlobalRef(JNIEnv * env, jobject ref)
 {
 	J9VMThread *vmThread = (J9VMThread *)env;
-	BOOLEAN enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
 	jobject globalRef;
 
-	if (enteredWithoutVMAccess) {
-		acquireVMAccess(vmThread);
-	}
+	enterVM(vmThread);
 
 	globalRef = vmThread->javaVM->internalVMFunctions->j9jni_createGlobalRef(env, *(j9object_t*)ref, JNI_FALSE);
 
-	if (enteredWithoutVMAccess) {
-		releaseVMAccess(vmThread);
-	}
+	exitVM(vmThread);
 
 	return globalRef;
 }
@@ -375,17 +370,12 @@ static void
 jniCheckDeleteGlobalRef(JNIEnv * env, jobject ref)
 {
 	J9VMThread *vmThread = (J9VMThread *) env;
-	BOOLEAN enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
 
-	if (enteredWithoutVMAccess) {
-		acquireVMAccess(vmThread);
-	}
+	enterVM(vmThread);
 
 	vmThread->javaVM->internalVMFunctions->j9jni_deleteGlobalRef(env, ref, JNI_FALSE);
 
-	if (enteredWithoutVMAccess) {
-		releaseVMAccess(vmThread);
-	}
+	exitVM(vmThread);
 }
 
 
@@ -394,7 +384,6 @@ static jboolean
 jniCheckIsSameObject(JNIEnv * env, jobject ref1, jobject ref2)
 {
 	J9VMThread *vmThread = (J9VMThread *) env;
-	BOOLEAN enteredWithoutVMAccess;
 	jboolean same;
 
 	if ((ref1 == NULL) || (ref2 == NULL)) {
@@ -404,15 +393,10 @@ jniCheckIsSameObject(JNIEnv * env, jobject ref1, jobject ref2)
 		return JNI_TRUE;
 	}
 
-	enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
-	if (enteredWithoutVMAccess) {
-		acquireVMAccess(vmThread);
-	}
-
-	same = *(j9object_t*)ref1 == *(j9object_t*)ref2;
-
-	if (enteredWithoutVMAccess) {
-		releaseVMAccess(vmThread);
+	{
+		enterVM(vmThread);
+		same = *(j9object_t*)ref1 == *(j9object_t*)ref2;
+		exitVM(vmThread);
 	}
 
 	return same;

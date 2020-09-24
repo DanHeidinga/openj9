@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1998, 2017 IBM Corp. and others
+ * Copyright (c) 1998, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -29,7 +29,7 @@
 
 jclass 
 defineClassCommon(JNIEnv *env, jobject classLoaderObject,
-	jstring className, jbyteArray classRep, jint offset, jint length, jobject protectionDomain, UDATA options, J9Class *hostClass)
+	jstring className, jbyteArray classRep, jint offset, jint length, jobject protectionDomain, UDATA *options, J9Class *hostClass, J9ClassPatchMap *patchMap, BOOLEAN validateName)
 {
 #ifdef J9VM_OPT_DYNAMIC_LOAD_SUPPORT
 
@@ -39,14 +39,15 @@ defineClassCommon(JNIEnv *env, jobject classLoaderObject,
 	J9VMThread *currentThread = (J9VMThread *)env;
 	J9JavaVM *vm = currentThread->javaVM;
 	J9InternalVMFunctions *vmFuncs = vm->internalVMFunctions;
-	J9TranslationBufferSet *dynFuncs;
-	J9ClassLoader *classLoader;
+	J9TranslationBufferSet *dynFuncs = NULL;
+	J9ClassLoader *classLoader = NULL;
 	UDATA retried = FALSE;
-	UDATA utf8Length;
-	U_8 *utf8Name;
+	UDATA utf8Length = 0;
+	char utf8NameStackBuffer[J9VM_PACKAGE_NAME_BUFFER_LENGTH];
+	U_8 *utf8Name = NULL;
 	U_8 *classBytes = NULL;
 	J9Class *clazz = NULL;
-	jclass result;
+	jclass result = NULL;
 	PORT_ACCESS_FROM_JAVAVM(vm);
 	UDATA isContiguousClassBytes = 0;
 	J9ROMClass *loadedClass = NULL;
@@ -56,54 +57,63 @@ defineClassCommon(JNIEnv *env, jobject classLoaderObject,
 
 	if (vm->dynamicLoadBuffers == NULL) {
 		throwNewInternalError(env, "Dynamic loader is unavailable");
-		return NULL;
+		goto done;
 	}
 	dynFuncs = vm->dynamicLoadBuffers;
 
 	if (classRep == NULL) {
 		throwNewNullPointerException(env, NULL);
-		return NULL;
+		goto done;
+	}
+
+	if ((patchMap != NULL) && (patchMap->size != 0)) {
+		localBuffer.patchMap = patchMap;
 	}
 
 	vmFuncs->internalEnterVMFromJNI(currentThread);
-	isContiguousClassBytes = J9ISCONTIGUOUSARRAY(vm, *(J9IndexableObject **)classRep);
+	isContiguousClassBytes = J9ISCONTIGUOUSARRAY(currentThread, *(J9IndexableObject **)classRep);
 	if (!isContiguousClassBytes) {
-		vmFuncs->internalReleaseVMAccess(currentThread);
+		vmFuncs->internalExitVMToJNI(currentThread);
 		/* Make a "flat" copy of classRep */
 		if (length < 0) {
 			throwNewIndexOutOfBoundsException(env, NULL);
-			return NULL;
+			goto done;
 		}
 		classBytes = j9mem_allocate_memory(length, J9MEM_CATEGORY_CLASSES);
 		if (classBytes == NULL) {
-			throwNativeOOMError(env, 0, 0);
-			return NULL;
+			vmFuncs->throwNativeOOMError(env, 0, 0);
+			goto done;
 		}
 		(*env)->GetByteArrayRegion(env, classRep, offset, length, (jbyte *)classBytes);
 		if ((*env)->ExceptionCheck(env)) {
 			j9mem_free_memory(classBytes);
-			return NULL;
+			goto done;
 		}
 		vmFuncs->internalEnterVMFromJNI(currentThread);
 	}
 
 	/* Allocate and initialize a UTF8 copy of the Unicode class-name */
-	if (className == NULL) {
-		utf8Length = 0;
-		utf8Name = NULL;
-	} else {
-		utf8Length = vmFuncs->getStringUTF8Length(currentThread, J9_JNI_UNWRAP_REFERENCE(className));
-		/* For now, use malloc, but this should use stack allocation for short class-names */
-		utf8Name = j9mem_allocate_memory(utf8Length+1, J9MEM_CATEGORY_CLASSES);
-		if (utf8Name == NULL) {
+	if (NULL != className) {
+		j9object_t classNameObject = J9_JNI_UNWRAP_REFERENCE(className);
+		UDATA stringFlags = J9_STR_NULL_TERMINATE_RESULT;
+
+		if (!validateName) {
+			stringFlags |= J9_STR_XLAT;
+		}
+
+		utf8Name = (U_8*)vmFuncs->copyStringToUTF8WithMemAlloc(currentThread, classNameObject, stringFlags, "", 0, utf8NameStackBuffer, J9VM_PACKAGE_NAME_BUFFER_LENGTH, &utf8Length);
+
+		if (NULL == utf8Name) {
 			vmFuncs->setNativeOutOfMemoryError(currentThread, 0, 0);
 			goto done;
 		}
-		if (UDATA_MAX == vmFuncs->copyStringToUTF8Helper(
-			currentThread, J9_JNI_UNWRAP_REFERENCE(className), TRUE, J9_STR_XLAT, utf8Name, utf8Length + 1)
-		) {
-			vmFuncs->setCurrentException(currentThread, J9VMCONSTANTPOOL_JAVALANGINTERNALERROR, NULL);
-			goto done;
+
+		if (validateName && (CLASSNAME_INVALID == vmFuncs->verifyQualifiedName(currentThread, utf8Name, utf8Length, CLASSNAME_VALID_NON_ARRARY))) {
+			/* We don't yet know if the class being defined is exempt. Setting this option tells
+			 * defineClassCommon() to fail if it discovers that the class is not exempt. That failure
+			 * is distinguished by returning NULL with no exception pending.
+			 */
+			*options |= J9_FINDCLASS_FLAG_NAME_IS_INVALID;
 		}
 	}
 
@@ -128,12 +138,16 @@ defineClassCommon(JNIEnv *env, jobject classLoaderObject,
 retry:
 
 	omrthread_monitor_enter(vm->classTableMutex);
-
-	if (vmFuncs->hashClassTableAt(classLoader, utf8Name, utf8Length) != NULL) {
-		/* Bad, we have already defined this class - fail */
-		omrthread_monitor_exit(vm->classTableMutex);
-		vmFuncs->setCurrentException(currentThread, J9VMCONSTANTPOOL_JAVALANGLINKAGEERROR, (UDATA *)*(j9object_t*)className);
-		goto done;
+	/* Hidden class is never added into the hash table */
+	if (J9_ARE_NO_BITS_SET(*options, J9_FINDCLASS_FLAG_HIDDEN)) {
+		if (NULL != vmFuncs->hashClassTableAt(classLoader, utf8Name, utf8Length)) {
+			/* Bad, we have already defined this class - fail */
+			omrthread_monitor_exit(vm->classTableMutex);
+			if (J9_ARE_NO_BITS_SET(*options, J9_FINDCLASS_FLAG_NAME_IS_INVALID)) {
+				vmFuncs->setCurrentException(currentThread, J9VMCONSTANTPOOL_JAVALANGLINKAGEERROR, (UDATA *)*(j9object_t*)className);
+			}
+			goto done;
+		}
 	}
 
 	if (isContiguousClassBytes) {
@@ -150,8 +164,8 @@ retry:
 	 */
 	dynFuncs->findLocallyDefinedClassFunction(currentThread, NULL, utf8Name, (U_32) utf8Length, classLoader, classLoader->classPathEntries, classLoader->classPathEntryCount, (UDATA) FALSE, &localBuffer);
 
-	/* skip if we are anonClass */
-	if (J9_ARE_NO_BITS_SET(options, J9_FINDCLASS_FLAG_ANON)) {
+	/* skip if we are anonClass or hidden classes */
+	if (J9_ARE_NO_BITS_SET(*options, J9_FINDCLASS_FLAG_ANON | J9_FINDCLASS_FLAG_HIDDEN)) {
 		/* Check for romClass cookie, it indicates that we are  defining a class out of a JXE not from class bytes */
 
 		loadedClass = vmFuncs->romClassLoadFromCookie(currentThread, utf8Name, utf8Length, classBytes, (UDATA) length);
@@ -181,7 +195,7 @@ retry:
 			} else {
 				tempClassBytes = J9ROMCLASS_INTERMEDIATECLASSDATA(loadedClass);
 				tempLength = loadedClass->intermediateClassDataLength;
-				options |= J9_FINDCLASS_FLAG_SHRC_ROMCLASS_EXISTS;
+				*options |= J9_FINDCLASS_FLAG_SHRC_ROMCLASS_EXISTS;
 			}
 		}
 	}
@@ -193,7 +207,7 @@ retry:
 				tempClassBytes, (UDATA) tempLength, NULL,
 				classLoader,
 				protectionDomain ? *(j9object_t*)protectionDomain : NULL,
-				options | J9_FINDCLASS_FLAG_THROW_ON_FAIL | J9_FINDCLASS_FLAG_NO_CHECK_FOR_EXISTING_CLASS,
+				*options | J9_FINDCLASS_FLAG_THROW_ON_FAIL | J9_FINDCLASS_FLAG_NO_CHECK_FOR_EXISTING_CLASS,
 				loadedClass,
 				hostClass,
 				&localBuffer);
@@ -211,16 +225,27 @@ retry:
 	}
 
 done:
-	if ((clazz == NULL) && (currentThread->currentException == NULL)) {
-		/* should not get here -- throw the default exception just in case */
-		vmFuncs->setCurrentException(currentThread, J9VMCONSTANTPOOL_JAVALANGCLASSFORMATERROR, NULL);
+	if (NULL == clazz) {
+		if (J9_ARE_ANY_BITS_SET(*options, J9_FINDCLASS_FLAG_NAME_IS_INVALID)) {
+			/*
+			 * The caller signalled that the name is invalid. Leave the result NULL and
+			 * clear any pending exception; the caller will throw NoClassDefFoundError.
+			 */
+			currentThread->currentException = NULL;
+ 			currentThread->privateFlags &= ~(UDATA)J9_PRIVATE_FLAGS_REPORT_EXCEPTION_THROW;
+		} else if (NULL == currentThread->currentException) {
+			/* should not get here -- throw the default exception just in case */
+			vmFuncs->setCurrentException(currentThread, J9VMCONSTANTPOOL_JAVALANGCLASSFORMATERROR, NULL);
+		}
+	} else {
+		result = vmFuncs->j9jni_createLocalRef(env, J9VM_J9CLASS_TO_HEAPCLASS(clazz));
 	}
-			
-	result = vmFuncs->j9jni_createLocalRef(env, J9VM_J9CLASS_TO_HEAPCLASS(clazz));
 
-	vmFuncs->internalReleaseVMAccess(currentThread);
+	vmFuncs->internalExitVMToJNI(currentThread);
 
-	j9mem_free_memory(utf8Name);
+	if ((U_8*)utf8NameStackBuffer != utf8Name) {
+		j9mem_free_memory(utf8Name);
+	}
 
 	if (!isContiguousClassBytes) {
 		j9mem_free_memory(classBytes);

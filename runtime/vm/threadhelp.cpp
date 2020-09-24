@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1998, 2017 IBM Corp. and others
+ * Copyright (c) 1998, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -26,9 +26,6 @@
 #include "j9protos.h"
 #include "j9jclnls.h"
 #include "ut_j9vm.h"
-#ifdef J9VM_THR_LOCK_NURSERY
-#include "lockNurseryUtil.h"
-#endif
 #include "monhelp.h"
 #include "objhelp.h"
 
@@ -42,6 +39,7 @@ extern "C" {
 
 static IDATA validateTimeouts(J9VMThread* vmThread, I_64 millis, I_32 nanos);
 static IDATA failedToSetAttr(IDATA rc);
+static IDATA setThreadAttributes(omrthread_attr_t *attr, uintptr_t stacksize, uintptr_t priority, uint32_t category, omrthread_detachstate_t detachState);
 
 /**
  * @return non-zero on error. If an error occurs, an IllegalArgumentException will be set.
@@ -243,10 +241,10 @@ omrthread_monitor_t
 getMonitorForWait(J9VMThread* vmThread, j9object_t object)
 {
 	j9objectmonitor_t lock;
+	j9objectmonitor_t *lockEA = NULL;
 	omrthread_monitor_t monitor;
 	J9ObjectMonitor * objectMonitor;
 
-#ifdef J9VM_THR_LOCK_NURSERY
 	if (!LN_HAS_LOCKWORD(vmThread,object)) {
 		objectMonitor = monitorTableAt(vmThread, object);
 
@@ -256,13 +254,12 @@ getMonitorForWait(J9VMThread* vmThread, j9object_t object)
 			setNativeOutOfMemoryError(vmThread, J9NLS_JCL_FAILED_TO_INFLATE_MONITOR);
 			return NULL;
 		}
-		lock = objectMonitor->alternateLockword;
+		lockEA = &objectMonitor->alternateLockword;
 	} 
-	else 
-#endif
-	{
-		lock = J9OBJECT_MONITOR(vmThread, object);
+	else {
+		lockEA = J9OBJECT_MONITOR_EA(vmThread, object);
 	}
+	lock = J9_LOAD_LOCKWORD(vmThread, lockEA);
 
 	if (J9_LOCK_IS_INFLATED(lock)) {
 		objectMonitor = J9_INFLLOCK_OBJECT_MONITOR(lock);
@@ -280,7 +277,9 @@ getMonitorForWait(J9VMThread* vmThread, j9object_t object)
 		}
 
 #ifdef J9VM_THR_LOCK_RESERVATION
-		if ( (lock & (OBJECT_HEADER_LOCK_RECURSION_MASK | OBJECT_HEADER_LOCK_RESERVED)) == OBJECT_HEADER_LOCK_RESERVED) {
+		if (((lock & (OBJECT_HEADER_LOCK_RECURSION_MASK | OBJECT_HEADER_LOCK_RESERVED)) == OBJECT_HEADER_LOCK_RESERVED) ||
+		    ((lock & (OBJECT_HEADER_LOCK_LEARNING_RECURSION_MASK | OBJECT_HEADER_LOCK_LEARNING)) == OBJECT_HEADER_LOCK_LEARNING)
+		) {
 //			Trc_JCL_threadReservedButDoesntOwnFlatlock(vmThread, object);
 			setCurrentException(vmThread, J9VMCONSTANTPOOL_JAVALANGILLEGALMONITORSTATEEXCEPTION, NULL);
 			return NULL;
@@ -302,6 +301,66 @@ getMonitorForWait(J9VMThread* vmThread, j9object_t object)
 	}
 }
 
+static IDATA
+setThreadAttributes(omrthread_attr_t *attr, uintptr_t stacksize, uintptr_t priority, uint32_t category, omrthread_detachstate_t detachState)
+{
+	IDATA rc = J9THREAD_SUCCESS;
+
+	if (failedToSetAttr(omrthread_attr_set_schedpolicy(attr, J9THREAD_SCHEDPOLICY_OTHER))) {
+		rc = J9THREAD_ERR_INVALID_CREATE_ATTR;
+		goto _end;
+	}
+
+	if (failedToSetAttr(omrthread_attr_set_priority(attr, priority))) {
+		rc = J9THREAD_ERR_INVALID_CREATE_ATTR;
+		goto _end;
+	}
+
+	if (failedToSetAttr(omrthread_attr_set_stacksize(attr, stacksize))) {
+		rc = J9THREAD_ERR_INVALID_CREATE_ATTR;
+		goto _end;
+	}
+
+	if (failedToSetAttr(omrthread_attr_set_category(attr, category))) {
+		rc = J9THREAD_ERR_INVALID_CREATE_ATTR;
+		goto _end;
+	}
+
+	if (failedToSetAttr(omrthread_attr_set_detachstate(attr, detachState))) {
+		rc = J9THREAD_ERR_INVALID_CREATE_ATTR;
+		goto _end;
+	}
+
+_end:
+	return rc;
+}
+
+/*
+ * See vm_api.h for doc
+ */
+IDATA
+createJoinableThreadWithCategory(omrthread_t* handle, uintptr_t stacksize, uintptr_t priority, uintptr_t suspend,
+						 omrthread_entrypoint_t entrypoint, void* entryarg, uint32_t category)
+{
+	omrthread_attr_t attr;
+	IDATA rc = J9THREAD_SUCCESS;
+
+	if (J9THREAD_SUCCESS != omrthread_attr_init(&attr)) {
+		return J9THREAD_ERR_CANT_ALLOC_CREATE_ATTR;
+	}
+
+	rc = setThreadAttributes(&attr, stacksize, priority, category, J9THREAD_CREATE_JOINABLE);
+	if (J9THREAD_SUCCESS != rc) {
+		goto destroy_attr;
+	}
+
+	rc = omrthread_create_ex(handle, &attr, suspend, entrypoint, entryarg);
+
+destroy_attr:
+	omrthread_attr_destroy(&attr);
+	return rc;
+}
+
 /*
  * See vm_api.h for doc
  */
@@ -316,23 +375,8 @@ createThreadWithCategory(omrthread_t* handle, uintptr_t stacksize, uintptr_t pri
 		return J9THREAD_ERR_CANT_ALLOC_CREATE_ATTR;
 	}
 
-	if (failedToSetAttr(omrthread_attr_set_schedpolicy(&attr, J9THREAD_SCHEDPOLICY_OTHER))) {
-		rc = J9THREAD_ERR_INVALID_CREATE_ATTR;
-		goto destroy_attr;
-	}
-
-	if (failedToSetAttr(omrthread_attr_set_priority(&attr, priority))) {
-		rc = J9THREAD_ERR_INVALID_CREATE_ATTR;
-		goto destroy_attr;
-	}
-
-	if (failedToSetAttr(omrthread_attr_set_stacksize(&attr, stacksize))) {
-		rc = J9THREAD_ERR_INVALID_CREATE_ATTR;
-		goto destroy_attr;
-	}
-
-	if (failedToSetAttr(omrthread_attr_set_category(&attr, category))) {
-		rc = J9THREAD_ERR_INVALID_CREATE_ATTR;
+	rc = setThreadAttributes(&attr, stacksize, priority, category, J9THREAD_CREATE_DETACHED);
+	if (J9THREAD_SUCCESS != rc) {
 		goto destroy_attr;
 	}
 

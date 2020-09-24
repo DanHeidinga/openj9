@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -70,7 +69,7 @@ MM_CollectionSetDelegate::initialize(MM_EnvironmentVLHGC *env)
 		if(NULL == _setSelectionDataTable) {
 			goto error_no_memory;
 		}
-		memset(_setSelectionDataTable, 0, tableAllocationSizeInBytes);
+		memset((void *)_setSelectionDataTable, 0, tableAllocationSizeInBytes);
 		for(UDATA index = 0; index < setSelectionEntryCount; index++) {
 			_setSelectionDataTable[index]._compactGroup = index;
 		}
@@ -165,7 +164,9 @@ MM_CollectionSetDelegate::createNurseryCollectionSet(MM_EnvironmentVLHGC *env)
 			bool regionHasCriticalRegions = (0 != region->_criticalRegionsInUse);
 			bool isSelectionForCopyForward = env->_cycleState->_shouldRunCopyForward;
 
-			if (region->getRememberedSetCardList()->isAccurate() && (!isSelectionForCopyForward || !regionHasCriticalRegions)) {
+			/* We allow eden regions, which have jniCritical, to be part of nursery collectionSet; those regions would be marked instead of copyforwarded. */
+			if (region->getRememberedSetCardList()->isAccurate() && (!isSelectionForCopyForward || !regionHasCriticalRegions || (regionHasCriticalRegions && region->isEden()))) {
+
 				if(MM_CompactGroupManager::isRegionInNursery(env, region)) {
 					UDATA compactGroup = MM_CompactGroupManager::getCompactGroupNumber(env, region);
 					/* on collection phase, mark all non-overflowed regions and those that RSCL is not being rebuilt */
@@ -460,6 +461,7 @@ MM_CollectionSetDelegate::deleteRegionCollectionSetForPartialGC(MM_EnvironmentVL
 
 		region->_markData._shouldMark = false;
 		region->_reclaimData._shouldReclaim = false;
+		region->_markData._noEvacuation = false;
 	}
 }
 

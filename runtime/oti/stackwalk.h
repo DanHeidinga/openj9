@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -54,7 +54,7 @@ extern "C" {
 #define WALK_NAMED_INDIRECT_O_SLOT(slot, ind, tag) swWalkObjectSlot(walkState, (slot), (ind), (tag))
 #define WALK_NAMED_INDIRECT_I_SLOT(slot, ind, tag) swWalkIntSlot(walkState, (slot), (ind), (tag))
 #else
-#define WALK_NAMED_INDIRECT_O_SLOT(slot, ind, tag) walkState->objectSlotWalkFunction(walkState->currentThread, walkState, (slot), REMOTE_ADDR(slot))
+#define WALK_NAMED_INDIRECT_O_SLOT(slot, ind, tag) walkState->objectSlotWalkFunction(walkState->currentThread, walkState, (slot), (slot))
 #define WALK_NAMED_INDIRECT_I_SLOT(slot, ind, tag)
 #endif
 #define WALK_INDIRECT_O_SLOT(slot, ind) WALK_NAMED_INDIRECT_O_SLOT((slot), (ind), NULL)
@@ -64,29 +64,7 @@ extern "C" {
 #define WALK_O_SLOT(slot) WALK_INDIRECT_O_SLOT((slot), NULL)
 #define WALK_I_SLOT(slot) WALK_INDIRECT_I_SLOT((slot), NULL)
 
-#ifdef J9VM_OUT_OF_PROCESS
-#define DONT_REDIRECT_SRP
-#include "j9dbgext.h"
-#define LOCAL_ADDR(remoteAddr) dbgTargetToLocal(remoteAddr)
-#define REMOTE_ADDR(localAddr) dbgLocalToTarget(localAddr)
-#define READ_BYTE(addr) dbgReadByte(addr)
-#define READ_METHOD(remoteMethod) dbgReadMethod(remoteMethod)
-#define READ_CP(remoteCP) dbgReadCP(remoteCP)
-#define READ_CLASS(remoteClass) dbgReadClass(remoteClass)
-#define READ_OBJECT(remoteObject) dbgReadObject(remoteObject)
-#define READ_UDATA(addr) dbgReadUDATA(addr)
-#else
-#define LOCAL_ADDR(remoteAddr) ((void *) (remoteAddr))
-#define REMOTE_ADDR(localAddr) ((void *) (localAddr))
-#define READ_BYTE(addr) (*(addr))
-#define READ_METHOD(remoteMethod) (remoteMethod)
-#define READ_CP(remoteCP) (remoteCP)
-#define READ_CLASS(remoteClass) (remoteClass)
-#define READ_OBJECT(remoteObject) (remoteObject)
-#define READ_UDATA(addr) (*(addr))
-#endif
-
-#if defined(J9VM_INTERP_STACKWALK_TRACING) && !defined(J9VM_OUT_OF_PROCESS)
+#if defined(J9VM_INTERP_STACKWALK_TRACING)
 #define MARK_SLOT_AS_OBJECT(walkState, slot) swMarkSlotAsObject((walkState), (slot))
 #else
 #define MARK_SLOT_AS_OBJECT(walkState, slot)
@@ -135,11 +113,11 @@ extern "C" {
 #define J9_STACK_FLAGS_UNUSED_0x80000000 0x80000000
 #define J9_STACK_FLAGS_JIT_CALL_IN_TYPE_J2_I 0x00000000
 #define J9_STACK_FLAGS_JNI_REFS_REDIRECTED 0x00010000
-#define J9_STACK_FLAGS_ARGS_ALIGNED 0x00000002
+#define J9_STACK_FLAGS_UNUSED_0x2 0x00000002
 #define J9_STACK_FLAGS_JIT_JNI_CALL_OUT_FRAME 0x20000000
 #define J9_STACK_FLAGS_RELEASE_VMACCESS 0x00020000
 #define J9_STACK_REPORT_FRAME_POP 0x00000001
-#define J9_STACK_FLAGS_JIT_ARGS_ALIGNED 0x04000000
+#define J9_STACK_FLAGS_JIT_UNUSED_0x04000000 0x04000000
 #define J9_JNI_PUSHED_REFERENCE_COUNT_MASK 0x000000FF
 #define J9_STACK_FLAGS_CALL_OUT_FRAME_ALLOCATED 0x00020000
 
@@ -339,6 +317,94 @@ extern "C" {
 #undef  J9SW_JIT_VIRTUAL_METHOD_RESOLVE_OFFSET_TO_SAVED_RECEIVER
 #define J9SW_LOWEST_MEMORY_PRESERVED_REGISTER jit_r10
 #define J9SW_JIT_CALLEE_PRESERVED_SIZE 3
+
+#elif defined(J9VM_ARCH_AARCH64)
+
+/* AArch64 */
+
+/* @ddr_namespace: map_to_type=J9StackWalkFlags */
+
+#undef  J9SW_JIT_FLOATS_PASSED_AS_DOUBLES
+#undef  J9SW_JIT_HELPERS_PASS_PARAMETERS_ON_STACK
+#undef  J9SW_NEEDS_JIT_2_INTERP_CALLEE_ARG_POP
+#define J9SW_NEEDS_JIT_2_INTERP_THUNKS
+#define J9SW_PARAMETERS_IN_REGISTERS
+#define J9SW_REGISTER_MAP_WALK_REGISTERS_LOW_TO_HIGH
+
+/* @ddr_namespace: map_to_type=J9StackWalkConstants */
+
+#define J9SW_ARGUMENT_REGISTER_COUNT 0x8
+#define J9SW_JIT_FLOAT_ARGUMENT_REGISTER_COUNT 0x8
+#define JIT_RESOLVE_PARM(parmNumber) (walkState->walkedEntryLocalStorage->jitGlobalStorageBase[jitArgumentRegisterNumbers[(parmNumber) - 1]])
+#define J9SW_JIT_STACK_SLOTS_USED_BY_CALL 0x0
+#define J9SW_POTENTIAL_SAVED_REGISTERS 0x20
+#define J9SW_REGISTER_MAP_MASK 0xFFFFFFFF
+#define J9SW_JIT_FIRST_RESOLVE_PARM_REGISTER 0x0
+#undef  J9SW_JIT_LOOKUP_INTERFACE_RESOLVE_OFFSET_TO_SAVED_RECEIVER
+#undef  J9SW_JIT_VIRTUAL_METHOD_RESOLVE_OFFSET_TO_SAVED_RECEIVER
+#define J9SW_LOWEST_MEMORY_PRESERVED_REGISTER jit_r21
+#define J9SW_JIT_CALLEE_PRESERVED_SIZE 8
+
+#elif defined(J9VM_ARCH_RISCV)
+
+/* RISCV */
+
+/* @ddr_namespace: map_to_type=J9StackWalkFlags */
+
+#undef  J9SW_JIT_FLOATS_PASSED_AS_DOUBLES
+#undef  J9SW_JIT_HELPERS_PASS_PARAMETERS_ON_STACK
+#undef  J9SW_NEEDS_JIT_2_INTERP_CALLEE_ARG_POP
+#define J9SW_REGISTER_MAP_WALK_REGISTERS_LOW_TO_HIGH
+
+/* @ddr_namespace: map_to_type=J9StackWalkConstants */
+
+#define J9SW_JIT_STACK_SLOTS_USED_BY_CALL 0x1
+#define J9SW_ARGUMENT_REGISTER_COUNT 0x8
+#define J9SW_JIT_FLOAT_ARGUMENT_REGISTER_COUNT 0x8
+#define J9SW_POTENTIAL_SAVED_REGISTERS 0xC
+
+#if defined(J9VM_ENV_DATA64)
+
+/* RISCV-64 */
+
+/* @ddr_namespace: map_to_type=J9StackWalkFlags */
+
+#define J9SW_NEEDS_JIT_2_INTERP_THUNKS
+#define J9SW_PARAMETERS_IN_REGISTERS
+
+/* @ddr_namespace: map_to_type=J9StackWalkConstants */
+
+#define JIT_RESOLVE_PARM(parmNumber) (walkState->walkedEntryLocalStorage->jitGlobalStorageBase[jitArgumentRegisterNumbers[(parmNumber) - 1]])
+#define J9SW_REGISTER_MAP_MASK 0xFFFF
+#define J9SW_JIT_FIRST_RESOLVE_PARM_REGISTER 0x3
+#define J9SW_JIT_CALLEE_PRESERVED_SIZE 8
+#undef  J9SW_JIT_LOOKUP_INTERFACE_RESOLVE_OFFSET_TO_SAVED_RECEIVER
+#undef  J9SW_JIT_VIRTUAL_METHOD_RESOLVE_OFFSET_TO_SAVED_RECEIVER
+#define J9SW_LOWEST_MEMORY_PRESERVED_REGISTER
+
+#else /* J9VM_ENV_DATA64 */
+
+/* RISCV-32 */
+
+/* @ddr_namespace: map_to_type=J9StackWalkFlags */
+
+#undef  J9SW_JIT_FLOATS_PASSED_AS_DOUBLES
+#define J9SW_JIT_HELPERS_PASS_PARAMETERS_ON_STACK
+#define J9SW_NEEDS_JIT_2_INTERP_CALLEE_ARG_POP
+#undef  J9SW_NEEDS_JIT_2_INTERP_THUNKS
+#undef  J9SW_PARAMETERS_IN_REGISTERS
+
+/* @ddr_namespace: map_to_type=J9StackWalkConstants */
+
+#define JIT_RESOLVE_PARM(parmNumber) (walkState->bp[parmNumber])
+#define J9SW_REGISTER_MAP_MASK 0x7F
+#undef  J9SW_JIT_FIRST_RESOLVE_PARM_REGISTER
+#define J9SW_JIT_VIRTUAL_METHOD_RESOLVE_OFFSET_TO_SAVED_RECEIVER 0x0
+#define J9SW_JIT_LOOKUP_INTERFACE_RESOLVE_OFFSET_TO_SAVED_RECEIVER 0x0
+#define J9SW_JIT_CALLEE_PRESERVED_SIZE 3
+#define J9SW_LOWEST_MEMORY_PRESERVED_REGISTER
+
+#endif /* J9VM_ENV_DATA64 */
 
 #else
 #error Unsupported platform

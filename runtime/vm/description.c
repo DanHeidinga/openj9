@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -23,25 +23,13 @@
 #include "j9.h"
 #include "j9protos.h"
 #include "j9consts.h"
-#ifdef J9VM_THR_LOCK_NURSERY
 #include "rommeth.h"
-#endif
 #include "ut_j9vm.h"
 #include "vm_internal.h"
 #include "locknursery.h"
 #include "util_api.h"
 
-#if !defined (J9VM_OUT_OF_PROCESS)
-#define DBG_ARROW(base, item) ((UDATA)(base)->item)
-#else
-#define DONT_REDIRECT_SRP
-#include "j9dbgext.h"
-#include "dbggen.h"
-#define DBG_ARROW(base, item) dbgReadSlot((UDATA)&((base)->item), sizeof((base)->item))
-#endif
-
 static const UDATA slotsPerShapeElement = sizeof(UDATA) * 8; /* Each slot is represented by one bit */
-static const UDATA objectSlotSize = sizeof(fj9object_t);
 
 #ifdef J9VM_GC_LEAF_BITS
 /*
@@ -77,12 +65,17 @@ isLeafField(J9ROMFieldShape* field)
 void
 calculateInstanceDescription( J9VMThread *vmThread, J9Class *ramClass, J9Class *ramSuperClass, UDATA *storage, J9ROMFieldOffsetWalkState *walkState, J9ROMFieldOffsetWalkResult *walkResult)
 {
+	UDATA const referenceSize = J9VMTHREAD_REFERENCE_SIZE(vmThread);
+	UDATA const objectHeaderSize = J9VMTHREAD_OBJECT_HEADER_SIZE(vmThread);
 	UDATA superClassSize, totalSize, temp, shapeSlots;
 	UDATA *shape;
+
+	J9UTF8 *className = J9ROMCLASS_CLASSNAME(ramClass->romClass);
+	BOOLEAN shouldSaveSelfReferencingFields = J9_ARE_ALL_BITS_SET(vmThread->javaVM->extendedRuntimeFlags2, J9_EXTENDED_RUNTIME2_ENABLE_DEEPSCAN);
+
 #ifdef J9VM_GC_LEAF_BITS
 	UDATA leafTemp;
 	UDATA *leafShape;
-	J9UTF8 *className = J9ROMCLASS_CLASSNAME(ramClass->romClass);
 	UDATA isString = J9UTF8_LITERAL_EQUALS(J9UTF8_DATA(className), J9UTF8_LENGTH(className), "java/lang/String");
 #endif
 
@@ -95,18 +88,22 @@ calculateInstanceDescription( J9VMThread *vmThread, J9Class *ramClass, J9Class *
 		 * we store the total instance size (including the header) instead.
 		 */
 		ramClass->totalInstanceSize = walkResult->totalInstanceSize;
-		ramClass->backfillOffset = sizeof(J9Object) + ((walkResult->backfillOffset == -1) ?	walkResult->totalInstanceSize : walkResult->backfillOffset);
+		ramClass->backfillOffset = objectHeaderSize + ((walkResult->backfillOffset == -1) ?	walkResult->totalInstanceSize : walkResult->backfillOffset);
 
-#if defined( J9VM_THR_LOCK_NURSERY )
+#ifdef J9VM_OPT_VALHALLA_VALUE_TYPES
+		if (J9ROMCLASS_IS_VALUE(ramClass->romClass)) {
+			ramClass->backfillOffset = walkResult->backfillOffset;
+		}
+#endif /* J9VM_OPT_VALHALLA_VALUE_TYPES */
+
 		/* write lockword offset into ramClass */
 		ramClass->lockOffset =	walkState->lockOffset;
-#endif
 		ramClass->finalizeLinkOffset = walkState->finalizeLinkOffset;
 	}
 	
 	/* convert all sizes from bytes to object slots */
-	superClassSize = walkResult->superTotalInstanceSize / sizeof(fj9object_t);
-	totalSize = walkResult->totalInstanceSize / sizeof(fj9object_t);
+	superClassSize = walkResult->superTotalInstanceSize / referenceSize;
+	totalSize = walkResult->totalInstanceSize / referenceSize;
 
 	/* calculate number of slots required to store description bits */
 	shapeSlots = ROUND_UP_TO_POWEROF2(totalSize, slotsPerShapeElement);
@@ -149,6 +146,11 @@ calculateInstanceDescription( J9VMThread *vmThread, J9Class *ramClass, J9Class *
 #endif
 			}
 		}
+
+		/* If there are self referencing field offsets being inherited then self referencing fields of this class should be ignored.*/
+		if (shouldSaveSelfReferencingFields) {
+			shouldSaveSelfReferencingFields = (ramSuperClass->selfReferencingField1 == 0);
+		}
 	}
 
 	/* calculate the description for this class - walk object instance fields and 
@@ -156,20 +158,115 @@ calculateInstanceDescription( J9VMThread *vmThread, J9Class *ramClass, J9Class *
 	 */
 	{
 		while (walkResult->field) {
-			UDATA slotOffset = walkResult->offset / (objectSlotSize * slotsPerShapeElement);
-			UDATA bit = (UDATA)1 << ((walkResult->offset % (objectSlotSize * slotsPerShapeElement)) / objectSlotSize);
-			shape[slotOffset] |= bit;
-#ifdef J9VM_GC_LEAF_BITS
-			if (isLeafField(walkResult->field)) {
-				leafShape[slotOffset] |= bit;
-			} else if (isString) {
-				J9UTF8 *fieldName = J9ROMFIELDSHAPE_NAME(walkResult->field);
+			UDATA slotOffset = walkResult->offset / (referenceSize * slotsPerShapeElement);
+			J9UTF8 *fieldSig = J9ROMFIELDSHAPE_SIGNATURE(walkResult->field);
+			U_8 *fieldSigBytes = J9UTF8_DATA(fieldSig);
+			U_16 fieldSigLength = J9UTF8_LENGTH(fieldSig);
 
-				if (J9UTF8_LITERAL_EQUALS(J9UTF8_DATA(fieldName), J9UTF8_LENGTH(fieldName), "value")) {
-					leafShape[slotOffset] |= bit;
+			/* If the field is self referencing then store the offset to it (at most 2). Self referencing fields
+			 * are to be scanned with priority during GC. Both self referencing fields must be from the same class.
+			 */
+			if (shouldSaveSelfReferencingFields && ((ramClass->selfReferencingField1 == 0) || (ramClass->selfReferencingField2 == 0))) {
+				if (J9UTF8_DATA_EQUALS(J9UTF8_DATA(className), J9UTF8_LENGTH(className), fieldSigBytes + 1, fieldSigLength - 2)) {
+					if (ramClass->selfReferencingField1 == 0) {
+						ramClass->selfReferencingField1 = walkResult->offset + objectHeaderSize;
+					} else {
+						ramClass->selfReferencingField2 = walkResult->offset + objectHeaderSize;
+					}
 				}
 			}
+
+#ifdef J9VM_OPT_VALHALLA_VALUE_TYPES
+			if ('Q' == *fieldSigBytes) {
+				J9Class *fieldClass = walkResult->flattenedClass;
+				if ((NULL != fieldClass) && J9_ARE_ALL_BITS_SET(fieldClass->classFlags, J9ClassIsFlattened)) {
+					UDATA size = fieldClass->totalInstanceSize;
+
+					/* positive means the field will spill over to the next slot in the shape array */
+					IDATA spillAmount = ((walkResult->offset + size) - (slotOffset * (referenceSize * slotsPerShapeElement))) - (referenceSize * slotsPerShapeElement);
+					UDATA shift = ((walkResult->offset  % (referenceSize * slotsPerShapeElement)) / referenceSize);
+					if (0 >= spillAmount) {
+						/* If we are here this means the description bits for the field fits within the current
+						 * slot shape word. This also means they are all low tagged.
+						 */
+						UDATA bits = 0;
+						UDATA description = (UDATA) fieldClass->instanceDescription;
+
+						/* remove low tag bit */
+						description >>= 1;
+						bits = (UDATA) description << shift;
+						shape[slotOffset] |= bits;
+					} else {
+						UDATA description = (UDATA) fieldClass->instanceDescription;
+
+						if (J9_ARE_ALL_BITS_SET(description, 1)) {
+							/* simple case where the field has less than 64 (or 32 slots if in 32bit mode) slots. Split the instance
+							 * bits into two parts, put the first part at the current slot offset put the last part in the next one */
+							UDATA nextDescription = 0;
+							UDATA spillBits = spillAmount/referenceSize;
+
+							/* remove low tag bit */
+							description >>= 1;
+
+							nextDescription = description;
+							nextDescription >>= ((size/referenceSize) - spillBits);
+							description <<= shift;
+							shape[slotOffset] |= description;
+							slotOffset += 1;
+							shape[slotOffset] |= nextDescription;
+						} else {
+							/* complex case were field is larger than 64 slots. Just add the bits
+							 * one at a time. */
+							UDATA *descriptionPtr = (UDATA *)description;
+							UDATA totalAmountLeft = size/referenceSize;
+							UDATA positionInDescriptionWord = 0;
+							UDATA bitsLeftInShapeSlot = slotsPerShapeElement - shift;
+
+							description = *descriptionPtr;
+							descriptionPtr += 1;
+
+							while (totalAmountLeft > 0) {
+								shape[slotOffset] |= (1 & description) << (slotsPerShapeElement - bitsLeftInShapeSlot);
+								description >>= 1;
+								positionInDescriptionWord++;
+
+								if (slotsPerShapeElement == positionInDescriptionWord) {
+									description = *descriptionPtr;
+									descriptionPtr += 1;
+									positionInDescriptionWord = 0;
+								}
+
+								bitsLeftInShapeSlot--;
+								if (0 == bitsLeftInShapeSlot) {
+									slotOffset++;
+									bitsLeftInShapeSlot = 64;
+								}
+								totalAmountLeft--;
+							}
+						}
+					}
+				} else {
+					UDATA bit = (UDATA)1 << ((walkResult->offset % (referenceSize * slotsPerShapeElement)) / referenceSize);
+					shape[slotOffset] |= bit;
+				}
+			} else
+#endif /* J9VM_OPT_VALHALLA_VALUE_TYPES */
+			{
+				UDATA bit = (UDATA)1 << ((walkResult->offset % (referenceSize * slotsPerShapeElement)) / referenceSize);
+				shape[slotOffset] |= bit;
+#ifdef J9VM_GC_LEAF_BITS
+				if (isLeafField(walkResult->field)) {
+					leafShape[slotOffset] |= bit;
+				} else if (isString) {
+					J9UTF8 *fieldName = J9ROMFIELDSHAPE_NAME(walkResult->field);
+
+					if (J9UTF8_LITERAL_EQUALS(J9UTF8_DATA(fieldName), J9UTF8_LENGTH(fieldName), "value")) {
+						leafShape[slotOffset] |= bit;
+					}
+				}
 #endif
+			}
+
 			walkResult = fieldOffsetsNextDo(walkState);
 		}
 	}
@@ -213,7 +310,6 @@ calculateInstanceDescription( J9VMThread *vmThread, J9Class *ramClass, J9Class *
 UDATA
 checkLockwordNeeded(J9JavaVM *vm, J9ROMClass *romClass, J9Class *ramSuperClass, U_32 walkFlags )
 {
-#ifdef J9VM_THR_LOCK_NURSERY
 	J9ROMMethod* romMethod;
 	UDATA i;
 	J9UTF8 * className = J9ROMCLASS_CLASSNAME(romClass);
@@ -221,20 +317,20 @@ checkLockwordNeeded(J9JavaVM *vm, J9ROMClass *romClass, J9Class *ramSuperClass, 
 	J9HashTable* lockwordExceptions= NULL;
 
 
-#if defined(J9VM_OUT_OF_PROCESS)
-	lockwordExceptions = (J9HashTable*) DBG_ARROW(vm, lockwordExceptions);
-	lockwordExceptions = dbgReadLockwordExceptions(lockwordExceptions);
-#else
 	lockwordExceptions = vm->lockwordExceptions;
-#endif
-	lockAssignmentAlgorithm = DBG_ARROW(vm,lockwordMode);
+	lockAssignmentAlgorithm = vm->lockwordMode;
 
 	/* Arrays can't have a monitor */
 	if (J9ROMCLASS_IS_ARRAY(romClass)) {
 		return NO_LOCKWORD_NEEDED;
 	}
+#ifdef J9VM_OPT_VALHALLA_VALUE_TYPES
+	/* ValueTypes don not have lockwords */
+	if (J9ROMCLASS_IS_VALUE(romClass)) {
+		return NO_LOCKWORD_NEEDED;
+	}
+#endif
 	
-
 	/* check for primitive types or java.lang.Object */
 	if (ramSuperClass == NULL) {
 		if (J9ROMCLASS_IS_PRIMITIVE_TYPE(romClass)) {
@@ -364,10 +460,6 @@ checkLockwordNeeded(J9JavaVM *vm, J9ROMClass *romClass, J9Class *ramSuperClass, 
 
 	/* We should never get here due to the checking done in jvmint */
 	return NO_LOCKWORD_NEEDED;
-
-#else
-	return NO_LOCKWORD_NEEDED;
-#endif
 }
 
 

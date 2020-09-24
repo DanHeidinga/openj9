@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -40,6 +40,7 @@ import com.ibm.j9ddr.vm29.types.UDATA;
 
 import static com.ibm.j9ddr.vm29.structure.J9Consts.*;
 import static com.ibm.j9ddr.vm29.structure.J9Object.*;
+import static com.ibm.j9ddr.vm29.structure.J9JavaAccessFlags.*;
 import static com.ibm.j9ddr.vm29.structure.GC_ObjectModel$ScanType.*;
 
 class GCObjectModel_V1 extends GCObjectModel
@@ -66,13 +67,9 @@ class GCObjectModel_V1 extends GCObjectModel
 	 */
 	private static final long OBSOLETE_OBJECT_ALIGNMENT_IN_BYTES = 8;
 	
-	static 
+	static
 	{
-		if (J9BuildFlags.gc_arraylets) {
-			OBJECT_HEADER_REMEMBERED_BITS = OBJECT_HEADER_AGE_MASK & ~J9_GC_ARRAYLET_LAYOUT_MASK;
-		} else {
-			OBJECT_HEADER_REMEMBERED_BITS = OBJECT_HEADER_AGE_MASK;
-		}
+		OBJECT_HEADER_REMEMBERED_BITS = OBJECT_HEADER_AGE_MASK & ~J9_GC_ARRAYLET_LAYOUT_MASK;
 //		OBJECT_HEADER_REMEMBERED_BITS_SHIFT = OBJECT_HEADER_AGE_SHIFT;
 //		STATE_NOT_REMEMBERED = 0;
 		STATE_REMEMBERED = J9_OBJECT_HEADER_REMEMBERED_BITS_TO_SET & OBJECT_HEADER_REMEMBERED_BITS;
@@ -224,7 +221,7 @@ public UDATA getTotalFootprintInBytesWithHeader(J9ObjectPointer object) throws C
 	public UDATA adjustSizeInBytes(UDATA sizeInBytes)
 	{
 		long bytes = sizeInBytes.longValue();
-		if (!J9BuildFlags.env_data64 || (J9BuildFlags.gc_compressedPointers && J9BuildFlags.gc_arraylets)) {		
+		if (!J9BuildFlags.env_data64 || J9ObjectHelper.compressObjectReferences) {
 			bytes = (bytes + (ObjectModel.getObjectAlignmentInBytes() - 1)) & ~(ObjectModel.getObjectAlignmentInBytes() - 1);
 		}
 
@@ -267,9 +264,9 @@ public UDATA getTotalFootprintInBytesWithHeader(J9ObjectPointer object) throws C
 		long shape = getClassShape(clazz).longValue();
 		
 		if (shape == OBJECT_HEADER_SHAPE_MIXED) {
-			if (J9ClassHelper.classFlags(clazz).anyBitsIn(J9_JAVA_CLASS_REFERENCE_MASK)) {
+			if (J9ClassHelper.classFlags(clazz).anyBitsIn(J9AccClassReferenceMask)) {
 				result = SCAN_REFERENCE_MIXED_OBJECT;
-			} else if (J9ClassHelper.classFlags(clazz).anyBitsIn(J9_JAVA_CLASS_GC_SPECIAL)) {
+			} else if (J9ClassHelper.classFlags(clazz).anyBitsIn(J9AccClassGCSpecial)) {
 				result = getSpecialClassScanType(clazz);
 			} else {
 				result = SCAN_MIXED_OBJECT;
@@ -369,7 +366,7 @@ public UDATA getTotalFootprintInBytesWithHeader(J9ObjectPointer object) throws C
 	@Override
 	public UDATA getClassShape(J9ClassPointer clazz) throws CorruptDataException
 	{
-		return new UDATA((J9ClassHelper.classFlags(clazz).longValue() >> J9_JAVA_CLASS_RAM_SHAPE_SHIFT) & OBJECT_HEADER_SHAPE_MASK);		
+		return new UDATA((J9ClassHelper.classFlags(clazz).longValue() >> J9AccClassRAMShapeShift) & OBJECT_HEADER_SHAPE_MASK);		
 	}
 
 	@Override

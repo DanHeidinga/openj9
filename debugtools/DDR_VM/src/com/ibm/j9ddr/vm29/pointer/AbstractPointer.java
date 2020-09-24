@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -19,7 +19,6 @@
  *
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
- 
 package com.ibm.j9ddr.vm29.pointer;
 
 import java.io.ByteArrayOutputStream;
@@ -172,6 +171,14 @@ public abstract class AbstractPointer extends DataType {
 	}
 	
 	public long getAddress() {
+		return address;
+	}
+
+	public final long nonNullAddress() throws NullPointerDereference {
+		if (address == 0) {
+			throw new NullPointerDereference();
+		}
+
 		return address;
 	}
 
@@ -487,7 +494,7 @@ public abstract class AbstractPointer extends DataType {
 		if (address == 0) {
 			throw new NullPointerDereference();
 		}
-		if (J9BuildFlags.gc_compressedPointers) {
+		if (J9ObjectHelper.compressObjectReferences) {
 			return ObjectAccessBarrier.convertPointerFromToken(getAddressSpace().getIntAt(address + offset));
 		} else {
 			return J9ObjectPointer.cast(getAddressSpace().getPointerAt(address + offset));
@@ -498,7 +505,7 @@ public abstract class AbstractPointer extends DataType {
 	{
 		long location = address + offset;
 		long classPointer;
-		if (J9BuildFlags.interp_compressedObjectHeader) {
+		if (J9ObjectHelper.compressObjectReferences) {
 			classPointer = (long)getAddressSpace().getIntAt(location) & 0xFFFFFFFFL;
 		} else {
 			classPointer = getAddressSpace().getPointerAt(location);
@@ -546,7 +553,7 @@ public abstract class AbstractPointer extends DataType {
 		if (address == 0) {
 			throw new NullPointerDereference();
 		}
-		if (J9BuildFlags.interp_smallMonitorSlot) {
+		if (J9ObjectHelper.compressObjectReferences) {
 			return J9ObjectMonitorPointer.cast(0xFFFFFFFFL & (long)(getAddressSpace().getIntAt(address + offset)));
 		} else {
 			return J9ObjectMonitorPointer.cast(getAddressSpace().getPointerAt(address + offset));

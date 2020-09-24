@@ -1,27 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
-
 <!--
-  Copyright (c) 2006, 2018 IBM Corp. and others
- 
-  This program and the accompanying materials are made available under
-  the terms of the Eclipse Public License 2.0 which accompanies this
-  distribution and is available at https://www.eclipse.org/legal/epl-2.0/
-  or the Apache License, Version 2.0 which accompanies this distribution and
-  is available at https://www.apache.org/licenses/LICENSE-2.0.
- 
-  This Source Code may also be made available under the following
-  Secondary Licenses when the conditions for such availability set
-  forth in the Eclipse Public License, v. 2.0 are satisfied: GNU
-  General Public License, version 2 with the GNU Classpath
-  Exception [1] and GNU General Public License, version 2 with the
-  OpenJDK Assembly Exception [2].
- 
-  [1] https://www.gnu.org/software/classpath/license.html
-  [2] http://openjdk.java.net/legal/assembly-exception.html
+Copyright (c) 2006, 2020 IBM Corp. and others
 
-  SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
+This program and the accompanying materials are made available under
+the terms of the Eclipse Public License 2.0 which accompanies this
+distribution and is available at https://www.eclipse.org/legal/epl-2.0/
+or the Apache License, Version 2.0 which accompanies this distribution and
+is available at https://www.apache.org/licenses/LICENSE-2.0.
+
+This Source Code may also be made available under the following
+Secondary Licenses when the conditions for such availability set
+forth in the Eclipse Public License, v. 2.0 are satisfied: GNU
+General Public License, version 2 with the GNU Classpath
+Exception [1] and GNU General Public License, version 2 with the
+OpenJDK Assembly Exception [2].
+
+[1] https://www.gnu.org/software/classpath/license.html
+[2] http://openjdk.java.net/legal/assembly-exception.html
+
+SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
 -->
-
 <spec xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://www.ibm.com/j9/builder/spec" xsi:schemaLocation="http://www.ibm.com/j9/builder/spec spec-v1.xsd" id="linux_arm_linaro">
 	<name>Linux ARM</name>
 	<asmBuilderName>ARMGNUEABI</asmBuilderName>
@@ -44,6 +42,7 @@
 		<property name="graph_commands.chroot" value=""/>
 		<property name="graph_commands.unix.remote_host" value=""/>
 		<property name="graph_datamines" value="commands.unix.datamine,site-ottawa.datamine,use.local.datamine"/>
+		<property name="graph_enable_gcc7_cmd" value=""/>
 		<property name="graph_flags.linux_2.4" value="graph_tck"/>
 		<property name="graph_label.classlib" value="150"/>
 		<property name="graph_label.java5" value="j9vmxr3224"/>
@@ -91,7 +90,6 @@
 		<property name="j9dt.make" value="gmake"/>
 		<property name="j9dt.toolsTarget" value="buildtools.mk"/>
 		<property name="javatestPlatform" value="linux_arm-32"/>
-		<property name="jclMaxSecurityPolicyDefine" value=" &quot;-Djava.security.policy=http://jcl1.ottawa.ibm.com/testres/java.policy&quot;"/>
 		<property name="jclMemoryMax" value="-Xmx32m"/>
 		<property name="jclOSStackSizeMax" value=""/>
 		<property name="jdiTestsSupported" value="true"/>
@@ -109,7 +107,7 @@
 		<property name="uma_make_cmd_as" value="$(OPENJ9_CC_PREFIX)-as"/>
 		<property name="uma_make_cmd_cc" value="$(OPENJ9_CC_PREFIX)-gcc"/>
 		<property name="uma_make_cmd_cpp" value="$(OPENJ9_CC_PREFIX)-cpp -E -P"/>
-		<property name="uma_make_cmd_cxx" value="$(OPENJ9_CC_PREFIX)-c++"/>
+		<property name="uma_make_cmd_cxx" value="$(OPENJ9_CC_PREFIX)-g++"/>
 		<property name="uma_make_cmd_cxx_dll_ld" value="$(CC)"/>
 		<property name="uma_make_cmd_cxx_exe_ld" value="$(CC)"/>
 		<property name="uma_make_cmd_dll_ld" value="$(CC)"/>
@@ -182,7 +180,6 @@
 		<flag id="module_algorithm_test" value="true"/>
 		<flag id="module_bcutil" value="true"/>
 		<flag id="module_bcverify" value="true"/>
-		<flag id="module_callconv" value="true"/>
 		<flag id="module_cassume" value="true"/>
 		<flag id="module_cfdumper" value="true"/>
 		<flag id="module_codegen_common" value="true"/>
@@ -192,27 +189,14 @@
 		<flag id="module_codert_common" value="true"/>
 		<flag id="module_codert_ia32" value="true"/>
 		<flag id="module_codert_vm" value="true"/>
-		<flag id="module_cpo_common" value="true"/>
-		<flag id="module_cpo_controller" value="true"/>
-		<flag id="module_dbginfoserv" value="true"/>
 		<flag id="module_ddr" value="true"/>
-		<flag id="module_ddr_gdb_plugin" value="true"/>
-		<flag id="module_ddrext" value="true"/>
-		<flag id="module_exe" value="true"/>
-		<flag id="module_exe.j9" value="true"/>
-		<flag id="module_gc_modron_eprof" value="true"/>
-		<flag id="module_gdb" value="true"/>
-		<flag id="module_gdb_plugin" value="true"/>
 		<flag id="module_gptest" value="true"/>
 		<flag id="module_j9vm" value="true"/>
 		<flag id="module_j9vmtest" value="true"/>
-		<flag id="module_jcl.profile_scar" value="true"/>
-		<flag id="module_jcl.scar" value="true"/>
 		<flag id="module_jextractnatives" value="true"/>
 		<flag id="module_jit_common" value="true"/>
 		<flag id="module_jit_ia32" value="true"/>
 		<flag id="module_jit_vm" value="true"/>
-		<flag id="module_jitdebug_common" value="true"/>
 		<flag id="module_jitrt_common" value="true"/>
 		<flag id="module_jitrt_ia32" value="true"/>
 		<flag id="module_jniargtests" value="true"/>
@@ -223,7 +207,6 @@
 		<flag id="module_jvmtitst" value="true"/>
 		<flag id="module_lifecycle_tests" value="true"/>
 		<flag id="module_masm2gas" value="true"/>
-		<flag id="module_mvmtest" value="true"/>
 		<flag id="module_porttest" value="true"/>
 		<flag id="module_rasdump" value="true"/>
 		<flag id="module_rastrace" value="true"/>
@@ -231,10 +214,7 @@
 		<flag id="module_shared_common" value="true"/>
 		<flag id="module_shared_test" value="true"/>
 		<flag id="module_shared_util" value="true"/>
-		<flag id="module_ute" value="true"/>
-		<flag id="module_utetst" value="true"/>
 		<flag id="module_verbose" value="true"/>
-		<flag id="module_vmall" value="true"/>
 		<flag id="module_zip" value="true"/>
 		<flag id="module_zlib" value="true"/>
 		<flag id="opt_annotations" value="true"/>
@@ -243,17 +223,13 @@
 		<flag id="opt_debugJsr45Support" value="true"/>
 		<flag id="opt_deprecatedMethods" value="true"/>
 		<flag id="opt_dynamicLoadSupport" value="true"/>
-		<flag id="opt_icbuilderSupport" value="true"/>
-		<flag id="opt_infoServer" value="true"/>
 		<flag id="opt_invariantInterning" value="true"/>
 		<flag id="opt_jvmti" value="true"/>
 		<flag id="opt_jxeLoadSupport" value="true"/>
 		<flag id="opt_memoryCheckSupport" value="true"/>
-		<flag id="opt_methodHandle" value="true"/>
 		<flag id="opt_multiVm" value="true"/>
 		<flag id="opt_panama" value="false"/>
 		<flag id="opt_reflect" value="true"/>
-		<flag id="opt_remoteConsoleSupport" value="true"/>
 		<flag id="opt_sharedClasses" value="true"/>
 		<flag id="opt_sidecar" value="true"/>
 		<flag id="opt_srpAvlTreeSupport" value="true"/>
@@ -265,7 +241,7 @@
 		<flag id="opt_zipSupport" value="true"/>
 		<flag id="opt_zlibCompression" value="true"/>
 		<flag id="opt_zlibSupport" value="true"/>
-		<flag id="port_omrsigSupport" value="true"/>
+		<flag id="port_omrsigSupport" value="false"/>
 		<flag id="port_signalSupport" value="true"/>
 		<flag id="prof_eventReporting" value="true"/>
 		<flag id="ras_dumpAgents" value="true"/>

@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -71,7 +70,7 @@ private:
 	J9MODRON_REFERENCE_CHAIN_WALKER_CALLBACK *_userCallback; /**< User callback function to be called on every reachable slot */
 	void *_userData; /**< User data to be passed to the user callback function */
 	bool _hasOverflowed; /**< Set when the queue has overflowed */
-	bool _isProcessingOverflow; /**< Set when the queue is currently proccessing the overflow */
+	bool _isProcessingOverflow; /**< Set when the queue is currently processing the overflow */
 	bool _isTerminating; /**< Set when no more callbacks should be queued */
 	bool _shouldPreindexInterfaceFields; /**< if true, indexes interface fields of the class being visited before class and superclass fields, otherwise, returns them in the order they appear in an object instance (CMVC 142897) */
 	MM_ReferenceChainWalkerMarkMap *_markMap;	/**< Mark Map created for Reference Chain Walker */
@@ -188,17 +187,19 @@ private:
 	MMINLINE void setOverflow(J9Object *object)
 	{
 		if (isHeapObject(object)) {
+			UDATA referenceSize = _env->compressObjectReferences() ? sizeof(uint32_t) : sizeof(uintptr_t);
 			/* set both mark bits - set 11 */
 			_markMap->setBit(object);
-			_markMap->setBit((J9Object *)((UDATA)object + sizeof(fj9object_t)));
+			_markMap->setBit((J9Object *)((UDATA)object + referenceSize));
 		}
 	}
 
 	MMINLINE bool isOverflow(J9Object * object)
 	{
 		if (isHeapObject(object)) {
+			UDATA referenceSize = _env->compressObjectReferences() ? sizeof(uint32_t) : sizeof(uintptr_t);
 			/* check both bits in mark map - return true if 11 */
-			return (_markMap->isBitSet(object) && _markMap->isBitSet((J9Object *)((UDATA)object + sizeof(fj9object_t))));
+			return (_markMap->isBitSet(object) && _markMap->isBitSet((J9Object *)((UDATA)object + referenceSize)));
 		} else {
 			return false;
 		}
@@ -207,9 +208,10 @@ private:
 	MMINLINE void clearOverflow(J9Object * object)
 	{
 		if (isHeapObject(object)) {
+			UDATA referenceSize = _env->compressObjectReferences() ? sizeof(uint32_t) : sizeof(uintptr_t);
 			/* clear both mark bits - set 00 */
 			_markMap->clearBit(object);
-			_markMap->clearBit((J9Object *)((UDATA)object + sizeof(fj9object_t)));
+			_markMap->clearBit((J9Object *)((UDATA)object + referenceSize));
 		}
 	}
 

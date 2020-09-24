@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2016 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -28,21 +27,18 @@
 
 #include "GlobalMarkCardScrubber.hpp"
 
-#include "CallSitesIterator.hpp"
 #include "CardTable.hpp"
 #include "ClassLoaderClassesIterator.hpp"
-#include "ClassStaticsIterator.hpp"
-#include "ConstantPoolObjectSlotIterator.hpp"
+#include "ClassIterator.hpp"
 #include "CycleState.hpp"
-#include "Dispatcher.hpp"
 #include "EnvironmentVLHGC.hpp"
 #include "HeapMapWordIterator.hpp"
 #include "HeapRegionDescriptorVLHGC.hpp"
 #include "HeapRegionIterator.hpp"
 #include "InterRegionRememberedSet.hpp"
 #include "MarkMap.hpp"
-#include "MethodTypesIterator.hpp"
 #include "MixedObjectIterator.hpp"
+#include "ParallelDispatcher.hpp"
 #include "PointerArrayIterator.hpp"
 #include "Task.hpp"
 #include "WorkPacketsVLHGC.hpp"
@@ -128,10 +124,11 @@ MM_GlobalMarkCardScrubber::scrubObject(MM_EnvironmentVLHGC *env, J9Object *objec
 {
 	bool doScrub = true;
 	
-	J9Class* clazz = J9GC_J9OBJECT_CLAZZ(objectPtr);
+	J9Class* clazz = J9GC_J9OBJECT_CLAZZ(objectPtr, env);
 	Assert_MM_mustBeClass(clazz);
 	switch(MM_GCExtensions::getExtensions(env)->objectModel.getScanType(clazz)) {
 		case GC_ObjectModel::SCAN_ATOMIC_MARKABLE_REFERENCE_OBJECT:
+		case GC_ObjectModel::SCAN_MIXED_OBJECT_LINKED:
 		case GC_ObjectModel::SCAN_MIXED_OBJECT:
 		case GC_ObjectModel::SCAN_OWNABLESYNCHRONIZER_OBJECT:
 		case GC_ObjectModel::SCAN_REFERENCE_MIXED_OBJECT:
@@ -199,50 +196,20 @@ MM_GlobalMarkCardScrubber::scrubClassObject(MM_EnvironmentVLHGC *env, J9Object *
 	J9Class *classPtr = J9VM_J9CLASS_FROM_HEAPCLASS((J9VMThread*)env->getLanguageVMThread(), classObject);
 	if (NULL != classPtr) {
 		J9Object * volatile * slotPtr = NULL;
-
+		/*
+		 * Scan J9Class internals using general iterator
+		 * - scan statics fields
+		 * - scan call sites
+		 * - scan MethodTypes
+		 * - scan VarHandle MethodTypes
+		 * - scan constants pool objects
+		 */
 		do {
-			/*
-			 * scan static fields
-			 */
-			GC_ClassStaticsIterator classStaticsIterator(env, classPtr);
-			while(doScrub && (NULL != (slotPtr = classStaticsIterator.nextSlot()))) {
+			GC_ClassIterator classIterator(env, classPtr, false);
+			while (doScrub && (NULL != (slotPtr = classIterator.nextSlot()))) {
 				doScrub = mayScrubReference(env, classObject, *slotPtr);
 			}
 
-			/*
-			 * scan call sites
-			 */
-			GC_CallSitesIterator callSitesIterator(classPtr);
-			while(doScrub && (NULL != (slotPtr = callSitesIterator.nextSlot()))) {
-				doScrub = mayScrubReference(env, classObject, *slotPtr);
-			}
-
-			/*
-			 * scan MethodTypes
-			 */
-			GC_MethodTypesIterator methodTypesIterator(classPtr->romClass->methodTypeCount, classPtr->methodTypes);
-			while(doScrub && (NULL != (slotPtr = methodTypesIterator.nextSlot()))) {
-				doScrub = mayScrubReference(env, classObject, *slotPtr);
-			}
-
-			/*
-			 * scan VarHandle MethodTypes
-			 */
-			GC_MethodTypesIterator varHandleMethodTypesIterator(classPtr->romClass->varHandleMethodTypeCount, classPtr->varHandleMethodTypes);
-			while(doScrub && (NULL != (slotPtr = varHandleMethodTypesIterator.nextSlot()))) {
-				doScrub = mayScrubReference(env, classObject, *slotPtr);
-			}
-
-			/*
-			 * scan constant pool objects
-			 */
-			/* we can safely ignore any classes referenced by the constant pool, since
-			 * these are guaranteed to be referenced by our class loader
-			 */
-			GC_ConstantPoolObjectSlotIterator constantPoolIterator(classPtr);
-			while(doScrub && (NULL != (slotPtr = constantPoolIterator.nextSlot()))) {
-				doScrub = mayScrubReference(env, classObject, *slotPtr);
-			}
 			classPtr = classPtr->replacedClass;
 		} while (doScrub && (NULL != classPtr));
 	}
@@ -269,20 +236,21 @@ MM_GlobalMarkCardScrubber::scrubClassLoaderObject(MM_EnvironmentVLHGC *env, J9Ob
 			doScrub = mayScrubReference(env, classLoaderObject, classObject);
 		}
 
-		Assert_MM_true(NULL != classLoader->moduleHashTable);
-		J9HashTableState walkState;
-		J9Module **modulePtr = (J9Module **)hashTableStartDo(classLoader->moduleHashTable, &walkState);
-		while (doScrub && (NULL != modulePtr)) {
-			J9Module * const module = *modulePtr;
-			Assert_MM_true(NULL != module->moduleObject);
-			doScrub = mayScrubReference(env, classLoaderObject, module->moduleObject);
-			if (doScrub) {
-				doScrub = mayScrubReference(env, classLoaderObject, module->moduleName);
+		if (NULL != classLoader->moduleHashTable) {
+			J9HashTableState walkState;
+			J9Module **modulePtr = (J9Module **)hashTableStartDo(classLoader->moduleHashTable, &walkState);
+			while (doScrub && (NULL != modulePtr)) {
+				J9Module * const module = *modulePtr;
+				Assert_MM_true(NULL != module->moduleObject);
+				doScrub = mayScrubReference(env, classLoaderObject, module->moduleObject);
+				if (doScrub) {
+					doScrub = mayScrubReference(env, classLoaderObject, module->moduleName);
+				}
+				if (doScrub) {
+					doScrub = mayScrubReference(env, classLoaderObject, module->version);
+				}
+				modulePtr = (J9Module**)hashTableNextDo(&walkState);
 			}
-			if (doScrub) {
-				doScrub = mayScrubReference(env, classLoaderObject, module->version);
-			}
-			modulePtr = (J9Module**)hashTableNextDo(&walkState);
 		}
 	}
 	
@@ -344,7 +312,7 @@ MM_ParallelScrubCardTableTask::run(MM_EnvironmentBase *envBase)
 	env->_cardCleaningStats.addToCardCleaningTime(cleanStartTime, cleanEndTime);
 	
 	Trc_MM_ParallelScrubCardTableTask_scrubCardTable_Exit(env->getLanguageVMThread(),
-		env->getSlaveID(),
+		env->getWorkerID(),
 		scrubber.getScrubbedObjects(), scrubber.getScrubbedCards(), scrubber.getDirtyCards(), scrubber.getGMPMustScanCards(),
 		j9time_hires_delta(cleanStartTime, cleanEndTime, J9PORT_TIME_DELTA_IN_MICROSECONDS),
 		didTimeout() ? "true" : "false");
@@ -353,7 +321,7 @@ MM_ParallelScrubCardTableTask::run(MM_EnvironmentBase *envBase)
 void
 MM_ParallelScrubCardTableTask::setup(MM_EnvironmentBase *env)
 {
-	if (!env->isMasterThread()) {
+	if (!env->isMainThread()) {
 		Assert_MM_true(NULL == env->_cycleState);
 		env->_cycleState = _cycleState;
 	} else {
@@ -364,7 +332,7 @@ MM_ParallelScrubCardTableTask::setup(MM_EnvironmentBase *env)
 void
 MM_ParallelScrubCardTableTask::cleanup(MM_EnvironmentBase *env)
 {
-	if (!env->isMasterThread()) {
+	if (!env->isMainThread()) {
 		env->_cycleState = NULL;
 	}
 }
@@ -392,11 +360,11 @@ MM_ParallelScrubCardTableTask::synchronizeGCThreads(MM_EnvironmentBase *env, con
 }
 
 bool
-MM_ParallelScrubCardTableTask::synchronizeGCThreadsAndReleaseMaster(MM_EnvironmentBase *env, const char *id)
+MM_ParallelScrubCardTableTask::synchronizeGCThreadsAndReleaseMain(MM_EnvironmentBase *env, const char *id)
 {
 	/* this task doesn't use synchronization */
 	Assert_MM_unreachable();
-	return MM_ParallelTask::synchronizeGCThreadsAndReleaseMaster(env, id);
+	return MM_ParallelTask::synchronizeGCThreadsAndReleaseMain(env, id);
 }
 
 bool

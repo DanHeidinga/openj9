@@ -1,6 +1,6 @@
-/*[INCLUDE-IF Sidecar17]*/
+/*[INCLUDE-IF Sidecar18-SE & !OPENJDK_METHODHANDLES]*/
 /*******************************************************************************
- * Copyright (c) 2009, 2018 IBM Corp. and others
+ * Copyright (c) 2009, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -30,7 +30,6 @@ import java.lang.reflect.Member;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.ReflectPermission;
-
 /*[IF Panama]*/
 import java.nicl.*;
 import java.nicl.types.*;
@@ -46,23 +45,42 @@ import com.ibm.oti.util.Msg;
 import com.ibm.oti.lang.ArgumentHelper;
 import com.ibm.oti.vm.VM;
 import com.ibm.oti.vm.VMLangAccess;
+import static com.ibm.oti.util.Util.doesClassLoaderDescendFrom;
 
-/*[IF Sidecar19-SE]
+/*[IF Sidecar19-SE]*/
 import java.util.AbstractList;
 import java.util.Iterator;
 import java.util.ArrayList;
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import jdk.internal.reflect.CallerSensitive;
-/*[IF Sidecar19-SE-OpenJ9]
-import java.lang.Module;
+import java.lang.invoke.VarHandle.AccessMode;
+import java.lang.reflect.Array;
+/*[IF Sidecar19-SE-OpenJ9]*/
+/*[IF Java12]*/
+import jdk.internal.access.SharedSecrets;
+import jdk.internal.access.JavaLangAccess;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
+/*[ELSE]
 import jdk.internal.misc.SharedSecrets;
 import jdk.internal.misc.JavaLangAccess;
+/*[ENDIF] Java12 */
 import java.security.ProtectionDomain;
 import jdk.internal.org.objectweb.asm.ClassReader;
+import jdk.internal.org.objectweb.asm.Opcodes;
+import jdk.internal.org.objectweb.asm.Type;
+/*[ELSE] Sidecar19-SE-OpenJ9
+import java.lang.reflect.Module;
 /*[ENDIF] Sidecar19-SE-OpenJ9*/
-/*[ELSE]*/
+/*[ELSE] Sidecar19-SE*/
 import sun.reflect.CallerSensitive;
-/*[ENDIF]*/
+/*[ENDIF] Sidecar19-SE*/
+
+/*[IF Java15]*/
+import jdk.internal.misc.Unsafe;
+import java.util.Collections;
+/*[ENDIF] Java15 */
 
 /**
  * Factory class for creating and adapting MethodHandles.
@@ -157,48 +175,85 @@ public class MethodHandles {
 		
 		private static final String INVOKE_EXACT = "invokeExact"; //$NON-NLS-1$
 		private static final String INVOKE = "invoke"; //$NON-NLS-1$
+		
+		/*[IF Java15]*/
+		private static final int CLASSOPTION_FLAG_NESTMATE = 1;
+		private static final int CLASSOPTION_FLAG_STRONG = 2;
+		/*[ENDIF] Java15*/
+
 		static final int VARARGS = 0x80;
 		
 		/* single cached value of public Lookup object */
-		/*[IF Sidecar19-SE-OpenJ9]
-		static Lookup PUBLIC_LOOKUP = new Lookup(Object.class, Lookup.PUBLIC | Lookup.UNCONDITIONAL);
-		/*[ELSE]*/
-		static Lookup PUBLIC_LOOKUP = new Lookup(Object.class, Lookup.PUBLIC);
-		/*[ENDIF] Sidecar19-SE-OpenJ9*/
+		static final int mhMask = 
+		/*[IF Java11]*/
+		/*[IF Java14]*/
+		Lookup.UNCONDITIONAL;
+		/*[ELSE] Java14*/
+		Lookup.PUBLIC | Lookup.UNCONDITIONAL;
+		/*[ENDIF] Java14*/
+		/*[ELSE] Java11*/
+		Lookup.PUBLIC;
+		/*[ENDIF] Java11*/
+		static Lookup PUBLIC_LOOKUP = new Lookup(Object.class, mhMask);
 		
 		/* single cached internal privileged lookup */
 		static Lookup internalPrivilegedLookup = new Lookup(MethodHandle.class, Lookup.INTERNAL_PRIVILEGED);
 		static Lookup IMPL_LOOKUP = internalPrivilegedLookup; /* hack for b56 of lambda-dev */
 		
 		/* Access token used in lookups - Object for public lookup */
+		final Class<?> prevAccessClass;
 		final Class<?> accessClass;
 		final int accessMode;
 		private final  boolean performSecurityCheck;
 		
-		Lookup(Class<?> lookupClass, int lookupMode, boolean doCheck) {
+		Lookup(Class<?> lookupClass, Class<?> prevLookupClass, int lookupMode, boolean doCheck) {
 			this.performSecurityCheck = doCheck;
 			if (doCheck && (INTERNAL_PRIVILEGED != lookupMode)) {
-				if ( lookupClass.getName().startsWith("java.lang.invoke.")) {  //$NON-NLS-1$
+				if (lookupClass.getName().startsWith("java.lang.invoke.")) {  //$NON-NLS-1$
 					/*[MSG "K0588", "Illegal Lookup object - originated from java.lang.invoke: {0}"]*/
 					throw new IllegalArgumentException(com.ibm.oti.util.Msg.getString("K0588", lookupClass.getName())); //$NON-NLS-1$
 				}
 			}
-
 			accessClass = lookupClass;
+			prevAccessClass = prevLookupClass;
 			accessMode = lookupMode;
 		}
 		
+		/* For Java 15, the default is not to check for the "java.lang.invoke" package.
+		 * For earlier releases, these lookups are illegal
+		  */
+		private static boolean lookupJLIPackageCheckDefault() {
+			/*[IF Java15]
+			return false;
+			/*[ELSE] Java15*/
+			return true;
+			/*[ENDIF] Java15*/
+		}
+		
+		Lookup(Class<?> lookupClass, Class<?> prevLookupClass, int lookupMode) {
+			this(lookupClass, prevLookupClass, lookupMode, lookupJLIPackageCheckDefault());
+		}
+		
 		Lookup(Class<?> lookupClass, int lookupMode) {
-			this(lookupClass, lookupMode, true);			
+			this(lookupClass, null, lookupMode, lookupJLIPackageCheckDefault());
 		}
 		
 		Lookup(Class<?> lookupClass) {
-			this(lookupClass, FULL_ACCESS_MASK, true);
+			this(lookupClass, null, FULL_ACCESS_MASK, lookupJLIPackageCheckDefault());
 		}
 		
+		/* Note:
+		 * The constructor Lookup(Class<?> lookupClass) above performs package check by default.
+		 * Following constructor is used when there is no need for such check,
+		 * i.e., incoming performSecurityCheck is expected to be false here.
+		 * JDK15+ expects only following three APIs invoking Lookup constructors to do such package check (matching RI behaviors):
+		 * 	MethodHandles.Lookup.in(Class<?> lookupClass)
+		 * 	MethodHandles.Lookup.dropLookupMode(Class<?> lookupClass)
+		 * 	MethodHandles.Lookup.privateLookupIn(Class<?> targetClass, MethodHandles.Lookup caller)
+		 */
 		Lookup(Class<?> lookupClass, boolean performSecurityCheck) {
-			 this(lookupClass, FULL_ACCESS_MASK, performSecurityCheck);
-		} 
+			this(lookupClass, null, FULL_ACCESS_MASK, performSecurityCheck);
+		}
 	
 		/**
 		 * A query to determine the lookup capabilities held by this instance.  
@@ -208,7 +263,6 @@ public class MethodHandles {
 		public int lookupModes() {
 			return accessMode;
 		}
-	
 
 		/*
 		 * Is the varargs bit set?
@@ -249,12 +303,15 @@ public class MethodHandles {
 			Class<?> receiverClass = receiver.getClass();
 			MethodHandle handle = handleForMHInvokeMethods(receiverClass, methodName, type);
 			if (handle == null) {
-				// Use the priviledgedLookup to allow probe the findSpecial cache without restricting the receiver
-				handle = internalPrivilegedLookup.findSpecialImpl(receiverClass, methodName, type, receiverClass);
-				handle = handle.asFixedArity(); // remove unnecessary varargsCollector from the middle of the MH chain.
-				handle = convertToVarargsIfRequired(handle.bindTo(receiver));
+				try {
+					handle = findSpecialImpl(receiverClass, methodName, type, receiverClass);
+					handle = handle.asFixedArity(); // remove unnecessary varargsCollector from the middle of the MH chain.
+					handle = convertToVarargsIfRequired(handle.bindTo(receiver));
+				} catch (ClassCastException e) {
+					throw new IllegalAccessException(e.getMessage());
+				}
 			}
-			checkAccess(handle);
+			checkAccess(handle, false);
 			checkSecurity(handle.getDefc(), receiverClass, handle.getModifiers());
 			
 			handle = SecurityFrameInjector.wrapHandleWithInjectedSecurityFrameIfRequired(this, handle);
@@ -309,12 +366,20 @@ public class MethodHandles {
 				return true;
 			}
 			
+			while (a.isArray()) {
+				a = a.getComponentType();
+			}
+			
+			while (b.isArray()) {
+				b = b.getComponentType();
+			}
+			
 			VMLangAccess vma = getVMLangAccess();
 			
 			String packageName1 = vma.getPackageName(a);
 			String packageName2 = vma.getPackageName(b);
 			// If the string value is different, they're definitely not related
-			if((packageName1 == null) || (packageName2 == null) || !packageName1.equals(packageName2)) {
+			if ((packageName1 == null) || (packageName2 == null) || !packageName1.equals(packageName2)) {
 				return false;
 			}
 			
@@ -334,7 +399,7 @@ public class MethodHandles {
 			return false;
 		}
 		
-		void checkAccess(MethodHandle handle) throws IllegalAccessException {
+		void checkAccess(MethodHandle handle, boolean skipAccessCheckPara) throws IllegalAccessException {
 			if (INTERNAL_PRIVILEGED == accessMode) {
 				// Full access for use by MH implementation.
 				return;
@@ -344,11 +409,16 @@ public class MethodHandles {
 				throw new IllegalAccessException(this.toString());
 			}
 
-			checkAccess(handle.getDefc(), handle.getMethodName(), handle.getModifiers(), handle);
+			/* defc (defining class) may be a superclass of the references class.
+			 * Note that we need to check against the requested class, which may have inherited
+			 * the method from an inaccessible class. Protected members of a subclass are accessible to 
+			 * a superclass provided they are inherited from the superclass. 
+			 */
+			checkAccess(handle.getDefc(), handle.getReferenceClass(), handle.getMethodName(), handle.getModifiers(), handle, skipAccessCheckPara);
 		}
 		
 		/*[IF Sidecar19-SE]*/
-		void checkAccess(VarHandle handle) throws IllegalAccessException {
+		void checkAccess(VarHandle handle, boolean skipAccessCheckPara) throws IllegalAccessException {
 			if (INTERNAL_PRIVILEGED == accessMode) {
 				// Full access for use by MH implementation.
 				return;
@@ -358,7 +428,8 @@ public class MethodHandles {
 				throw new IllegalAccessException(this.toString());
 			}
 			
-			checkAccess(handle.getDefiningClass(), handle.getFieldName(), handle.getModifiers(), null);
+			/* VarHandles have no reference class */
+			checkAccess(handle.getDefiningClass(), null, handle.getFieldName(), handle.getModifiers(), null, skipAccessCheckPara);
 		}
 		
 		void checkAccess(Class<?> clazz) throws IllegalAccessException {
@@ -374,43 +445,86 @@ public class MethodHandles {
 			checkClassAccess(clazz);
 		}
 		/*[ENDIF]*/
-						
+
 		/**
-		 * Checks whether {@link #accessClass} can access a specific member of the {@code targetClass}.
+		 * Checks whether {@link #accessClass} can access a specific member of the {@code referenceClass}.
 		 * Equivalent of visible.c checkVisibility();
 		 * 
-		 * @param targetClass The {@link Class} that owns the member being accessed.
+		 * @param definingClass The {@link Class} that defines the member being accessed.
+		 * @param referenceClass The {@link Class} class through which the the member is accessed, 
+		 * which must be the defining class or a subtype.  May be null.
 		 * @param name The name of member being accessed.
 		 * @param memberModifiers The modifiers of the member being accessed.
 		 * @param handle A handle object (e.g. {@link MethodHandle} or {@link VarHandle}), if applicable.
 		 * 				 The object is always {@link MethodHandle} in the current implementation, so in order 
 		 * 				 to avoid extra type checking, the parameter is {@link MethodHandle}. If we need to
 		 * 				 handle {@link VarHandle} in the future, the type can be {@link Object}.
+		 * @param skipAccessCheckPara skip access check for MethodType parameters
 		 * @throws IllegalAccessException If the member is not accessible.
+		 * @throws IllegalAccessError If a handle argument or return type is not accessible.
 		 */
-		private void checkAccess(Class<?> targetClass, String name, int memberModifiers, MethodHandle handle) throws IllegalAccessException {
-			checkClassAccess(targetClass);
+		private void checkAccess(Class<?> definingClass, Class<?> referenceClass, String name, int memberModifiers, MethodHandle handle, boolean skipAccessCheckPara) throws IllegalAccessException {
+			if (null == referenceClass) {
+				referenceClass = definingClass;
+			}
+			checkClassAccess(referenceClass);
 
+			/*[IF Sidecar19-SE]*/
+			if (null != handle && !skipAccessCheckPara) {
+				MethodType type = handle.type();
+				Module accessModule = accessClass.getModule();
+
+				try {
+					/*[IF Java14]*/
+					checkClassModuleVisibility(accessMode, accessClass, prevAccessClass, type.returnType);
+					for (Class<?> c: type.arguments) {
+						checkClassModuleVisibility(accessMode, accessClass, prevAccessClass, c);
+					}
+					/*[ELSE]*/
+					checkClassModuleVisibility(accessMode, accessModule, type.returnType);
+					for (Class<?> c: type.arguments) {
+						checkClassModuleVisibility(accessMode, accessModule, c);
+					}
+					/*[ENDIF] Java14*/
+				} catch (IllegalAccessException exc) {
+					IllegalAccessError err = new IllegalAccessError(exc.getMessage());
+					err.initCause(exc);
+					throw err;
+				}
+			}
+			/*[ENDIF]*/
 			if (Modifier.isPublic(memberModifiers)) {
 				/* checkClassAccess already determined that we have more than "no access" (public access) */
 				return;
 			} else if (Modifier.isPrivate(memberModifiers)) {
-				if (Modifier.isPrivate(accessMode) && ((targetClass == accessClass)
-/*[IF Valhalla-NestMates]*/
-						|| targetClass.isNestmateOf(accessClass)
-/*[ENDIF] Valhalla-NestMates*/	
+				if (Modifier.isPrivate(accessMode) && ((definingClass == accessClass)
+/*[IF Java11]*/
+						|| definingClass.isNestmateOf(accessClass)
+/*[ENDIF] Java11*/	
 				)) {
 					return;
 				}
 			} else if (Modifier.isProtected(memberModifiers)) {
 				/* Ensure that the accessMode is not restricted (public-only) */
-				if (PUBLIC != accessMode) {
-					if (targetClass.isArray()) {
+				/*[IF !Java14]*/
+				if (accessMode != PUBLIC)
+				/*[ELSE]*/
+				/* Note: the lookup with the PUBLIC plus MODULE or UNCONDITIONAL mode 
+				 * can access public types in all modules, which means the access to 
+				 * non-public types should be rejected if the PUBLIC plus MODULE 
+				 * or UNCONDITIONAL mode is specified.
+				 */
+				if ((accessMode != PUBLIC) 
+					&& (accessMode != (PUBLIC | MODULE))
+					&& (accessMode != UNCONDITIONAL))
+				/*[ENDIF] Java14 */
+				{
+					if (definingClass.isArray()) {
 						/* The only methods array classes have are defined on Object and thus accessible */
 						return;
 					}
 					
-					if (isSamePackage(accessClass, targetClass)) {
+					if (isSamePackage(accessClass, referenceClass)) {
 						/* Package access is enough if the classes are in the same package */
 						return;
 					}
@@ -420,7 +534,9 @@ public class MethodHandles {
 					 * protected methods in java.lang.Object as subclasses.
 					 */
 					/*[ENDIF]*/
-					if (!accessClass.isInterface() && Modifier.isProtected(accessMode) && targetClass.isAssignableFrom(accessClass)) {
+					if (!accessClass.isInterface() && Modifier.isProtected(accessMode) 
+							&& definingClass.isAssignableFrom(accessClass)
+						) {
 						/* Special handling for MethodHandles */
 						if (null != handle) {
 							byte kind = handle.kind;
@@ -458,7 +574,7 @@ public class MethodHandles {
 				}
 			} else {
 				/* default (package access) */
-				if ((PACKAGE == (accessMode & PACKAGE)) && isSamePackage(accessClass, targetClass)){
+				if ((PACKAGE == (accessMode & PACKAGE)) && isSamePackage(accessClass, referenceClass)){
 					return;
 				}
 			}
@@ -470,7 +586,8 @@ public class MethodHandles {
 			} else {
 				extraInfo = "." + name;  //$NON-NLS-1$
 			}
-			String errorMessage = com.ibm.oti.util.Msg.getString("K0587", this.toString(), targetClass.getName() + extraInfo);  //$NON-NLS-1$
+			/*[MSG "K0587", "'{0}' no access to: '{1}'"]*/
+			String errorMessage = com.ibm.oti.util.Msg.getString("K0587", this.toString(), definingClass.getName() + extraInfo);  //$NON-NLS-1$
 			throw new IllegalAccessException(errorMessage);
 		}
 		
@@ -481,47 +598,87 @@ public class MethodHandles {
 		 * @throws IllegalAccessException If the {@link Class} is not accessible from {@link #accessClass}. 
 		 */
 		private void checkClassAccess(Class<?> targetClass) throws IllegalAccessException {
+			/*[IF Sidecar19-SE]*/
+			/*[IF Java14]*/
+			checkClassModuleVisibility(accessMode, accessClass, prevAccessClass, targetClass);
+			/*[ELSE]*/
+			checkClassModuleVisibility(accessMode, accessClass.getModule(), targetClass);
+			/*[ENDIF] Java14*/
+			/*[ENDIF]*/
+			
 			if (NO_ACCESS != accessMode) {
-				/* target class should always be accessible to the lookup class when they are the same class */
-				if (accessClass == targetClass) {
-					return;
-				}
-				
-				int modifiers = targetClass.getModifiers();
-				
 				/* A protected class (must be a member class) is compiled to a public class as
 				 * the protected flag of this class doesn't exist on the VM level (there is no 
 				 * access flag in the binary form representing 'protected')
 				 */
-				if (Modifier.isProtected(modifiers)) {
-					/* Interfaces are not classes but types, and should therefore not have access to 
-					 * protected methods in java.lang.Object as subclasses.
-					 */
-					if (!accessClass.isInterface()) {
-						return;
-					}
-				
-				/* The following access checking is for a normal class (non-member class) */
-				} else if (Modifier.isPublic(modifiers)) {
-					/* Already determined that we have more than "no access" (public access) */
+				int targetClassModifiers = targetClass.getModifiers();
+				final boolean targetClassIsPublic = (Modifier.isPublic(targetClassModifiers) || Modifier.isProtected(targetClassModifiers));
+				 
+				/*[IF Java14]*/
+				Module accessModule = accessClass.getModule();
+				Module targetModule = targetClass.getModule();
+				String targetClassPackageName = targetClass.getPackageName();
+
+				/* An UNCONDITIONAL lookup has access to public types in any unconditionally exported package */
+				if (((UNCONDITIONAL & accessMode) == UNCONDITIONAL)
+					&& targetClassIsPublic
+					&& targetModule.isExported(targetClassPackageName)
+				) {
 					return;
-				} else {
-					if (((PACKAGE == (accessMode & PACKAGE)) || Modifier.isPrivate(accessMode)) && isSamePackage(accessClass, targetClass)) {
+				} else if ((targetModule != null) && (accessModule != null) 
+						&& (accessModule.equals(targetModule) || (!accessModule.isNamed() && !targetModule.isNamed()))
+				) {
+					if (((PRIVATE & accessMode) == PRIVATE)
+						&& ((targetClass == accessClass) || targetClass.isNestmateOf(accessClass))
+					) {
+						return;
+					} else if (((PACKAGE & accessMode) == PACKAGE) && isSamePackage(targetClass, accessClass)) {
+						return;
+					} else if (((MODULE & accessMode) == MODULE) && targetClassIsPublic) {
+						return;
+					} else if (((PUBLIC & accessMode) == PUBLIC) && targetClassIsPublic
+						&& (((prevAccessClass != null) && targetModule.isExported(targetClassPackageName, prevAccessClass.getModule()))
+							|| targetModule.isExported(targetClassPackageName))
+					) {
 						return;
 					}
+				} else if ((PUBLIC & accessMode) == PUBLIC) {
+				/*[ENDIF] Java14*/
+					/* target class should always be accessible to the lookup class when they are the same class */
+					if (accessClass == targetClass) {
+						return;
+					}
+					
+					if (targetClassIsPublic) {
+						/* Already determined that we have more than "no access" (public access) */
+						return;
+					} else {
+						if (((PACKAGE == (accessMode & PACKAGE)) || Modifier.isPrivate(accessMode)) && isSamePackage(accessClass, targetClass)) {
+							return;
+						}
+					}
+				/*[IF Java14]*/
 				}
+				/*[ENDIF] Java14*/
 			}
-			
-			/*[MSG "K0587", "'{0}' no access to: '{1}'"]*/
-			throw new IllegalAccessException(com.ibm.oti.util.Msg.getString("K0587", accessClass.getName(), targetClass.getName()));  //$NON-NLS-1$
+
+			/*[MSG "K0680", "Class '{0}' no access to: class '{1}'"]*/
+			throw new IllegalAccessException(com.ibm.oti.util.Msg.getString("K0680", accessClass.getName(), targetClass.getName()));  //$NON-NLS-1$
 		}
 		
-		private void checkSpecialAccess(Class<?> callerClass) throws IllegalAccessException {
+		private void checkSpecialAccess(Class<?> declaringClass, Class<?> callerClass) throws IllegalAccessException {
 			if (INTERNAL_PRIVILEGED == accessMode) {
 				// Full access for use by MH implementation.
 				return;
 			}
-			if (isWeakenedLookup() || accessClass != callerClass) {
+			/* Given that findSpecial emulates the behavior of invokespecial,
+			 * calling interface methods of declaringClass should be allowed as long as 
+			 * declaringClass is an interface and callerClass can be assigned to it when
+			 * callerClass is not the same as the lookup class.
+			 */
+			if (isWeakenedLookup() 
+			|| ((accessClass != callerClass) && !(declaringClass.isInterface() && declaringClass.isAssignableFrom(callerClass)))
+			) {
 				/*[MSG "K0585", "{0} could not access {1} - private access required"]*/
 				throw new IllegalAccessException(com.ibm.oti.util.Msg.getString("K0585", accessClass.getName(), callerClass.getName())); //$NON-NLS-1$
 			}
@@ -547,16 +704,19 @@ public class MethodHandles {
 		 */
 		public MethodHandle findSpecial(Class<?> clazz, String methodName, MethodType type, Class<?> specialToken) throws IllegalAccessException, NoSuchMethodException, SecurityException, NullPointerException {
 			nullCheck(clazz, methodName, type, specialToken);
-			checkSpecialAccess(specialToken);	/* Must happen before method resolution */
+			checkSpecialAccess(clazz, specialToken);	/* Must happen before method resolution */
 			MethodHandle handle = null;
 			try {
 				handle = findSpecialImpl(clazz, methodName, type, specialToken);
 				Class<?> handleDefc = handle.getDefc();
-				if ((handleDefc != accessClass) && !handleDefc.isAssignableFrom(accessClass)) {
+				/* Check the relationship between the lookup class and the current class
+				 * only when the requested caller class is the same as or subclass of the lookup class.
+				 */
+				if (accessClass.isAssignableFrom(specialToken) && !handleDefc.isAssignableFrom(accessClass)) {
 					/*[MSG "K0586", "Lookup class ({0}) must be the same as or subclass of the current class ({1})"]*/
 					throw new IllegalAccessException(com.ibm.oti.util.Msg.getString("K0586", accessClass, handleDefc)); //$NON-NLS-1$
 				}
-				checkAccess(handle);
+				checkAccess(handle, false);
 				checkSecurity(handleDefc, clazz, handle.getModifiers());
 				handle = SecurityFrameInjector.wrapHandleWithInjectedSecurityFrameIfRequired(this, handle);
 			} catch (DefaultMethodConflictException e) {
@@ -617,13 +777,30 @@ public class MethodHandles {
 				handle = new DirectHandle(clazz, methodName, type, MethodHandle.KIND_STATIC, null);
 				handle = HandleCache.putMethodInPerClassCache(cache, methodName, type, convertToVarargsIfRequired(handle));
 			}
-			checkAccess(handle);
+			checkAccess(handle, false);
 			checkSecurity(handle.getDefc(), clazz, handle.getModifiers());
 			/* Static check is performed by native code */
 			handle = SecurityFrameInjector.wrapHandleWithInjectedSecurityFrameIfRequired(this, handle);
 			return handle;
 		}
 		
+		/*[IF Sidecar19-SE]*/
+		/**
+		 * Return a MethodHandle to a virtual method.  The method will be looked up in the first argument 
+		 * (aka receiver) prior to dispatch.  The type of the MethodHandle will be that of the method
+		 * with the receiver type prepended.
+		 * 
+		 * @param clazz - the class defining the method
+		 * @param methodName - the name of the method
+		 * @param type - the type of the method
+		 * @return a MethodHandle that will do virtual dispatch on the first argument
+		 * @throws IllegalAccessException - if method is static or access is refused or clazz's package is not exported to the current module 
+		 * @throws IllegalAccessError - if the type's packages are not exported to the current module 
+		 * @throws NullPointerException - if clazz, methodName or type is null
+		 * @throws NoSuchMethodException - if clazz has no virtual method named methodName with signature matching type
+		 * @throws SecurityException - if any installed SecurityManager denies access to the method
+		 */
+		 /*[ELSE]
 		/**
 		 * Return a MethodHandle to a virtual method.  The method will be looked up in the first argument 
 		 * (aka receiver) prior to dispatch.  The type of the MethodHandle will be that of the method
@@ -638,6 +815,7 @@ public class MethodHandles {
 		 * @throws NoSuchMethodException - if clazz has no virtual method named methodName with signature matching type
 		 * @throws SecurityException - if any installed SecurityManager denies access to the method
 		 */
+		/*[ENDIF]*/
 		public MethodHandle findVirtual(Class<?> clazz, String methodName, MethodType type) throws IllegalAccessException, NoSuchMethodException {
 			nullCheck(clazz, methodName, type);
 			
@@ -650,11 +828,7 @@ public class MethodHandles {
 				initCheck(methodName);
 				
 				if (clazz.isInterface()) {
-					handle = new InterfaceHandle(clazz, methodName, type);
-					if (Modifier.isStatic(handle.getModifiers())) {
-						throw new IllegalAccessException();
-					}
-					handle = adaptInterfaceLookupsOfObjectMethodsIfRequired(handle, clazz, methodName, type);
+					handle = findInterface(clazz, methodName, type);
 				} else {
 					/*[IF ]*/
 					/* Need to perform a findSpecial and use that to determine what kind of handle to return:
@@ -665,22 +839,152 @@ public class MethodHandles {
 					 */
 					/*[ENDIF]*/
 					handle = new DirectHandle(clazz, methodName, type, MethodHandle.KIND_VIRTUAL, clazz, true);
-					int handleModifiers = handle.getModifiers();
-					/* Static check is performed by native code */
-					if (!Modifier.isPrivate(handleModifiers) && !Modifier.isFinal(handleModifiers)) {
-						handle = new VirtualHandle((DirectHandle) handle);
+					/* If the class is final, then there are no subclasses and the DirectHandle is sufficient */
+					if (!Modifier.isFinal(clazz.getModifiers())) {
+						int handleModifiers = handle.getModifiers();
+						/* Static check is performed by native code */
+						if (!Modifier.isPrivate(handleModifiers) && !Modifier.isFinal(handleModifiers)) {
+							handle = new VirtualHandle((DirectHandle) handle);
+						}
 					}
 				}
 				handle = convertToVarargsIfRequired(handle);
 				HandleCache.putMethodInPerClassCache(cache, methodName, type, handle);
 			}
 			handle = restrictReceiver(handle);
-			checkAccess(handle);
+			checkAccess(handle, false);
 			checkSecurity(handle.getDefc(), clazz, handle.getModifiers());
 			handle = SecurityFrameInjector.wrapHandleWithInjectedSecurityFrameIfRequired(this, handle);
 			return handle;
 		}
+
+		/*[IF Sidecar19-SE]*/
+		/**
+		 * Get module name for exception messages.
+		 * Returns the string representation of this module in case it is a unnamed module.
+		 * @param module target module
+		 * @return A String of module name or the string representation of a unnamed module
+		 */
+		private static String getModuleName(Module module) {
+			String moduleName = module.getName();
+			if (moduleName == null) {
+				moduleName = module.toString();
+			}
+			return moduleName;
+		}
 		
+		/*[IF Java14]*/
+		/**
+		 * Check if targetClass is in a package visible from the accessModule 
+		 * whether the previous lookup class is present or not
+		 * 
+		 * @param accessMode access mode of the lookup object
+		 * @param accessClass the referring class
+		 * @param prevAccessClass the previous lookup class
+		 * @param targetClass Class which the referring class is accessing
+		 * @throws IllegalAccessException if the targetClass is not visible
+		 */
+		static void checkClassModuleVisibility(int accessMode, Class<?> accessClass, Class<?> prevAccessClass, Class<?> targetClass) throws IllegalAccessException {
+			if (prevAccessClass == null) {
+				checkClassModuleVisibility(accessMode, accessClass.getModule(), targetClass);
+			}else {
+				checkClassModuleVisibilityWithPrevAccessClass(accessClass, prevAccessClass, targetClass);
+			}
+		}
+		/**
+		 * Check if targetClass is in a package visible from the accessModule in the presense of the previous lookup class
+		 * 
+		 * @param accessModule module of the referring class
+		 * @param prevAccessClass the previous lookup class
+		 * @param targetClass Class which the referring class is accessing
+		 * @return true if the targetClass is visible; otherwise return false
+		 */
+		static void checkClassModuleVisibilityWithPrevAccessClass(Class<?> accessClass, Class<?> prevAccessClass, Class<?> targetClass) throws IllegalAccessException {
+			Module prevAccessClassModule = prevAccessClass.getModule();
+			Module accessModule = accessClass.getModule();
+			Module targetModule = targetClass.getModule();
+			String targetClassPackageName = targetClass.getPackageName();
+			
+			if ((prevAccessClassModule != null) && (accessModule != null) && (targetModule != null)) {
+				if (prevAccessClassModule.equals(targetModule)
+					|| (!prevAccessClassModule.isNamed() && !targetModule.isNamed())
+				) {
+					if (!accessModule.canRead(prevAccessClassModule)) {
+						/*[MSG "K0679", "Module '{0}' no access to: package '{1}' because module '{0}' can't read module '{2}'"]*/
+						throw throwIllegalAccessException(accessModule, prevAccessClassModule, prevAccessClass.getPackageName(), "K0679"); //$NON-NLS-1$
+					} else if (!targetModule.isExported(targetClassPackageName, accessModule)) {
+						/*[MSG "K0677", "Module '{0}' no access to: package '{1}' which is not exported by module '{2}' to module '{0}'"]*/
+						throw throwIllegalAccessException(accessModule, targetModule, targetClassPackageName, "K0677"); //$NON-NLS-1$
+					}
+				} else if (accessModule.equals(targetModule)
+					|| (!accessModule.isNamed() && !targetModule.isNamed())
+				) {
+					if (!prevAccessClassModule.canRead(accessModule)) {
+						/*[MSG "K0679", "Module '{0}' no access to: package '{1}' because module '{0}' can't read module '{2}'"]*/
+						throw throwIllegalAccessException(prevAccessClassModule, accessModule, accessClass.getPackageName(), "K0679"); //$NON-NLS-1$
+					} else if (!targetModule.isExported(targetClassPackageName, prevAccessClassModule)) {
+						/*[MSG "K0677", "Module '{0}' no access to: package '{1}' which is not exported by module '{2}' to module '{0}'"]*/
+						throw throwIllegalAccessException(prevAccessClassModule, targetModule, targetClassPackageName, "K0677"); //$NON-NLS-1$
+					}
+				} else if (!prevAccessClassModule.canRead(targetModule)) {
+					/*[MSG "K0679", "Module '{0}' no access to: package '{1}' because module '{0}' can't read module '{2}'"]*/
+					throw throwIllegalAccessException(prevAccessClassModule, targetModule, targetClassPackageName, "K0679"); //$NON-NLS-1$
+				} else if (!accessModule.canRead(targetModule)) {
+					/*[MSG "K0679", "Module '{0}' no access to: package '{1}' because module '{0}' can't read module '{2}'"]*/
+					throw throwIllegalAccessException(accessModule, targetModule, targetClassPackageName, "K0679"); //$NON-NLS-1$
+				} else if (!targetModule.isExported(targetClassPackageName, prevAccessClassModule)) {
+					/*[MSG "K0677", "Module '{0}' no access to: package '{1}' which is not exported by module '{2}' to module '{0}'"]*/
+					throw throwIllegalAccessException(prevAccessClassModule, targetModule, targetClassPackageName, "K0677"); //$NON-NLS-1$
+				} else if (!targetModule.isExported(targetClassPackageName, accessModule)) {
+					/*[MSG "K0677", "Module '{0}' no access to: package '{1}' which is not exported by module '{2}' to module '{0}'"]*/
+					throw throwIllegalAccessException(accessModule, targetModule, targetClassPackageName, "K0677"); //$NON-NLS-1$
+				}
+			}
+		}
+		/*[ENDIF] Java14*/
+
+		/**
+		 * Check if targetClass is in a package visible from the accessModule
+		 * @param accessMode access mode of the lookup object
+		 * @param accessModule module of the referring class
+		 * @param targetClass Class which the referring class is accessing
+		 * @throws IllegalAccessException if the targetClass is not visible
+		 */
+		static void checkClassModuleVisibility(int accessMode, Module accessModule, Class<?> targetClass) throws IllegalAccessException {
+			if (INTERNAL_PRIVILEGED != accessMode) {
+				Module targetModule = targetClass.getModule();
+				// modules may be null during bootstrapping
+				if ((null != targetModule) && (null != accessModule)) {
+					String targetClassPackageName = targetClass.getPackageName();
+					if ((UNCONDITIONAL & accessMode) == UNCONDITIONAL) {
+						/* publicLookup objects can see all unconditionally exported packages. */
+						if (!targetModule.isExported(targetClassPackageName)) {
+							throw throwIllegalAccessException(accessModule, targetModule, targetClassPackageName, "K0676"); //$NON-NLS-1$
+						}
+					} else if (!accessModule.canRead(targetModule)) {
+						throw throwIllegalAccessException(accessModule, targetModule, targetClassPackageName, "K0679"); //$NON-NLS-1$
+					} else if (!targetModule.isExported(targetClassPackageName)) {
+						// Need MODULE access to see packages conditionally exported
+						if (((MODULE & accessMode) != MODULE) 
+							|| (!accessModule.equals(targetModule)
+								&& (accessModule.isNamed() || targetModule.isNamed())
+								&& !targetModule.isExported(targetClassPackageName, accessModule))
+						) {
+							throw throwIllegalAccessException(accessModule, targetModule, targetClassPackageName, "K0677"); //$NON-NLS-1$
+						}
+					}
+				}
+			}
+		}
+
+		private static IllegalAccessException throwIllegalAccessException(Module accessModule, Module targetModule, String targetClassPackageName, String msgId) throws IllegalAccessException {
+			/*[MSG "K0676", "Module '{0}' no access to: package '{1}' which is not exported by module '{2}'"]*/
+			/*[MSG "K0677", "Module '{0}' no access to: package '{1}' which is not exported by module '{2}' to module '{0}'"]*/
+			/*[MSG "K0679", "Module '{0}' no access to: package '{1}' because module '{0}' can't read module '{2}'"]*/
+			throw new IllegalAccessException(Msg.getString(msgId, getModuleName(accessModule), targetClassPackageName, getModuleName(targetModule)));
+		}
+		/*[ENDIF]*/
+
 		/*[IF Panama]*/
 		/**
 		 * Return a MethodHandle to a native method.  The MethodHandle will have the same type as the
@@ -752,44 +1056,96 @@ public class MethodHandles {
 		}
 		
 		/**
-		 * Adapt InterfaceHandles on public Object methods if the method is not redeclared in the interface class.
+		 * Helper for findVirtual of an interface method.
 		 * Public methods of Object are implicitly members of interfaces and do not receive iTable indexes.
-		 * If the declaring class is Object, create a VirtualHandle and asType it to the interface class. 
-		 * @param handle An InterfaceHandle
+		 * Public interface methods will result in an InterfaceHandle.
+		 * Private interface methods and final Object methods will result in a DirectHandle.
+		 * Non-final Object methods will result in a VirtualHandle.
 		 * @param clazz The lookup class
 		 * @param methodName The lookup name
 		 * @param type The lookup type
-		 * @return Either the original handle or an adapted one for Object methods.
+		 * @return An InterfaceHandle, DirectHandle or VirtualHandle as appropriate
 		 * @throws NoSuchMethodException
 		 * @throws IllegalAccessException
 		 */
-		static MethodHandle adaptInterfaceLookupsOfObjectMethodsIfRequired(MethodHandle handle, Class<?> clazz, String methodName, MethodType type) throws NoSuchMethodException, IllegalAccessException {
-			assert handle instanceof InterfaceHandle;
+		private static MethodHandle findInterface(Class<?> clazz, String methodName, MethodType type) throws NoSuchMethodException, IllegalAccessException {
+			MethodHandle handle = new DirectHandle(clazz, methodName, type, MethodHandle.KIND_VIRTUAL, clazz, true);
 			/* Object methods need to be treated specially if the interface hasn't declared them itself */
-			if (Object.class == handle.getDefc()) {
+			Class<?> handleClass = handle.getDefc();
+			if (Object.class == handleClass) {
 				if (!Modifier.isPublic(handle.getModifiers())) {
 					/* Interfaces only inherit *public* methods from Object */
 					throw new NoSuchMethodException(clazz + "." + methodName + type); //$NON-NLS-1$					
 				}
-				handle = new VirtualHandle(new DirectHandle(Object.class, methodName, type, MethodHandle.KIND_SPECIAL, Object.class));
+				handle = new DirectHandle(Object.class, methodName, type, MethodHandle.KIND_SPECIAL, Object.class);
+				/* Final methods in Object do not appear in the vTable and must be invoked directly.
+				 * Non-final methods need to be invoked virtually.
+				 */
+				if (!Modifier.isFinal(handle.getModifiers())) {
+					handle = new VirtualHandle((DirectHandle)handle);
+				}
 				handle = handle.cloneWithNewType(handle.type.changeParameterType(0, clazz));
+			} else if (!Modifier.isPublic(handle.getModifiers())) {
+				/*[IF Java11]*/
+				handle = new DirectHandle(handleClass, methodName, type, MethodHandle.KIND_SPECIAL, handleClass, true);
+				handle = handle.cloneWithNewType(handle.type.changeParameterType(0, clazz));
+				/*[ELSE] Java11
+				throw new IllegalAccessException();	
+				/*[ENDIF] Java11*/
+			} else {
+				handle = new InterfaceHandle(clazz, methodName, type);
 			}
+
 			return handle;
 		}
 
 		/*
-		 * Check for methods MethodHandle.invokeExact or MethodHandle.invoke.  
-		 * Access checks are not required as these methods are public and therefore
-		 * accessible to everyone.
+		 * Check access to the parameter and return classes within incoming MethodType
 		 */
-		static MethodHandle handleForMHInvokeMethods(Class<?> clazz, String methodName, MethodType type) {
+		final void accessCheckArgRetTypes(MethodType type) throws IllegalAccessException {
+			if (INTERNAL_PRIVILEGED != accessMode) {
+				for (Class<?> para : type.arguments) {
+					if (!para.isPrimitive()) {
+						checkClassAccess(para);
+					}
+				}
+				Class<?> rType = type.returnType();
+				if (!rType.isPrimitive()) {
+					checkClassAccess(rType);
+				}
+			}
+		}
+		
+		/*
+		 * Check for methods MethodHandle.invokeExact, MethodHandle.invoke,
+		 * or MethodHandles.varHandleInvoker.  
+		 * Access checks to these methods are not required as these methods are public and therefore
+		 * accessible to everyone.
+		 * However the access checks to the parameter and return classes are required.
+		 */
+		MethodHandle handleForMHInvokeMethods(Class<?> clazz, String methodName, MethodType type) throws IllegalAccessException {
 			if (MethodHandle.class.isAssignableFrom(clazz)) {
 				if (INVOKE_EXACT.equals(methodName)) {
+					accessCheckArgRetTypes(type);
 					return type.getInvokeExactHandle();
 				} else if (INVOKE.equals(methodName))  {
+					accessCheckArgRetTypes(type);
 					return new InvokeGenericHandle(type);
 				}
 			}
+			/*[IF Sidecar19-SE]*/
+			/* If the requested method is a signature-polymorphic access mode method in VarHandle, 
+			 * the resulting method handle should be equivalent to one produced by varHandleInvoker().
+			 */
+			if (VarHandle.class.isAssignableFrom(clazz)) {
+				for (AccessMode m : AccessMode.values()) {
+					if (m.methodName().equals(methodName)) {
+						accessCheckArgRetTypes(type);
+						return new VarHandleInvokeGenericHandle(m, type);
+					}
+				}
+			}
+			/*[ENDIF]*/
 			return null;
 		}
 
@@ -817,7 +1173,7 @@ public class MethodHandles {
 				handle = new FieldGetterHandle(clazz, fieldName, fieldType, accessClass);
 				HandleCache.putFieldInPerClassCache(cache, fieldName, fieldType, handle);
 			}
-			checkAccess(handle);
+			checkAccess(handle, false);
 			checkSecurity(handle.getDefc(), clazz, handle.getModifiers());
 			return handle;
 		}
@@ -844,7 +1200,7 @@ public class MethodHandles {
 				handle = new StaticFieldGetterHandle(clazz, fieldName, fieldType, accessClass);
 				HandleCache.putFieldInPerClassCache(cache, fieldName, fieldType, handle);
 			}
-			checkAccess(handle);
+			checkAccess(handle, false);
 			checkSecurity(handle.getDefc(), clazz, handle.getModifiers());
 			return handle;
 		}
@@ -879,7 +1235,7 @@ public class MethodHandles {
 				/*[MSG "K05cf", "illegal setter on final field"]*/
 				throw new IllegalAccessException(Msg.getString("K05cf")); //$NON-NLS-1$
 			}
-			checkAccess(handle);
+			checkAccess(handle, false);
 			checkSecurity(handle.getDefc(), clazz, handle.getModifiers());
 			return handle;
 		}
@@ -914,11 +1270,23 @@ public class MethodHandles {
 				/*[MSG "K05cf", "illegal setter on final field"]*/
 				throw new IllegalAccessException(Msg.getString("K05cf")); //$NON-NLS-1$
 			}
-			checkAccess(handle);
+			checkAccess(handle, false);
 			checkSecurity(handle.getDefc(), clazz, handle.getModifiers());
 			return handle;
 		}
 		
+		/*[IF Java14]*/
+		/**
+		 * Create a lookup on the request class.  The resulting lookup will have no more 
+		 * access privileges than the original.
+		 * 
+		 * @param lookupClass - the class to create the lookup on
+		 * @return a new MethodHandles.Lookup object
+		 * @throws NullPointerException - if lookupClass is null
+		 * @throws IllegalArgumentException - if the requested Class is a primitive type or an array class
+		 */
+		public MethodHandles.Lookup in(Class<?> lookupClass) throws NullPointerException, IllegalArgumentException {
+		/*[ELSE]*/
 		/**
 		 * Create a lookup on the request class.  The resulting lookup will have no more 
 		 * access privileges than the original.
@@ -926,22 +1294,33 @@ public class MethodHandles {
 		 * @param lookupClass - the class to create the lookup on
 		 * @return a new MethodHandles.Lookup object
 		 */
-		public MethodHandles.Lookup in(Class<?> lookupClass){
-			lookupClass.getClass();	// implicit null check
+		public MethodHandles.Lookup in(Class<?> lookupClass) {
+		/*[ENDIF] Java14 */
+			Objects.requireNonNull(lookupClass);
+			
+			/*[IF Java14]*/
+			if (lookupClass.isPrimitive() || lookupClass.isArray()) {
+				/*[MSG "K065T", "The requested class: {0} must not be a void type, primitive type or an array class"]*/
+				throw new IllegalArgumentException(com.ibm.oti.util.Msg.getString("K065T", lookupClass.getCanonicalName())); //$NON-NLS-1$
+			}
+			/*[ENDIF] Java14 */
 			
 			// If it's the same class as ourselves, return this
 			if (lookupClass == accessClass) {
 				return this;
 			}
 			
+			int newAccessMode = accessMode;
 			/*[IF ]*/
 			/* If the new lookup class differs from the old one, protected members will not be accessible by virtue of inheritance. (Protected members may continue to be accessible because of package sharing.) */
 			/*[ENDIF]*/
 			/*[IF !Sidecar19-SE-OpenJ9]
-			int newAccessMode = accessMode & ~PROTECTED;
+			newAccessMode &= ~PROTECTED;
 			/*[ELSE]*/
+			/*[IF !Java14]*/
 			/* The UNCONDITIONAL bit is discarded if the new lookup class differs from the old one in Java 9 */
-			int newAccessMode = accessMode & ~UNCONDITIONAL;
+			newAccessMode &= ~UNCONDITIONAL;
+			/*[ENDIF] Java14 */
 			
 			/* There are 3 cases to be addressed for the new lookup class from a different module:
 			 * 1) There is no access if the package containing the new lookup class is not exported to 
@@ -956,7 +1335,9 @@ public class MethodHandles {
 			if (!Objects.equals(accessClassModule, lookupClassModule)) {
 				if (!lookupClassModule.isExported(lookupClass.getPackageName(), accessClassModule)) {
 					newAccessMode = NO_ACCESS;
-				} else if (accessClassModule.isNamed()) {
+				} else
+				/*[IF !Java14]*/
+				if (accessClassModule.isNamed()) {
 					/* If the old lookup class is in a named module different from the new lookup class,
 					 * we should keep the public access only when it is a public lookup.
 					 */
@@ -965,7 +1346,9 @@ public class MethodHandles {
 					} else {
 						newAccessMode = NO_ACCESS;
 					}
-				} else {
+				} else
+				/*[ENDIF] Java14 */
+				{
 					newAccessMode &= ~MODULE;
 				}
 			}
@@ -992,16 +1375,13 @@ public class MethodHandles {
 				}
 			}
 			
-			/*[IF ]*/
-			/* If the new lookup class is not accessible to the old lookup class, then no members, not even public members, will be accessible. (In all other cases, public members will continue to be accessible.) */
-			/*[ENDIF]*/
-			/* Treat a protected class as public as the access flag of a protected class
-			 * is set to public when compiled to a class file.
+			/* A protected class (must be a member class) is compiled to a public class as
+			 * the protected flag of this class doesn't exist on the VM level (there is no 
+			 * access flag in the binary form representing 'protected')
 			 */
 			int lookupClassModifiers = lookupClass.getModifiers();
-			if(!Modifier.isPublic(lookupClassModifiers)
-			&& !Modifier.isProtected(lookupClassModifiers)
-			){
+			final boolean lookupClassIsPublic = (Modifier.isPublic(lookupClassModifiers) || Modifier.isProtected(lookupClassModifiers));
+			if(!lookupClassIsPublic) {
 				if(isSamePackage(accessClass, lookupClass)) {
 					if (0 == (accessMode & PACKAGE)) {
 						newAccessMode = NO_ACCESS;
@@ -1016,7 +1396,60 @@ public class MethodHandles {
 				}
 			}
 			
-			return new Lookup(lookupClass, newAccessMode); 
+			/*[IF Java14]*/
+			/* If the new lookup class is not accessible to the old lookup class, 
+			 * then no members, not even public members, will be accessible.
+			 * Note: the invocation of accessClass() is explicitly required since JDK14
+			 * to do the access check on the requested lookup class.
+			 */
+			if (!isClassAccessible(lookupClass)) {
+				newAccessMode = NO_ACCESS;
+			}
+			
+			/* There is no access for the requested lookup class if the previous lookup
+			 * class's module is different from the modules of the requested lookup class
+			 * and the old lookup class (i.e.teleporting to a third module).
+			 * e.g. 
+			 * when the previous lookup class is in the module called M0,
+			 * the old lookup class is in the module called M1 and the requested lookup
+			 * class is in the module called M2, if M0 != M1 && M1 != M2 && M0 != M2
+			 * (only one module among them is allowed to be unnamed), then teleporting
+			 * from M0 to M2 (a 3rd module) will lose all accesses.
+			 * Note: all unnamed modules are treated as the same modules.
+			 */
+			Module prevAccessClassModule = (prevAccessClass != null) ? prevAccessClass.getModule() : null;
+			if (prevAccessClassModule != null) {
+				boolean isDiffModule1 = (!Objects.equals(prevAccessClassModule, accessClassModule)
+						&& (prevAccessClassModule.isNamed() || accessClassModule.isNamed()));
+				boolean isDiffModule2 = (!Objects.equals(accessClassModule, lookupClassModule)
+						&& (accessClassModule.isNamed() || lookupClassModule.isNamed()));
+				boolean isDiffModule3 = (!Objects.equals(prevAccessClassModule, lookupClassModule)
+						&& (prevAccessClassModule.isNamed() || lookupClassModule.isNamed()));
+
+				if (isDiffModule1 && isDiffModule2 && isDiffModule3) {
+					newAccessMode = NO_ACCESS;
+				}
+			}
+			
+			/* Set up the previous lookup class as the new previous lookup class assuming
+			 * the requested & currently configured lookup classes are in the same module;
+			 * otherwise, the new previous lookup class is the old lookup class.
+			 */
+			Class<?> newPrevAccessClass = (Objects.equals(lookupClassModule, accessClassModule)) ?
+									prevAccessClass : accessClass;
+			
+			/* If the existing access mode has UNCONDITIONAL bit, which means the previous
+			 * lookup class of the old lookup is also null, then there is no previous lookup
+			 * class for the requested lookup class.
+			 */
+			if ((accessMode & UNCONDITIONAL) == UNCONDITIONAL) {
+				newPrevAccessClass = null;
+			}
+			
+			return new Lookup(lookupClass, newPrevAccessClass, newAccessMode, true);
+			/*[ELSE]*/
+			return new Lookup(lookupClass, newAccessMode);
+			/*[ENDIF] Java14*/
 		}
 		
 		/*
@@ -1033,27 +1466,6 @@ public class MethodHandles {
 			return previous;
 		}
 		
-		/*
-		 * Determine if 'currentClassLoader' is the same or a child of the requestedLoader.  Necessary
-		 * for access checking. 
-		 */
-		private static boolean doesClassLoaderDescendFrom(ClassLoader currentLoader, ClassLoader requestedLoader) {
-			if (requestedLoader == null) {
-				/* Bootstrap loader is parent of everyone */
-				return true;
-			}
-			if (currentLoader != requestedLoader) {
-				while (currentLoader != null) {
-					if (currentLoader == requestedLoader) {
-						return true;
-					}
-					currentLoader = currentLoader.getParent();
-				}
-				return false;
-			}
-			return true;
-		}
-		
 		/**
 		 * The class being used for visibility checks and access permissions.
 		 * 
@@ -1063,9 +1475,35 @@ public class MethodHandles {
 			return accessClass;
 		}
 		
+		/*[IF Java14]*/
+		/**
+		 * The class previously being used for visibility checks and access permissions.
+		 * 
+		 * @return The class previously used in by this Lookup object for access checking
+		 */
+		public Class<?> previousLookupClass() {
+			return prevAccessClass;
+		}
+		
+		/**
+		 * Check whether the target class is accessible to the lookup class.
+		 * 
+		 * @param targetClass The {@link Class} being accessed.
+		 * @return true if the accessiblity check is passed; otherwise return false.
+		 */
+		private boolean isClassAccessible(Class<?> targetClass) {
+			try {
+				accessClass(targetClass);
+			} catch (IllegalAccessException exc) {
+				return false;
+			}
+			return true;
+		}
+		/*[ENDIF] Java14*/
+		
 		/**
 		 * Make a MethodHandle to the Reflect method.  If the method is non-static, the receiver argument
-		 * is treated as the intial argument in the MethodType.  
+		 * is treated as the initial argument in the MethodType.  
 		 * <p>
 		 * If m is a virtual method, normal virtual dispatch is used on each invocation.
 		 * <p>
@@ -1095,16 +1533,47 @@ public class MethodHandles {
 				if (Modifier.isStatic(methodModifiers)) {
 					handle = new DirectHandle(method, MethodHandle.KIND_STATIC, null);
 				} else if (declaringClass.isInterface()) {
-					/*[PR 67085] Temporary fix to match RI's behavior pending 335 EG discussion */
-					if ((Modifier.isPrivate(methodModifiers)) && !Modifier.isStatic(methodModifiers)) {
-						return throwAbstractMethodErrorForUnreflectPrivateInterfaceMethod(method, type);
+					if (Modifier.isPrivate(methodModifiers)) {
+						/* Inlined version of access checking - this need only cover the NO_ACCESS and private_access cases */
+						if (!method.isAccessible()) {
+							if (accessMode == NO_ACCESS) {
+								throw new IllegalAccessException(this.toString());
+							}
+							if (declaringClass != accessClass || !Modifier.isPrivate(accessMode)) {
+								/*[MSG "K0678", "Class '{0}' no access to: '{1}'"]*/
+								String message = com.ibm.oti.util.Msg.getString("K0678", this.toString(), declaringClass + "." + method.getName() + ":" + MethodHandle.KIND_INTERFACE + "/invokeinterface"); //$NON-NLS-1$//$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+								throw new IllegalAccessException(message);
+							}
+						}
+
+						/* JDK9 and beyond allow accessible private interface methods.
+						 * JDK8 throws AbstractMethodError for private interface methods.
+						 */
+						/*[IF !Sidecar19-SE]*/
+						/*insert the 'receiver' into the MethodType just as is done by InterfaceHandle */
+						type = type.insertParameterTypes(0, declaringClass);
+						
+						MethodHandle thrower = throwException(type.returnType(), AbstractMethodError.class);
+						MethodHandle constructor;
+						try {
+							constructor = IMPL_LOOKUP.findConstructor(AbstractMethodError.class, MethodType.methodType(void.class));
+						} catch (IllegalAccessException | NoSuchMethodException e) {
+							throw new InternalError("Unable to find AbstractMethodError.<init>()");  //$NON-NLS-1$
+						}
+						handle = foldArguments(thrower, constructor);
+						handle = dropArguments(handle, 0, type.parameterList());
+						
+						if (isVarargs(methodModifiers)) {
+							Class<?> lastClass = handle.type.lastParameterType();
+							handle = handle.asVarargsCollector(lastClass);
+						}
+						return handle;
+						/*[ELSE]
+						handle = new DirectHandle(method, MethodHandle.KIND_SPECIAL, declaringClass, true);
+						/*[ENDIF]*/
 					} else {
 						handle = new InterfaceHandle(method);
 					}
-					/* Note, it is not required to call adaptInterfaceLookupsOfObjectMethodsIfRequired() here 
-					 * as Reflection will not return a j.l.r.Method for a public Object method with an interface
-					 * as the declaringClass *unless* that the method is defined in the interface or superinterface.
-					 */
 				} else {
 					/*[IF ]*/
 					/* Need to perform a findSpecial and use that to determine what kind of handle to return:
@@ -1128,69 +1597,17 @@ public class MethodHandles {
 			
 			if (!method.isAccessible()) {
 				handle = restrictReceiver(handle);
-				checkAccess(handle);
+				checkAccess(handle, true);
 			}
 			
 			handle = SecurityFrameInjector.wrapHandleWithInjectedSecurityFrameIfRequired(this, handle);
 			
 			return handle;
 		}
-		
-		/*[IF ]*/
-		/** Private interface methods created by unreflect must throw AbstractMethodError 
-		 * when invoked to match RI's behaviour.
-		 *
-		 * @param method The private interface method
-		 * @param type The incoming method type without the receiver 
-		 * @return A MethodHandle of the right signature that always throws AME
-		 * @throws IllegalAccessException under the same conditions as checkAccess()
-		 */
-		/*[ENDIF]*/
-		private MethodHandle throwAbstractMethodErrorForUnreflectPrivateInterfaceMethod(Method method, MethodType type) throws IllegalAccessException {
-			Class<?> declaringClass = method.getDeclaringClass();
-			int modifiers = method.getModifiers();
-			
-			if (!declaringClass.isInterface() || !Modifier.isPrivate(modifiers)) {
-				throw new InternalError("Only applicable to private interface methods"); //$NON-NLS-1$
-			}
-			/* Inlined version of access checking.  This needs to cover the NO_ACCESS and private_access case
-			 * as this method should only be called on a private interface method.
-			 */
-			if (!method.isAccessible()) {
-				if (accessMode == NO_ACCESS) {
-					throw new IllegalAccessException(this.toString());
-				}
-				if (declaringClass != accessClass || !Modifier.isPrivate(accessMode)) {
-					/*[MSG "K0587", "'{0}' no access to: '{1}'"]*/
-					String message = com.ibm.oti.util.Msg.getString("K0587", this.toString(), declaringClass + "." + method.getName() + ":" + MethodHandle.KIND_INTERFACE + "/invokeinterface");  //$NON-NLS-1$//$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
-					throw new IllegalAccessException(message);
-				}
-			}
-			
-			/* insert the 'receiver' into the MethodType just as is done by InterfaceHandle */
-			type = type.insertParameterTypes(0, declaringClass);
-			
-			MethodHandle thrower = throwException(type.returnType(), AbstractMethodError.class);
-			MethodHandle constructor;
-			try {
-				constructor = IMPL_LOOKUP.findConstructor(AbstractMethodError.class, MethodType.methodType(void.class));
-			} catch (IllegalAccessException | NoSuchMethodException e) {
-				throw new InternalError("Unable to find AbstractMethodError.<init>()");  //$NON-NLS-1$
-			}
-			MethodHandle handle = foldArguments(thrower, constructor);
-			handle = dropArguments(handle, 0, type.parameterList());
-			
-			if (isVarargs(modifiers)) {
-				Class<?> lastClass = handle.type.lastParameterType();
-				handle = handle.asVarargsCollector(lastClass);
-			}
-			
-			return handle;
-		}
 
 		/**
 		 * Return a MethodHandle for the reflect constructor. The MethodType has a return type
-		 * of the declared class, and the arguments of the constructor.  The MehtodHnadle
+		 * of the declared class, and the arguments of the constructor.  The MethodHandle
 		 * creates a new object as through by newInstance.  
 		 * <p>
 		 * If the <code>accessible</code> flag is not set, then access checking
@@ -1212,7 +1629,7 @@ public class MethodHandles {
 			} 
 			
 			if (!method.isAccessible()) {
-				checkAccess(handle);
+				checkAccess(handle, true);
 			}
 			
 			return handle;
@@ -1243,7 +1660,7 @@ public class MethodHandles {
 				}
 				handle = HandleCache.putMethodInPerClassCache(cache, "<init>", type, convertToVarargsIfRequired(handle)); //$NON-NLS-1$
 			}
-			checkAccess(handle);
+			checkAccess(handle, false);
 			checkSecurity(handle.getDefc(), declaringClass, handle.getModifiers());
 			return handle;
 		}
@@ -1260,9 +1677,10 @@ public class MethodHandles {
 		 */
 		public MethodHandle unreflectSpecial(Method method, Class<?> specialToken) throws IllegalAccessException {
 			nullCheck(method, specialToken);
-			checkSpecialAccess(specialToken);	/* Must happen before method resolution */
+			Class<?> clazz = method.getDeclaringClass();
+			checkSpecialAccess(clazz, specialToken);	/* Must happen before method resolution */
 			String methodName = method.getName();
-			Map<CacheKey, WeakReference<MethodHandle>> cache = HandleCache.getSpecialCache(method.getDeclaringClass());
+			Map<CacheKey, WeakReference<MethodHandle>> cache = HandleCache.getSpecialCache(clazz);
 			MethodType type = MethodType.methodType(method.getReturnType(), method.getParameterTypes());
 			MethodHandle handle = HandleCache.getMethodWithSpecialCallerFromPerClassCache(cache, methodName, type, specialToken);
 			if (handle == null) {
@@ -1275,11 +1693,11 @@ public class MethodHandles {
 			}
 			
 			if (!method.isAccessible()) {
-				checkAccess(handle);
+				checkAccess(handle, true);
 			}
 			
 			handle = SecurityFrameInjector.wrapHandleWithInjectedSecurityFrameIfRequired(this, handle);
-									
+			
 			return handle;
 		}
 		
@@ -1320,7 +1738,7 @@ public class MethodHandles {
 				HandleCache.putFieldInPerClassCache(cache, fieldName, fieldType, handle);
 			}			
 			if (!field.isAccessible()) {
-				checkAccess(handle);
+				checkAccess(handle, true);
 			}
 			return handle;
 		}
@@ -1347,8 +1765,16 @@ public class MethodHandles {
 			Class<?> declaringClass = field.getDeclaringClass();
 			Class<?> fieldType = field.getType();
 			String fieldName = field.getName();
-			
-			if (Modifier.isFinal(modifiers)) {
+			/* https://github.com/eclipse/openj9/issues/3175
+			 * Setters are allowed on instance final instance fields if they have been set accessible.
+			 */
+			if (Modifier.isFinal(modifiers) && 
+				(!field.isAccessible() || Modifier.isStatic(modifiers)
+			/*[IF Java15]
+				|| declaringClass.isHidden()
+			/*[ENDIF] Java15 */
+				)
+			) {
 				/*[MSG "K05cf", "illegal setter on final field"]*/
 				throw new IllegalAccessException(Msg.getString("K05cf")); //$NON-NLS-1$
 			}
@@ -1371,7 +1797,7 @@ public class MethodHandles {
 			}
 			
 			if (!field.isAccessible()) {
-				checkAccess(handle);
+				checkAccess(handle, true);
 			}
 			return handle;
 		}
@@ -1396,7 +1822,7 @@ public class MethodHandles {
 				}
 			}
 			try {
-				checkAccess(target);
+				checkAccess(target, false);
 				checkSecurity(target.getDefc(), target.getReferenceClass(), target.getModifiers());
 			} catch (IllegalAccessException e) {
 				throw new IllegalArgumentException(e);
@@ -1410,6 +1836,12 @@ public class MethodHandles {
 		@Override
 		public String toString() {
 			String toString = accessClass.getName();
+			/*[IF Java14]*/
+			if (prevAccessClass != null) {
+				toString += "/" + prevAccessClass.getName(); //$NON-NLS-1$
+			}
+			/*[ENDIF] Java14*/
+			
 			switch(accessMode) {
 			case NO_ACCESS:
 				toString += "/noaccess"; //$NON-NLS-1$
@@ -1418,6 +1850,22 @@ public class MethodHandles {
 				toString += "/public"; //$NON-NLS-1$
 				break;
 			/*[IF Sidecar19-SE-OpenJ9]
+			/*[IF Java14]*/
+			case UNCONDITIONAL:
+				toString += "/publicLookup"; //$NON-NLS-1$
+				break;
+			case PUBLIC | MODULE:
+				toString += "/module"; //$NON-NLS-1$
+				break;
+			case PUBLIC | PACKAGE: /* fall through */
+			case PUBLIC | PACKAGE | MODULE:
+				toString += "/package"; //$NON-NLS-1$
+				break;
+			case PUBLIC | PACKAGE | PRIVATE: /* fall through */
+			case PUBLIC | PACKAGE | PRIVATE | MODULE:
+				toString += "/private"; //$NON-NLS-1$
+				break;
+			/*[ELSE]*/
 			case PUBLIC | UNCONDITIONAL:
 				toString += "/publicLookup"; //$NON-NLS-1$
 				break;
@@ -1430,6 +1878,7 @@ public class MethodHandles {
 			case PUBLIC | PACKAGE | PRIVATE | MODULE:
 				toString += "/private"; //$NON-NLS-1$
 				break;
+			/*[ENDIF] Java14 */
 			/*[ELSE]*/
 			case PUBLIC | PACKAGE:
 				toString += "/package"; //$NON-NLS-1$
@@ -1490,7 +1939,7 @@ public class MethodHandles {
 
 					if (!Modifier.isPublic(modifiers)) {
 						if (vma.getClassloader(definingClass) != vma.getClassloader(accessClass)) {
-							secmgr.checkPermission(com.ibm.oti.util.RuntimePermissions.permissionAccessDeclaredMembers);
+							secmgr.checkPermission(sun.security.util.SecurityConstants.CHECK_MEMBER_ACCESS_PERMISSION);
 						}
 
 						/* third check */
@@ -1567,7 +2016,7 @@ public class MethodHandles {
 				} else {
 					handle = new InstanceFieldVarHandle(definingClass, name, type, this.accessClass);
 				}
-				checkAccess(handle);
+				checkAccess(handle, false);
 				checkSecurity(definingClass, definingClass, handle.getModifiers());
 				return handle;
 			} catch (NoSuchFieldError e) {
@@ -1603,7 +2052,7 @@ public class MethodHandles {
 				handle = new InstanceFieldVarHandle(field, field.getDeclaringClass(), field.getType());
 			}
 			
-			checkAccess(handle);
+			checkAccess(handle, true);
 			checkSecurity(handle.getDefiningClass(), handle.getDefiningClass(), handle.modifiers);
 			
 			return handle;
@@ -1673,7 +2122,11 @@ public class MethodHandles {
 			}
 			
 			SecurityManager secmgr = System.getSecurityManager();
-			if (null != secmgr) {
+			if ((null != secmgr)
+				/*[IF Java14]*/
+				&& !hasFullPrivilegeAccess()
+				/*[ENDIF] Java14*/
+			) {
 				secmgr.checkPermission(com.ibm.oti.util.RuntimePermissions.permissionDefineClass);
 			}
 			
@@ -1707,14 +2160,18 @@ public class MethodHandles {
 			JavaLangAccess jlAccess = SharedSecrets.getJavaLangAccess();
 			Class<?> targetClass = jlAccess.defineClass(accessClass.getClassLoader(), targetClassName, classBytes, accessClass.getProtectionDomain(), null);
 			
+			/* Class needs to be linked but without having been initialized */
+			getVMLangAccess().prepare(targetClass);
+
 			return targetClass;
 		}
 		/*[ENDIF] Sidecar19-SE-OpenJ9*/
 		
 		/**
 		 * Return a MethodHandles.Lookup object without the requested lookup mode.
+		 * Note: the requested mode must exists in the access mode; otherwise, do nothing.
 		 * 
-		 * @param dropMode the mode to be dropped
+		 * @param dropMode the mode to be dropped which must exists in the access mode
 		 * @return a MethodHandles.Lookup object without the requested lookup mode
 		 * @throws IllegalArgumentException - if the requested lookup mode is not one of the existing access modes
 		 */
@@ -1724,34 +2181,72 @@ public class MethodHandles {
 			 */
 			int fullAccessMode = FULL_ACCESS_MASK | MODULE | UNCONDITIONAL;
 			
-			if (0 == (fullAccessMode & dropMode)) {
+			switch(dropMode) {
+			case PUBLIC:
+			case MODULE:
+			case PACKAGE:
+			case PRIVATE:
+			case PROTECTED:
+			case UNCONDITIONAL:
+				/* dropMode is OK */
+				break;
+			default:
 				/*[MSG "K065R", "The requested lookup mode: 0x{0} is not one of the existing access modes: 0x{1}"]*/
 				throw new IllegalArgumentException(com.ibm.oti.util.Msg.getString("K065R", Integer.toHexString(dropMode), Integer.toHexString(fullAccessMode))); //$NON-NLS-1$
 			}
-			
+
+			/*[IF Java14]*/
+			/* The lookup object has to discard the protected access by default */
+			int newAccessMode = accessMode & ~PROTECTED;
+			/*[ELSE]*/
 			/* The lookup object has to discard the protected and unconditional access by default */
 			int newAccessMode = accessMode & ~(PROTECTED | UNCONDITIONAL);
+			/*[ENDIF] Java14*/
 			
-			if (PRIVATE == (PRIVATE & dropMode)) {
-				newAccessMode &= ~PRIVATE;
-			}
-			
-			/* The lookup object has no package and private access if the PACKAGE bit is dropped */
-			if (PACKAGE == (PACKAGE & dropMode)) {
+			/* The access mode to be dropped must exist in the current access mode;
+			 * otherwise, the new access mode remains unchanged.
+			 */
+			switch (dropMode & newAccessMode) {
+			case PUBLIC:
+				newAccessMode = NO_ACCESS;
+				break;
+			case PACKAGE:
 				newAccessMode &= ~(PACKAGE | PRIVATE);
+				break;
+			case PRIVATE:
+				newAccessMode &= ~PRIVATE;
+				break;
+			case UNCONDITIONAL:
+				/*[IF Java14]*/
+				newAccessMode = NO_ACCESS;
+				/*[ENDIF] Java14*/
+				break;
+			default:
+				/* no change in the access mode */
 			}
 			
-			/* The lookup object has no module, package and private access if the MODULE bit is dropped */
-			if (MODULE == (MODULE & dropMode)) {
+			/* The exception is MODULE in which case all access bits involved must be dropped
+			 * whether or not the MODULE bit exists in the access mode.
+			 */
+			if ((dropMode == MODULE) || ((dropMode & newAccessMode) == MODULE)) {
 				newAccessMode &= ~(MODULE | PACKAGE | PRIVATE);
 			}
 			
-			/* The lookup object has no access at all if the PUBLIC bit is dropped */
-			if (PUBLIC == (PUBLIC & dropMode)) {
-				newAccessMode = NO_ACCESS;
+			/*[IF Java14]*/
+			/* There is no previous lookup class for the requested lookup class
+			 * if the MODULE or UNCONDITIONAL bit is set in the new access mode.
+			 */
+			Class<?> newPrevAccessClass = prevAccessClass;
+			if (((newAccessMode & MODULE) == MODULE)
+				|| ((newAccessMode & UNCONDITIONAL) == UNCONDITIONAL)
+			) {
+				newPrevAccessClass = null;
 			}
 			
-			return new Lookup(accessClass, newAccessMode); 
+			return new Lookup(accessClass, newPrevAccessClass, newAccessMode, true);
+			/*[ELSE]*/
+			return new Lookup(accessClass, newAccessMode);
+			/*[ENDIF] Java14*/
 		}
 		
 		/**
@@ -1759,15 +2254,230 @@ public class MethodHandles {
 		 * 
 		 * @return a boolean type indicating whether the lookup class has private access
 		 */
+		/*[IF Java14]*/
+		@Deprecated(forRemoval=false, since="14")
+		/*[ENDIF] Java14 */
 		public boolean hasPrivateAccess() {
 			/* Full access for use by MH implementation */
 			if (INTERNAL_PRIVILEGED == accessMode) {
 				return true;
 			}
 			
+			/*[IF Java14]*/
+			return (!isWeakenedLookup() && (MODULE == (accessMode & MODULE)));
+			/*[ELSE]*/
 			return !isWeakenedLookup();
+			/*[ENDIF] Java14*/
 		}
-		/*[ENDIF]*/
+		
+		/*[IF Java14]*/
+		/**
+		 * Return true if the lookup class has full privilege access
+		 * 
+		 * @return a boolean type indicating whether the lookup class has full privilege access
+		 */
+		public boolean hasFullPrivilegeAccess() {
+			/* Full access for use by MH implementation */
+			if (INTERNAL_PRIVILEGED == accessMode) {
+				return true;
+			}
+			
+			return (!isWeakenedLookup() && (MODULE == (accessMode & MODULE)));
+		}
+		/*[ENDIF] Java14*/
+		/*[ENDIF] Sidecar19-SE */
+		
+		/*[IF Java15]*/
+		/**
+		 * The ClassOption used to define the hidden class.
+		 * NESTMATE adds the hidden class into the same nest of the lookup class as a nest member.
+		 * STRONG indicates the hidden class has a strong relationship with its class loader, which means the hidden class will be unloaded 
+		 * only when its class loader becomes unreachable and can be garbage collected.
+		 */
+		public enum ClassOption {
+			NESTMATE,
+			STRONG;		
+			int toFlag() {
+				if (NESTMATE == this) {
+					return CLASSOPTION_FLAG_NESTMATE;
+				} else {
+					return CLASSOPTION_FLAG_STRONG;
+				}
+			}
+		}
+
+		static final class ClassDefiner {
+			private final byte[] classBytes;
+			private final String className;
+			private final Lookup lookup;
+			private final int ClassOptFlags;
+
+			ClassDefiner(String name, byte[] template, Lookup lookupObj, int flags) {
+				className = name;
+				classBytes = template;
+				lookup = lookupObj;
+				ClassOptFlags = flags;
+			}
+
+			ClassDefiner(String name, byte[] template, Lookup lookupObj) {
+				className = name;
+				classBytes = template;
+				lookup = lookupObj;
+				ClassOptFlags = 0;
+			}
+
+			Class<?> defineClass(boolean initOption) {
+				return defineClass(initOption, null);
+			}
+
+			Class<?> defineClass(boolean initOption, Object classData) {
+				Class<?> ret = AccessController.doPrivileged(new PrivilegedAction<Class<?>>() {
+					@Override
+					public Class<?> run() {
+						JavaLangAccess jlAccess = SharedSecrets.getJavaLangAccess();
+						Class<?> lookupClass = lookup.lookupClass();
+						return jlAccess.defineClass(lookupClass.getClassLoader(), lookupClass, className, classBytes,
+								jlAccess.protectionDomain(lookupClass), initOption, ClassOptFlags, classData);
+					}
+				});
+				return ret;
+			}
+		}
+
+		/**
+		 * Constructs a new hidden class from an array of class file bytes.
+		 * 
+		 * @param bytes the class file bytes of the hidden class to be defined.
+		 * @param initOption whether to initialize the hidden class.
+		 * @param classOptions the {@link ClassOption} to define the hidden class.
+		 * 
+		 * @return A Lookup object of the newly created hidden class.
+		 * @throws IllegalAccessException if this Lookup does not have full privilege access.
+		 */
+		public Lookup defineHiddenClass(byte[] bytes, boolean initOption, ClassOption... classOptions) throws IllegalAccessException {
+			ClassDefiner definer = classDefiner(bytes, classOptions);
+			return new Lookup(definer.defineClass(initOption));
+		}
+		
+		/**
+		 * Constructs a new hidden class from an array of class file bytes.
+		 * Equivalent to defineHiddenClass(bytes, true, classOptions).
+		 * 
+		 * @param bytes the class file bytes of the hidden class to be defined.
+		 * @param classData the classData to be stored in the hidden class.
+		 * @param classOptions the {@link ClassOption} to define the hidden class.
+		 * 
+		 * @return A Lookup object of the newly created hidden class.
+		 * @throws IllegalAccessException if this Lookup does not have full privilege access.
+		 */
+		Lookup defineHiddenClassWithClassData(byte[] bytes, Object classData, ClassOption... classOptions) throws IllegalAccessException {
+			ClassDefiner definer = classDefiner(bytes, classOptions);
+			return new Lookup(definer.defineClass(true, classData));
+		}
+
+		private ClassDefiner classDefiner(byte[] bytes, ClassOption... classOptions) throws IllegalAccessException {
+			if (!hasFullPrivilegeAccess()) {
+				throw new IllegalAccessException();
+			}
+
+			int flags = 0;
+			for (ClassOption opt : classOptions) {
+				flags |= opt.toFlag();
+			}
+			MethodHandleNatives.checkClassBytes(bytes);
+			String targetClassName = getClassName(bytes);
+			return makeHiddenClassDefiner(targetClassName, bytes, flags);
+			
+		}
+
+		private String getClassName(byte[] bytes) {
+			String targetClassName;
+			ClassReader cr;
+			try {
+				cr = new ClassReader(bytes);
+
+				int thisClassIndex = cr.readUnsignedShort(cr.header + 2);
+				char[] buffer = new char[cr.getMaxStringLength()];
+				Object thisClass = cr.readConst(thisClassIndex, buffer);
+				if (!(thisClass instanceof Type)) {
+					throw new ClassFormatError();
+				}
+				Type type = (Type)thisClass;
+				if (!type.getDescriptor().startsWith("L")) {
+					throw new ClassFormatError();
+				}
+				targetClassName = type.getClassName();
+			} catch (ArrayIndexOutOfBoundsException e) {
+				/*[MSG "K065Y2", "The class byte array is corrupted"]*/
+				throw new ClassFormatError(com.ibm.oti.util.Msg.getString("K065Y2")); //$NON-NLS-1$
+			} catch (RuntimeException e) {
+				ClassFormatError error = new ClassFormatError();
+				error.initCause(e);
+				throw error;
+			}
+
+			int accessFlag = cr.getAccess();
+			if (Opcodes.ACC_MODULE == (accessFlag & Opcodes.ACC_MODULE)) {
+				/* Must be a class or interface, ACC_MODULE cannot be there. */
+				throw new IllegalArgumentException();
+			}
+			
+			String pkgName = lookupClass().getPackageName();
+			int index = targetClassName.lastIndexOf('.');
+			String pkgName1 = "";
+			if (0 < index) {
+				pkgName1 = targetClassName.substring(0, index);
+			}
+			if (!pkgName1.equals(pkgName)) {
+				throw new IllegalArgumentException();
+			}
+			return targetClassName;
+		}
+
+		ClassDefiner makeHiddenClassDefiner(String name, byte[] template) {
+			ClassDefiner definer = new ClassDefiner(name, template, this);
+			return definer;
+		}
+		
+		ClassDefiner makeHiddenClassDefiner(String name, byte[] template, int flag) {
+			ClassDefiner definer = new ClassDefiner(name, template, this, flag);
+			return definer;
+		}
+		
+		public Class<?> ensureInitialized(Class<?> cls) throws IllegalArgumentException, IllegalAccessException {
+			if (cls.isArray()) {
+				/*[MSG "K0683", "Target class '{0}' cannot be an array class"]*/
+				throw new IllegalArgumentException(com.ibm.oti.util.Msg.getString("K0683", cls));
+			} else if (cls.isPrimitive()) {
+				/*[MSG "K0684", "Target class '{0}' cannot be a primitive class"]*/
+				throw new IllegalArgumentException(com.ibm.oti.util.Msg.getString("K0684", cls));
+			} else if (!isClassAccessible(cls)) {
+				/*[MSG "K0685", "Target class '{0}' cannot be accessed from Lookup class '{1}'"]*/
+				throw new IllegalAccessException(com.ibm.oti.util.Msg.getString("K0685", cls, this));
+			} else {
+				Unsafe.getUnsafe().ensureClassInitialized(cls);
+			}
+			return cls;
+		}
+		/*[ENDIF] Java15 */		
+		
+		/*[IF OPENJDK_METHODHANDLES]*/
+		MemberName resolveOrFail(byte b, MemberName mn) throws ReflectiveOperationException {
+			throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
+		}
+
+		MemberName resolveOrFail(byte b, Class<?> cls, String str, MethodType mt) throws NoSuchMethodException, IllegalAccessException {
+			throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
+		}
+
+		MemberName resolveOrFail(byte b, Class<?> cls1, String str, Class<?> cls2) throws NoSuchFieldException, IllegalAccessException {
+			throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
+		}
+		
+		MethodHandle linkMethodHandleConstant(byte b, Class<?> cls, String str, Object obj) throws ReflectiveOperationException {
+			throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
+		}
+		/*[ENDIF] OPENJDK_METHODHANDLES */
 	}
 	
 	static MethodHandle filterArgument(MethodHandle target, int pos, MethodHandle filter) {
@@ -1821,7 +2531,7 @@ public class MethodHandles {
 		}
 		
 		if (targetClass.isPrimitive() || targetClass.isArray()) {
-			/*[MSG "K065T", "The target class: {0} must not be a primitive type or an array class"]*/
+			/*[MSG "K065T", "The requested class: {0} must not be a void type, primitive type or an array class"]*/
 			throw new IllegalArgumentException(com.ibm.oti.util.Msg.getString("K065T", targetClass.getCanonicalName())); //$NON-NLS-1$
 		}
 		
@@ -1846,17 +2556,32 @@ public class MethodHandles {
 		}
 		
 		int callerLookupMode = callerLookup.lookupModes();
-		if (Lookup.MODULE != (Lookup.MODULE & callerLookupMode)) {
-			/*[MSG "K065W", "The access mode: 0x{0} of the caller lookup doesn't have the MODULE mode : 0x{1}"]*/
-			throw new IllegalAccessException(com.ibm.oti.util.Msg.getString("K065W", Integer.toHexString(callerLookupMode), Integer.toHexString(Lookup.MODULE))); //$NON-NLS-1$
+		/*[IF Java14]*/
+		if (!callerLookup.hasFullPrivilegeAccess()) {
+			/*[MSG "K065W1", "The access mode: 0x{0} of the caller lookup doesn't have the PRIVATE & MODULE mode : 0x{1}"]*/
+			throw new IllegalAccessException(com.ibm.oti.util.Msg.getString("K065W1", Integer.toHexString(callerLookupMode), Integer.toHexString(Lookup.PRIVATE | Lookup.MODULE))); //$NON-NLS-1$
 		}
+		/*[ELSE]*/
+		if (Lookup.MODULE != (Lookup.MODULE & callerLookupMode)) {
+			/*[MSG "K065W2", "The access mode: 0x{0} of the caller lookup doesn't have the MODULE mode : 0x{1}"]*/
+			throw new IllegalAccessException(com.ibm.oti.util.Msg.getString("K065W2", Integer.toHexString(callerLookupMode), Integer.toHexString(Lookup.MODULE))); //$NON-NLS-1$
+		}
+		/*[ENDIF] Java14*/
 		
 		SecurityManager secmgr = System.getSecurityManager();
 		if (null != secmgr) {
 			secmgr.checkPermission(com.ibm.oti.util.ReflectPermissions.permissionSuppressAccessChecks);
 		}
 		
+		/*[IF Java14]*/
+		if (Objects.equals(targetClassModule, accessClassModule)) {
+			return new Lookup(targetClass, null, callerLookupMode, true);
+		} else {
+			return new Lookup(targetClass, callerLookup.lookupClass(), (callerLookupMode & ~Lookup.MODULE), true);
+		}
+		/*[ELSE]*/
 		return new Lookup(targetClass);
+		/*[ENDIF] Java14*/
 	}
 	/*[ENDIF] Sidecar19-SE-OpenJ9*/
 	
@@ -1867,7 +2592,8 @@ public class MethodHandles {
 	 * 
 	 * If a SecurityManager is present, this method requires <code>ReflectPermission("suppressAccessChecks")</code>.
 	 * 
-	 * @param expected the expected type of the underlying member
+	 * @param <T> the type of the underlying member
+	 * @param expected the expected Class of the underlying member
 	 * @param target the direct MethodHandle to be cracked
 	 * @return the underlying member of the <code>target</code> MethodHandle
 	 * @throws SecurityException if the caller does not have the required permission (<code>ReflectPermission("suppressAccessChecks")</code>)
@@ -1993,7 +2719,7 @@ public class MethodHandles {
 	/**
 	 * Produce a MethodHandle that implements a try-catch block.
 	 * 
-	 * This adapter acts as though the <i>tryHandle</i> where run inside a try block.  If <i>tryHandle</i>
+	 * This adapter acts as though the <i>tryHandle</i> were run inside a try block.  If <i>tryHandle</i>
 	 * throws an exception of type <i>throwableClass</i>, the <i>catchHandle</i> is invoked with the 
 	 * exception instance and the original arguments.
 	 * <p>
@@ -2016,6 +2742,9 @@ public class MethodHandles {
 		if ((tryHandle == null) || (throwableClass == null) || (catchHandle == null)) {
 			throw new NullPointerException();
 		}
+		if (!Throwable.class.isAssignableFrom(throwableClass)) {
+			throw new ClassCastException(throwableClass.getName());
+		}
 		MethodType tryType = tryHandle.type;
 		MethodType catchType = catchHandle.type;
 		if (tryType.returnType != catchType.returnType) {
@@ -2036,7 +2765,7 @@ public class MethodHandles {
 			}
 		}
 		
-		MethodHandle result = buildTransformHandle(new CatchHelper(tryHandle, catchHandle, throwableClass), tryType);
+		MethodHandle result = buildTransformHandle(new CatchHelper(tryHandle.asFixedArity(), catchHandle.asFixedArity(), throwableClass), tryType);
 		if (true) {
 			MethodHandle thunkable = CatchHandle.get(tryHandle, throwableClass, catchHandle, result);
 			assert(thunkable.type() == result.type());
@@ -2084,7 +2813,7 @@ public class MethodHandles {
 							tryType.returnType.getSimpleName(),
 							finallyType.returnType.getSimpleName(),}));
 		}
-		if (Throwable.class != finallyType.parameterType(0)) {
+		if (!Throwable.class.isAssignableFrom(finallyType.parameterType(0))) {
 			/*[MSG "K063C", "The 1st parameter type of the finally handle: {0} is not {1}"]*/
 			throw new IllegalArgumentException(Msg.getString("K063C", new Object[] { //$NON-NLS-1$
 							finallyType.parameterType(0).getSimpleName(),
@@ -2272,7 +3001,7 @@ public class MethodHandles {
 	 * and the third will be the item to write into the array
 	 * 
 	 * @param arrayType - the type of the array
-	 * @return a MehtodHandle able to write into the array
+	 * @return a MethodHandle able to write into the array
 	 * @throws IllegalArgumentException - if arrayType is not actually an array
 	 */
 	public static MethodHandle arrayElementSetter(Class<?> arrayType) throws IllegalArgumentException {
@@ -2323,9 +3052,13 @@ public class MethodHandles {
 	 * @throws NullPointerException If {@code viewArrayClass} or {@code byteOrder} is null
 	 */
 	public static VarHandle byteArrayViewVarHandle(Class<?> viewArrayClass, ByteOrder byteOrder) throws IllegalArgumentException {
-		checkArrayClass(viewArrayClass);
 		Objects.requireNonNull(byteOrder);
+		/*[IF Java14]*/
+		return VarHandles.byteArrayViewHandle(viewArrayClass, (byteOrder == ByteOrder.BIG_ENDIAN));
+		/*[ELSE] Java14
+		checkArrayClass(viewArrayClass);
 		return new ByteArrayViewVarHandle(viewArrayClass.getComponentType(), byteOrder);
+		/*[ENDIF] Java14 */
 	}
 	
 	/**
@@ -2338,9 +3071,13 @@ public class MethodHandles {
 	 * @throws NullPointerException If {@code viewArrayClass} or {@code byteOrder} is null
 	 */
 	public static VarHandle byteBufferViewVarHandle(Class<?> viewArrayClass, ByteOrder byteOrder) throws IllegalArgumentException {
-		checkArrayClass(viewArrayClass);
 		Objects.requireNonNull(byteOrder);
+		/*[IF Java14]*/
+		return VarHandles.makeByteBufferViewHandle(viewArrayClass, (byteOrder == ByteOrder.BIG_ENDIAN));
+		/*[ELSE] Java14
+		checkArrayClass(viewArrayClass);
 		return new ByteBufferViewVarHandle(viewArrayClass.getComponentType(), byteOrder);
+		/*[ENDIF] Java14 */
 	}
 	
 	private static void checkArrayClass(Class<?> arrayClass) throws IllegalArgumentException {
@@ -2419,7 +3156,7 @@ public class MethodHandles {
 	 * If <i>handle</i> has a void return, <i>filter</i> must not take any parameters.
 	 * 
 	 * @param handle - the MethodHandle that will have its return value adapted
-	 * @param filter - the MethodHandle that will do the return adaption.
+	 * @param filter - the MethodHandle that will do the return adaptation.
 	 * @return a MethodHandle that will run the filter handle on the result of handle.
 	 * @throws NullPointerException - if handle or filter is null
 	 * @throws IllegalArgumentException - if the return type of <i>handle</i> differs from the type of the only argument to <i>filter</i>
@@ -2649,7 +3386,118 @@ public class MethodHandles {
 		MethodHandle result = FilterArgumentsHandle.get(handle, startPosition, filters, newType);
 		return result;
 	}
+
+/*[IF Java12]*/
+	/**
+	 * Modifies a MethodHandle by applying a preprocessor handle as a filter to one of the arguments.
+	 * The preprocessor's return type must be the same as the argument in <i>handle</i> at the <i>filterPosition</i>.
+	 * The preprocessor handle accepts a subset of the original methods arguments, the subset and their order are 
+	 * dictated by the array <i>argumentIndices</i>.
+	 * 
+	 * Pseudocode example:
+	 * handle: D original(A, B, C)
+	 * filterPosition: 1
+	 * preprocessor:  B filter(B, A)
+	 * argumentIndices: {1, 0}
+	 * 
+	 * resulting handle:
+	 * D result(A a, B b, C c) {
+	 * 	B e = filter(b, a)
+	 * 	return original(a, e, c)
+	 * }
+	 *
+  	 * @param handle - the handle to call after preprocessing
+ 	 * @param filterPosition - the starting position to filter arguments
+	 * @param preprocessor - a methodhandle that preprocesses some of the incoming arguments
+	 * @param argumentIndices - an array of indices mapping the handle's arguments to the preprocessors inputs
+	 * @return a MethodHandle that preprocesses some of the arguments to the handle
+	 * @throws NullPointerException - if any of the arguments are null
+	 * @throws IllegalArgumentException - if the preprocessor's return type differs from the first argument type of the handle,
+	 *                      or if the arguments taken by the preprocessor isn't a subset of the arguments to the handle
+	 *                      or if the element of argumentIndices is outside of the range of the handle's argument list
+	 *                      or if the arguments specified by argumentIndices from the handle doesn't exactly match the the arguments taken by the preprocessor
+	 */
+	static MethodHandle filterArgumentsWithCombiner(MethodHandle handle, int filterPosition, MethodHandle preprocessor, int... argumentIndices) throws NullPointerException, IllegalArgumentException {
+
+		/* create defensive copy of argument indices */
+		int[] passedInargumentIndices = EMPTY_ARG_POSITIONS;
+		if (0 != argumentIndices.length) {
+			passedInargumentIndices = argumentIndices.clone();
+		}
+
+		MethodType handleType = handle.type; // implicit nullcheck
+		MethodType preprocessorType = preprocessor.type; // implicit nullcheck
+		Class<?> preprocessorReturnClass = preprocessorType.returnType;
+		final int handleTypeParamCount = handleType.parameterCount();
+		final int preprocessorTypeParamCount = preprocessorType.parameterCount();
+		final int argIndexCount = passedInargumentIndices.length;
+		
+		if ((filterPosition < 0) || (filterPosition >= handleTypeParamCount)) {
+			/*[MSG "K0637", "The value of {0}: {1} must be in a range from 0 to {2}"]*/
+			throw new IllegalArgumentException(Msg.getString("K0637", new Object[] { //$NON-NLS-1$
+							"the filter position", Integer.toString(filterPosition), //$NON-NLS-1$
+							Integer.toString(handleTypeParamCount)}));
+		}
 	
+		if (preprocessorTypeParamCount != argIndexCount) {
+			/*[MSG "K0638", "The count of argument indices: {0} must be equal to the parameter count of the combiner: {1}"]*/
+			throw new IllegalArgumentException(Msg.getString("K0638", new Object[] { //$NON-NLS-1$
+							Integer.toString(argIndexCount),
+							Integer.toString(preprocessorTypeParamCount)}));
+		}
+		
+		for (int i = 0; i < argIndexCount; i++) {
+			if ((passedInargumentIndices[i] < 0) || (passedInargumentIndices[i] >= handleTypeParamCount)) {
+				/*[MSG "K0637", "The value of {0}: {1} must be in a range from 0 to {2}"]*/
+				throw new IllegalArgumentException(Msg.getString("K0637", new Object[] { //$NON-NLS-1$
+								"argument index", Integer.toString(passedInargumentIndices[i]),  //$NON-NLS-1$
+								Integer.toString(handleTypeParamCount)}));
+			}
+		}
+
+		if (void.class == preprocessorReturnClass) {
+			/*[MSG "K063A2", "The return type of combiner should never be void."]*/
+			throw new IllegalArgumentException(Msg.getString("K063A2")); //$NON-NLS-1$
+		}
+
+		if (preprocessorReturnClass != handleType.arguments[filterPosition]) {
+			/*[MSG "K063A1", "The return type of combiner: {0} is inconsistent with the argument type of {1} handle: {2} at the {3} position: {4}"]*/
+			throw new IllegalArgumentException(Msg.getString("K063A1", new Object[] { //$NON-NLS-1$
+							preprocessorReturnClass.getSimpleName(), "filter",
+							handleType.arguments[filterPosition].getSimpleName(), "filter", 
+							Integer.toString(filterPosition)}));
+		}
+		
+		validateParametersOfCombiner(argIndexCount, preprocessorTypeParamCount, preprocessorType, handleType, passedInargumentIndices, filterPosition, 1);
+
+		MethodHandle result = FilterArgumentsWithCombinerHandle.get(handle, filterPosition, preprocessor, passedInargumentIndices);
+
+		return result;
+	}
+
+	/**
+	 * Produce a MethodHandle that preprocesses some of the arguments by calling the preprocessor handle.
+	 * 
+	 * If the preprocessor handle has a return type, it must be the same as the argument type at <i>foldPosition</i> of the <i>handle</i>.
+	 * If the preprocessor returns void, it does not contribute the first argument to the <i>handle</i>.
+	 * In all cases, the preprocessor handle accepts a subset of the arguments for the handle.
+	 * 
+	 * @param handle - the handle to call after preprocessing
+	 * @param foldPosition - the starting position to fold arguments
+	 * @param preprocessor - a methodhandle that preprocesses some of the incoming arguments
+	 * @param argumentIndices - an array of indices of incoming arguments from the handle
+	 * @return a MethodHandle that preprocesses some of the arguments to the handle before calling the next handle, possibly with an additional first argument
+	 * @throws NullPointerException - if any of the arguments are null
+	 * @throws IllegalArgumentException - if the preprocessor's return type is not void and it differs from the first argument type of the handle,
+	 * 			or if the arguments taken by the preprocessor isn't a subset of the arguments to the handle
+	 * 			or if the element of argumentIndices is outside of the range of the handle's argument list
+	 * 			or if the arguments specified by argumentIndices from the handle doesn't exactly match the the arguments taken by the preprocessor
+	 */
+	static MethodHandle foldArgumentsWithCombiner(MethodHandle handle, int foldPosition, MethodHandle preprocessor, int... argumentIndices) throws NullPointerException, IllegalArgumentException {
+		return foldArguments(handle, foldPosition, preprocessor, argumentIndices);
+	}
+/*[ENDIF] Java12 */
+
 	/**
 	 * Produce a MethodHandle that preprocesses some of the arguments by calling the preprocessor handle.
 	 * 
@@ -2677,7 +3525,7 @@ public class MethodHandles {
 	 * In all cases, the preprocessor handle accepts a subset of the arguments for the handle.
 	 * 
 	 * @param handle - the handle to call after preprocessing
-	 * @param handle - the starting position to fold arguments
+	 * @param foldPosition - the starting position to fold arguments
 	 * @param preprocessor - a methodhandle that preprocesses some of the incoming arguments
 	 * @return a MethodHandle that preprocesses some of the arguments to the handle before calling the next handle, possibly with an additional first argument
 	 * @throws NullPointerException - if any of the arguments are null
@@ -2725,7 +3573,11 @@ public class MethodHandles {
 		final int argIndexCount = argumentIndices.length;
 		int[] passedInArgumentIndices = EMPTY_ARG_POSITIONS;
 		
-		if ((foldPosition < 0) || (foldPosition >= handleTypeParamCount)) {
+		if ((foldPosition < 0)
+		|| (foldPosition > handleTypeParamCount)
+		/* folding at handleTypeParamCount is only valid when the handle takes no arguments */
+		|| ((foldPosition == handleTypeParamCount) && (handleTypeParamCount != 0) ))
+		{
 			/*[MSG "K0637", "The value of {0}: {1} must be in a range from 0 to {2}"]*/
 			throw new IllegalArgumentException(Msg.getString("K0637", new Object[] { //$NON-NLS-1$
 							"the fold position", Integer.toString(foldPosition), //$NON-NLS-1$
@@ -2784,10 +3636,10 @@ public class MethodHandles {
 							"<", Integer.toString(handleTypeParamCount)})); //$NON-NLS-1$
 		}
 		if (preprocessorReturnClass != handleType.arguments[foldPosition]) {
-			/*[MSG "K063A", "The return type of combiner: {0} is inconsistent with the argument type of fold handle: {1} at the fold position: {2}"]*/
-			throw new IllegalArgumentException(Msg.getString("K063A", new Object[] { //$NON-NLS-1$
-							preprocessorReturnClass.getSimpleName(),  
-							handleType.arguments[foldPosition].getSimpleName(), 
+			/*[MSG "K063A1", "The return type of combiner: {0} is inconsistent with the argument type of {1} handle: {2} at the {3} position: {4}"]*/
+			throw new IllegalArgumentException(Msg.getString("K063A1", new Object[] { //$NON-NLS-1$
+							preprocessorReturnClass.getSimpleName(), "filter",
+							handleType.arguments[foldPosition].getSimpleName(), "filter",
 							Integer.toString(foldPosition)}));
 		}
 		validateParametersOfCombiner(argIndexCount, preprocessorTypeParamCount, preprocessorType, handleType, argumentIndices, foldPosition, 1);
@@ -2800,14 +3652,14 @@ public class MethodHandles {
 		if (0 == argIndexCount) {
 			for (int i = 0; i < preprocessorTypeParamCount; i++) {
 				if (preprocessorType.arguments[i]  != handleType.arguments[foldPosition + i + foldPlaceHolder]) {
-					/*[MSG "K05d0", "Can't apply fold of type: {0} to handle of type: {1} starting at {2} "]*/
+					/*[MSG "K05d0", "Can't apply preprocessor of type: {0} to handle of type: {1} starting at {2} "]*/
 					throw new IllegalArgumentException(Msg.getString("K05d0", preprocessorType.toString(), handleType.toString(), Integer.toString(foldPosition))); //$NON-NLS-1$
 				}
 			}
 		} else {
 			for (int i = 0; i < argIndexCount; i++) {
 				if (preprocessorType.arguments[i]  != handleType.arguments[argumentIndices[i]]) {
-					/*[MSG "K05d0", "Can't apply fold of type: {0} to handle of type: {1} starting at {2} "]*/
+					/*[MSG "K05d0", "Can't apply preprocessor of type: {0} to handle of type: {1} starting at {2} "]*/
 					throw new IllegalArgumentException(Msg.getString("K05d0", preprocessorType.toString(), handleType.toString(), Integer.toString(foldPosition))); //$NON-NLS-1$
 				}
 			}
@@ -2931,6 +3783,7 @@ public class MethodHandles {
 			/*[MSG "K039c", "Invalid parameters"]*/
 			throw new IllegalArgumentException(com.ibm.oti.util.Msg.getString("K039c")); //$NON-NLS-1$
 		}
+
 		
 		MethodType permuteType = originalType.insertParameterTypes(location, valueTypes);
 		/* Build equivalent permute array */
@@ -3120,7 +3973,7 @@ public class MethodHandles {
 
 		boolean noValuesToInsert = values.length == 0;  // expected NPE.  Must be null checked before location is checked.
 
-		if ((location < 0) || (location >= originalType.parameterCount())) {
+		if ((location < 0) || (location > (originalType.parameterCount() - values.length))) {
 			throw new IllegalArgumentException();
 		}
 
@@ -3198,28 +4051,31 @@ public class MethodHandles {
 		
 		MethodHandle arrayConstructorHandle = null;
 		Class<?> componentType = arrayType.getComponentType();
-		MethodType realArrayType = MethodType.methodType(arrayType, int.class);
-		
+
 		try {
 			/* Directly look up the appropriate helper method for the given primitive type */
 			if (componentType.isPrimitive()) {
+				MethodType realArrayType = MethodType.methodType(arrayType, int.class);
 				String typeName = componentType.getCanonicalName();
 				arrayConstructorHandle = Lookup.internalPrivilegedLookup.findStatic(MethodHandles.class, typeName + "ArrayConstructor", realArrayType); //$NON-NLS-1$
 			} else {
-				/* Look up the "Object[]" case and convert the corresponding handle to the one with the correct MethodType */
-				MethodType objectArrayType = MethodType.methodType(Object[].class, int.class);
-				arrayConstructorHandle = Lookup.internalPrivilegedLookup.findStatic(MethodHandles.class, "objectArrayConstructor", objectArrayType); //$NON-NLS-1$
-				if (Object[].class != arrayType) {
-					arrayConstructorHandle = arrayConstructorHandle.cloneWithNewType(realArrayType);
-				}
+				/* The target handle wraps up Array.newInstance() to create an array with the given type.
+				 * Meanwhile, the handle has to be converted to ensure its return type remains consistent 
+				 * with the passed-in array type so as to match Reference Implementation.
+				 */
+				MethodType realArrayType = MethodType.methodType(Object.class, Class.class, int.class);
+				arrayConstructorHandle = Lookup.internalPrivilegedLookup.findStatic(Array.class, "newInstance", realArrayType); //$NON-NLS-1$
+				arrayConstructorHandle = arrayConstructorHandle.cloneWithNewType(realArrayType.changeReturnType(arrayType)).bindTo(componentType);
 			}
 		} catch(IllegalAccessException | NoSuchMethodException e) {
 			throw new InternalError("The method retrieved by lookup doesn't exit or it fails in the access checking", e); //$NON-NLS-1$
+		} catch(ClassCastException e) {
+			throw new IllegalArgumentException(e.getMessage());
 		}
 		
 		return arrayConstructorHandle;
 	}
-	
+
 	private static boolean[] booleanArrayConstructor(int arraySize) {
 		return new boolean[arraySize];
 	}
@@ -3250,10 +4106,6 @@ public class MethodHandles {
 	
 	private static double[] doubleArrayConstructor(int arraySize) {
 		return new double[arraySize];
-	}
-	
-	private static Object[] objectArrayConstructor(int arraySize) {
-		return new Object[arraySize];
 	}
 	
 	/**
@@ -3664,9 +4516,9 @@ public class MethodHandles {
 			bodyIterationVarLength = 2;
 		}
 
-		/* As a special case, if the body contributes only V and I types, with no
-		 * additional A types, then the internal parameter list is extended by the
-		 * argument types A... of the end handle. Adjust A count to correctly verify
+		/* As a special case, if the body contributes only V and I types, with no
+		 * additional A types, then the internal parameter list is extended by the
+		 * argument types A... of the end handle. Adjust A count to correctly verify
 		 * parameters are effectively identical. Body will be altered outside of
 		 * verification.
 		 */
@@ -3705,7 +4557,7 @@ public class MethodHandles {
 	}
 	
 	/**
-	 * Produce a loop handle that iterates over a range of values produced by an Iterator<T>
+	 * Produce a loop handle that iterates over a range of values produced by an {@code Iterator<T>}
 	 * Loop variables are updated by the return values of the corresponding step handles 
 	 * (including the loop body) in each iteration.
 	 * 
@@ -4621,7 +5473,12 @@ public class MethodHandles {
 						if (boolean.class == tryTargetReturnType) {
 							finallyParams[1] = false;
 						} else if (tryTargetReturnType.isPrimitive()) {
-							finallyParams[1] = (byte)0;
+							/* char type cannot be casted from byte during invocation */
+							if (tryTargetReturnType == char.class) {
+								finallyParams[1] = (char)0;
+							} else {
+								finallyParams[1] = (byte)0;
+							}
 						}
 					}
 					System.arraycopy(arguments, 0, finallyParams, 2, finallyParamCount - 2);
@@ -4700,10 +5557,154 @@ public class MethodHandles {
 		}
 	}
 
-/*[IF Sidecar18-SE-OpenJ9]*/	
+	/*[IF Java15]*/
+	/**
+	 * Validates that the permute[] specifies a valid permutation from permuteType to handleType.
+	 * This method throws IllegalArgumentException on failure and returns true on success. This
+	 * disjointness allows it to be used in asserts.
+	 * 
+	 * @param permute array specifies the conversion from permuteType to handleType.
+	 * @param permuteType source method type.
+	 * @param handleType target method type.
+	 * 
+	 * @return true on success.
+	 * @throws IllegalArgumentException on failure.
+	 */
+	static boolean permuteArgumentChecks(int[] permute, MethodType permuteType, MethodType handleType) {
+		return validatePermutationArray(permuteType, handleType, permute);
+	}
+	
+	/**
+	 * Return the classData stored in the accessClass of the Lookup object.
+	 * 
+	 * @param caller Lookup object used to verify privileged access and retrieve classData.
+	 * @param unused.
+	 * @param type used to cast the classData of the accessClass.
+	 * 
+	 * @return the classData casted to the appropriate type.
+	 * @throws IllegalAccessException in the absence of full privilege access.
+	 */
+	static <T> T classData(Lookup caller, String unused, Class<T> type) throws IllegalAccessException {
+		if (caller.hasFullPrivilegeAccess()) {
+			Object classData = MethodHandleNatives.classData(caller.accessClass);
+			return type.cast(classData);
+		}
+		throw new IllegalAccessException("No full privilege access found for " + caller);
+	}
+
+	/**
+	 * Helper class used by collectReturnValue.
+	 */
+	private static final class CollectReturnHelper implements ArgumentHelper {
+		private final MethodHandle target;
+		private final MethodHandle filter;
+
+		CollectReturnHelper(MethodHandle target, MethodHandle filter) {
+			this.target = target;
+			this.filter = filter;
+		}
+
+		public Object helper(Object[] arguments) throws Throwable {
+			// Invoke target
+			int targetArity = target.type.parameterCount();
+			Object targetReturn = target.invokeWithArguments(Arrays.copyOfRange(arguments, 0, targetArity));
+
+			// Construct filter arguments
+			int filterArity = filter.type.parameterCount();
+			Object[] newArguments = new Object[filterArity];
+			System.arraycopy(arguments, targetArity, newArguments, 0, filterArity - 1);
+			newArguments[filterArity - 1] = targetReturn;
+
+			// Invoke filter
+			return filter.invokeWithArguments(newArguments);
+		}
+	}
+	
+	/**
+	 * Creates an adapter MethodHandle (MH) which invokes the target MH and then
+	 * invokes the filter MH while passing the output from the target MH as an
+	 * input to the filter MH.
+	 * 
+	 * targetMH:  O target(P...)
+	 * filterMH:  Q filter(R..., O)
+	 * adapterMH: Q adapter(P... p, R... r) {
+	 *                O o = target(p);
+	 *                return filter(r, o);  
+	 *            }
+	 *
+	 * @param target represents the above targetMH.
+	 * @param filter represent the above filterMH.
+	 * 
+	 * @return a MH similar to the above adapterMH.
+	 */
+	static MethodHandle collectReturnValue(MethodHandle target, MethodHandle filter) {
+		MethodType targetType = target.type();
+		MethodType filterType = filter.type();
+		MethodType resultType = targetType.changeReturnType(filterType.returnType());
+		int filterParamCount = filterType.parameterCount();
+		if (filterParamCount > 1) {
+			for (int i = 0; i < filterParamCount - 1; i++) {
+				resultType = resultType.appendParameterTypes(filterType.parameterType(i));
+			}
+		}
+		return buildTransformHandle(new CollectReturnHelper(target, filter), resultType);
+	}
+	
+	/**
+	 * Scan a MethodHandle for checked exception(s).
+	 * 
+	 * @param mh A MethodHandle to scan for checked exception(s).
+	 * 
+	 * @return true if check exception(s) are found, and false otherwise.
+	 * 
+	 * @throws InternalError for an error.
+	 */
+	static boolean hasCheckedException(MethodHandle mh) {
+		if (mh == null) {
+			return false;
+		}
+		
+		List<MethodHandle> relatedMHs = new ArrayList<>(4);
+		relatedMHs.add(mh);
+		
+		while (!relatedMHs.isEmpty()) {
+			mh = relatedMHs.remove(relatedMHs.size() - 1);
+			if (mh instanceof PrimitiveHandle) {
+				Class<?>[] exceptionTypes = null;
+				MethodHandleInfoImpl mhi = new MethodHandleInfoImpl((PrimitiveHandle)mh);
+				if (mhi.isConstructor()) {
+					exceptionTypes = mhi.reflectAs(Constructor.class, Lookup.IMPL_LOOKUP).getExceptionTypes();
+				} else if (mhi.isMethod()) {
+					exceptionTypes = mhi.reflectAs(Method.class, Lookup.IMPL_LOOKUP).getExceptionTypes();
+				} else if (mhi.isField()) {
+					/* Field reference kind has no checked exceptions. */
+				} else {
+					/*[MSG "K0686", "Unknown reference kind: '{0}'"]*/
+					throw new InternalError(com.ibm.oti.util.Msg.getString("K0686", mhi.getReferenceKind())); //$NON-NLS-1$
+				}
+				if (exceptionTypes != null) {
+					for (Class<?> exceptionType : exceptionTypes) {
+						/* Checked exception is a Throwable, which is not an Error or RuntimeException. */
+						if (!RuntimeException.class.isAssignableFrom(exceptionType)
+							&& !Error.class.isAssignableFrom(exceptionType)
+							&& Throwable.class.isAssignableFrom(exceptionType)
+						) {
+							return true;
+						}
+					}
+				}
+			} else {
+				mh.addRelatedMHs(relatedMHs);
+			}
+		}
+
+		return false;
+	}
+	/*[ENDIF] Java15 */
+
+	/*[IF Sidecar18-SE-OpenJ9]*/	
 	static MethodHandle basicInvoker(MethodType mt) {
 		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
 	}
-/*[ENDIF]*/	
+	/*[ENDIF]*/	
 }
-

@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar19-SE]*/
 /*******************************************************************************
- * Copyright (c) 2017, 2017 IBM Corp. and others
+ * Copyright (c) 2017, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -20,8 +20,14 @@
  *
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
+
+/**
+ * Defines the shared class cache API. Used to add shared class caching to a ClassLoader implementation.
+ * Obtain information about the current shared class cache, available shared class caches, or destroy caches.
+ */
+@SuppressWarnings("module")
 module openj9.sharedclasses {
-	requires java.base;
-	exports com.ibm.oti.shared;
-	provides com.ibm.sharedclasses.spi.SharedClassProvider with com.ibm.oti.shared.provider.SharedClassProviderImpl;
+  requires java.base;
+  exports com.ibm.oti.shared;
+  provides com.ibm.sharedclasses.spi.SharedClassProvider with com.ibm.oti.shared.provider.SharedClassProviderImpl;
 }

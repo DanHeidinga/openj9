@@ -1,6 +1,6 @@
-/*[INCLUDE-IF Sidecar17]*/
+/*[INCLUDE-IF Sidecar17 & !OPENJDK_METHODHANDLES]*/
 /*******************************************************************************
- * Copyright (c) 2011, 2011 IBM Corp. and others
+ * Copyright (c) 2011, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -22,6 +22,10 @@
  *******************************************************************************/
 package java.lang.invoke;
 
+/*[IF Java15]*/
+import java.util.List;
+/*[ENDIF] Java15 */
+
 final class GuardWithTestHandle extends MethodHandle {
 
 	final MethodHandle guard;
@@ -42,7 +46,18 @@ final class GuardWithTestHandle extends MethodHandle {
 		this.falseTarget = originalHandle.falseTarget;
 	}
 
-	public static GuardWithTestHandle get(MethodHandle guard, MethodHandle trueTarget, MethodHandle falseTarget) {
+	public static MethodHandle get(MethodHandle guard, MethodHandle trueTarget, MethodHandle falseTarget) {
+		/* Constant boolean is implemented with ConstantIntHandle, if `guard` handle is a ConstantIntHandle,
+		we can evaluate the if statement now and return the target handle*/
+		if (guard instanceof ConstantIntHandle) {
+			ConstantIntHandle constantHandle = (ConstantIntHandle)guard;
+			if (constantHandle.value != 0) {
+				return trueTarget;
+			} else {
+				return falseTarget;
+			}
+		}
+
 		return new GuardWithTestHandle(guard, trueTarget, falseTarget);
 	}
 
@@ -52,7 +67,7 @@ final class GuardWithTestHandle extends MethodHandle {
 	protected final ThunkTable thunkTable(){ return _thunkTable; }
 
  	protected final ThunkTuple computeThunks(Object guardType) {
- 		// Different thunks accomodate guards with different numbers of parameters
+ 		// Different thunks accommodate guards with different numbers of parameters
  		return thunkTable().get(new ThunkKeyWithObject(ThunkKey.computeThunkableType(type()), ThunkKey.computeThunkableType((MethodType)guardType)));
  	}
  
@@ -72,7 +87,17 @@ final class GuardWithTestHandle extends MethodHandle {
 			return ILGenMacros.invokeExact_X(falseTarget, argPlaceholder);
 		}
 	}
- 
+
+/*[IF Java15]*/
+	@Override
+	boolean addRelatedMHs(List<MethodHandle> relatedMHs) {
+		relatedMHs.add(guard);
+		relatedMHs.add(falseTarget);
+		relatedMHs.add(trueTarget);
+		return true;
+	}
+/*[ENDIF] Java15 */
+
 	// }}} JIT support
 
 	@Override

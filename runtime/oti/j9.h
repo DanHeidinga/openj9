@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -60,6 +60,8 @@
 #include "omr.h"
 #include "temp.h"
 #include "j9thread.h"
+#include "j2sever.h"
+#include "j9relationship.h"
 
 typedef struct J9JNIRedirectionBlock {
 	struct J9JNIRedirectionBlock* next;
@@ -80,9 +82,7 @@ typedef struct J9ClassLoaderWalkState {
 #include "j9generated.h"
 #include "j9cfg_builder.h"
 
-#if !defined(J9VM_OUT_OF_PROCESS)
 #include "j9accessbarrierhelpers.h"
-#endif
 
 /*------------------------------------------------------------------
  * AOT version defines
@@ -91,7 +91,7 @@ typedef struct J9ClassLoaderWalkState {
 #define AOT_MINOR_VERSION 0
 
 
-/* temporary hack to ensure that we get the right verison of translate MethodHandle */
+/* temporary hack to ensure that we get the right version of translate MethodHandle */
 #define TRANSLATE_METHODHANDLE_TAKES_FLAGS
 
 /* temporary define to allow JIT work to promote and be enabled at the same time as the vm side */
@@ -119,9 +119,12 @@ typedef struct J9ClassLoaderWalkState {
 
 /* RAM class shape flags - valid to use these when the underlying ROM class has been unloaded */
 
-#define J9CLASS_SHAPE(ramClass) ((J9CLASS_FLAGS(ramClass) >> J9_JAVA_CLASS_RAM_SHAPE_SHIFT) & OBJECT_HEADER_SHAPE_MASK)
-#define J9CLASS_IS_ARRAY(ramClass) ((J9CLASS_FLAGS(ramClass) & J9_JAVA_CLASS_RAM_ARRAY) != 0)
-#define J9CLASS_IS_MIXED(ramClass) (((J9CLASS_FLAGS(ramClass) >> J9_JAVA_CLASS_RAM_SHAPE_SHIFT) & OBJECT_HEADER_SHAPE_MASK) == OBJECT_HEADER_SHAPE_MIXED)
+#define J9CLASS_SHAPE(ramClass) ((J9CLASS_FLAGS(ramClass) >> J9AccClassRAMShapeShift) & OBJECT_HEADER_SHAPE_MASK)
+#define J9CLASS_IS_ARRAY(ramClass) ((J9CLASS_FLAGS(ramClass) & J9AccClassRAMArray) != 0)
+#define J9CLASS_IS_MIXED(ramClass) (((J9CLASS_FLAGS(ramClass) >> J9AccClassRAMShapeShift) & OBJECT_HEADER_SHAPE_MASK) == OBJECT_HEADER_SHAPE_MIXED)
+
+#define J9CLASS_IS_EXEMPT_FROM_VALIDATION(clazz) \
+	((J9ROMCLASS_IS_UNSAFE((clazz)->romClass) && !J9ROMCLASS_IS_HIDDEN((clazz)->romClass)) || (J9_ARE_ANY_BITS_SET((clazz)->classFlags, J9ClassIsExemptFromValidation)))
 
 #define IS_STRING_COMPRESSION_ENABLED(vmThread) (FALSE != ((vmThread)->javaVM)->strCompEnabled)
 
@@ -129,28 +132,42 @@ typedef struct J9ClassLoaderWalkState {
 
 #define IS_STRING_COMPRESSED(vmThread, object) \
 	(IS_STRING_COMPRESSION_ENABLED(vmThread) ? \
-		(((I_32) J9VMJAVALANGSTRING_COUNT(vmThread, object)) >= 0) : FALSE)
+		(J2SE_VERSION((vmThread)->javaVM) >= J2SE_V11 ? \
+			(((I_32) J9VMJAVALANGSTRING_CODER(vmThread, object)) == 0) : \
+			(((I_32) J9VMJAVALANGSTRING_COUNT(vmThread, object)) >= 0)) : \
+		FALSE)
 
 #define IS_STRING_COMPRESSED_VM(javaVM, object) \
 	(IS_STRING_COMPRESSION_ENABLED_VM(javaVM) ? \
-		(((I_32) J9VMJAVALANGSTRING_COUNT_VM(javaVM, object)) >= 0) : FALSE)
+		(J2SE_VERSION(javaVM) >= J2SE_V11 ? \
+			(((I_32) J9VMJAVALANGSTRING_CODER_VM(javaVM, object)) == 0) : \
+			(((I_32) J9VMJAVALANGSTRING_COUNT_VM(javaVM, object)) >= 0)) : \
+		FALSE)
 
 #define J9VMJAVALANGSTRING_LENGTH(vmThread, object) \
 	(IS_STRING_COMPRESSION_ENABLED(vmThread) ? \
-		(J9VMJAVALANGSTRING_COUNT(vmThread, object) & 0x7FFFFFFF) : \
-		(J9VMJAVALANGSTRING_COUNT(vmThread, object)))
+		(J2SE_VERSION((vmThread)->javaVM) >= J2SE_V11 ? \
+			(J9INDEXABLEOBJECT_SIZE(vmThread, J9VMJAVALANGSTRING_VALUE(vmThread, object)) >> ((I_32) J9VMJAVALANGSTRING_CODER(vmThread, object))) : \
+			(J9VMJAVALANGSTRING_COUNT(vmThread, object) & 0x7FFFFFFF)) : \
+		(J2SE_VERSION((vmThread)->javaVM) >= J2SE_V11 ? \
+			(J9INDEXABLEOBJECT_SIZE(vmThread, J9VMJAVALANGSTRING_VALUE(vmThread, object)) >> 1) : \
+			(J9VMJAVALANGSTRING_COUNT(vmThread, object))))
 
 #define J9VMJAVALANGSTRING_LENGTH_VM(javaVM, object) \
 	(IS_STRING_COMPRESSION_ENABLED_VM(javaVM) ? \
-		(J9VMJAVALANGSTRING_COUNT_VM(javaVM, object) & 0x7FFFFFFF) : \
-		(J9VMJAVALANGSTRING_COUNT_VM(javaVM, object)))
+		(J2SE_VERSION(javaVM) >= J2SE_V11 ? \
+			(J9INDEXABLEOBJECT_SIZE_VM(javaVM, J9VMJAVALANGSTRING_VALUE_VM(javaVM, object)) >> ((I_32) J9VMJAVALANGSTRING_CODER_VM(javaVM, object))) : \
+			(J9VMJAVALANGSTRING_COUNT_VM(javaVM, object) & 0x7FFFFFFF)) : \
+		(J2SE_VERSION(javaVM) >= J2SE_V11 ? \
+			(J9INDEXABLEOBJECT_SIZE_VM(javaVM, J9VMJAVALANGSTRING_VALUE_VM(javaVM, object)) >> 1) : \
+			(J9VMJAVALANGSTRING_COUNT_VM(javaVM, object))))
 
 /* UTF8 access macros - all access to J9UTF8 fields should be done through these macros */
 
 #define J9UTF8_LENGTH(j9UTF8Address) (((struct J9UTF8 *)(j9UTF8Address))->length)
 #define J9UTF8_SET_LENGTH(j9UTF8Address, len) (((struct J9UTF8 *)(j9UTF8Address))->length = (len))
 #define J9UTF8_DATA(j9UTF8Address) (((struct J9UTF8 *)(j9UTF8Address))->data)
-
+#define J9UTF8_TOTAL_SIZE(j9UTF8Address) (sizeof(J9UTF8) + J9UTF8_LENGTH(j9UTF8Address))
 #define J9UTF8_DATA_EQUALS(data1, length1, data2, length2) ((((length1) == (length2)) && (memcmp((data1), (data2), (length1)) == 0)))
 #define J9UTF8_EQUALS(utf1, utf2) (((utf1) == (utf2)) || (J9UTF8_DATA_EQUALS(J9UTF8_DATA(utf1), J9UTF8_LENGTH(utf1), J9UTF8_DATA(utf2), J9UTF8_LENGTH(utf2))))
 #define J9UTF8_LITERAL_EQUALS(data1, length1, cString) (J9UTF8_DATA_EQUALS((data1), (length1), (cString), sizeof(cString) - 1))
@@ -194,9 +211,6 @@ typedef struct J9ClassLoaderWalkState {
 /* Important: We check both valueOffset and flagsAndClass because we do not set them atomically on resolve. */
 #define J9RAMSTATICFIELDREF_IS_RESOLVED(base) ((-1 != (base)->valueOffset) && ((base)->flagsAndClass) > 0)
 
-#define J9ROMMETHOD_GET_NAME(romClass, rommethod) J9ROMMETHOD_NAME(rommethod)
-#define J9ROMMETHOD_GET_SIGNATURE(romClass, rommethod) J9ROMMETHOD_SIGNATURE(rommethod)
-
 /* From tracehelp.c - prototyped here because the macro is here */
 
 /**
@@ -216,14 +230,6 @@ extern J9_CFUNC UtInterface * getTraceInterfaceFromVM(J9JavaVM *j9vm);
  * Macros for accessing port library.
  * @{
  */
-#ifdef USING_VMI
-#define PORT_ACCESS_FROM_ENV(jniEnv) \
-VMInterface *portPrivateVMI = VMI_GetVMIFromJNIEnv(jniEnv); \
-J9PortLibrary *privatePortLibrary = (*portPrivateVMI)->GetPortLibrary(portPrivateVMI)
-#define PORT_ACCESS_FROM_JAVAVM(javaVM) \
-VMInterface *portPrivateVMI = VMI_GetVMIFromJavaVM(javaVM); \
-J9PortLibrary *privatePortLibrary = (*portPrivateVMI)->GetPortLibrary(portPrivateVMI)
-#else
 #define PORT_ACCESS_FROM_ENV(jniEnv) J9PortLibrary *privatePortLibrary = (J9VMTHREAD_FROM_JNIENV(jniEnv))->javaVM->portLibrary
 #define PORT_ACCESS_FROM_JAVAVM(javaVM) J9PortLibrary *privatePortLibrary = (javaVM)->portLibrary
 #define PORT_ACCESS_FROM_VMC(vmContext) J9PortLibrary *privatePortLibrary = (vmContext)->javaVM->portLibrary
@@ -231,11 +237,8 @@ J9PortLibrary *privatePortLibrary = (*portPrivateVMI)->GetPortLibrary(portPrivat
 #define PORT_ACCESS_FROM_JITCONFIG(jitConfig) J9PortLibrary *privatePortLibrary = (jitConfig)->javaVM->portLibrary
 #define PORT_ACCESS_FROM_WALKSTATE(walkState) J9PortLibrary *privatePortLibrary = (walkState)->walkThread->javaVM->portLibrary
 #define OMRPORT_ACCESS_FROM_J9VMTHREAD(vmContext) OMRPORT_ACCESS_FROM_J9PORT((vmContext)->javaVM->portLibrary)
-#endif
 #define PORT_ACCESS_FROM_VMI(vmi) J9PortLibrary *privatePortLibrary = (*vmi)->GetPortLibrary(vmi)
 /** @} */
-
-#define JNI_NATIVE_CALLED_FAST(env) (J9_ARE_ANY_BITS_SET(J9VMTHREAD_FROM_JNIENV(env)->publicFlags, J9_PUBLIC_FLAGS_VM_ACCESS))
 
 #define J9_DECLARE_CONSTANT_UTF8(instanceName, name) \
 static const struct { \
@@ -269,7 +272,7 @@ static const struct { \
 #define internalExitVMToJNI internalReleaseVMAccess
 #endif /* !J9VM_INTERP_ATOMIC_FREE_JNI */
 
-/* Move marcro MAXIMUM_HEAP_SIZE_RECOMMENDED_FOR_xxx from redirector.c in order to be referenced from IBM i series */
+/* Move macro MAXIMUM_HEAP_SIZE_RECOMMENDED_FOR_xxx from redirector.c in order to be referenced from IBM i series */
 #define MAXIMUM_HEAP_SIZE_RECOMMENDED_FOR_COMPRESSEDREFS	((U_64)57 * 1024 * 1024 * 1024)
 #define MAXIMUM_HEAP_SIZE_RECOMMENDED_FOR_3BIT_SHIFT_COMPRESSEDREFS	((U_64)25 * 1024 * 1024 * 1024)
 
@@ -277,9 +280,9 @@ static const struct { \
 
 #define J9_IS_J9MODULE_OPEN(module) (TRUE == module->isOpen)
 
-#define J9_ARE_MODULES_ENABLED(vm) (J2SE_VERSION(vm) >= J2SE_19)
+#define J9_ARE_MODULES_ENABLED(vm) (J2SE_VERSION(vm) >= J2SE_V11)
 
-/* Macrco for VM internalVMFunctions */
+/* Macro for VM internalVMFunctions */
 #if defined(J9_INTERNAL_TO_VM)
 #define J9_VM_FUNCTION(currentThread, function) function
 #define J9_VM_FUNCTION_VIA_JAVAVM(javaVM, function) function
@@ -287,5 +290,66 @@ static const struct { \
 #define J9_VM_FUNCTION(currentThread, function) ((currentThread)->javaVM->internalVMFunctions->function)
 #define J9_VM_FUNCTION_VIA_JAVAVM(javaVM, function) ((javaVM)->internalVMFunctions->function)
 #endif /* J9_INTERNAL_TO_VM */
+
+/* Macros for VTable */
+#define J9VTABLE_HEADER_FROM_RAM_CLASS(clazz) ((J9VTableHeader *)(((J9Class *)(clazz)) + 1))
+#define J9VTABLE_FROM_HEADER(vtableHeader) ((J9Method **)(((J9VTableHeader *)(vtableHeader)) + 1))
+#define J9VTABLE_FROM_RAM_CLASS(clazz) J9VTABLE_FROM_HEADER(J9VTABLE_HEADER_FROM_RAM_CLASS(clazz))
+#define J9VTABLE_OFFSET_FROM_INDEX(index) (sizeof(J9Class) + sizeof(J9VTableHeader) + ((index) * sizeof(UDATA)))
+
+/* VTable constants offset */
+#define J9VTABLE_INITIAL_VIRTUAL_OFFSET (sizeof(J9Class) + offsetof(J9VTableHeader, initialVirtualMethod))
+#define J9VTABLE_INVOKE_PRIVATE_OFFSET (sizeof(J9Class) + offsetof(J9VTableHeader, invokePrivateMethod))
+
+/* Skip Interpreter VTable header */
+#define JIT_VTABLE_START_ADDRESS(clazz) ((UDATA *)(clazz) - (sizeof(J9VTableHeader) / sizeof(UDATA)))
+
+/* Check if J9RAMInterfaceMethodRef is resolved */
+#define J9RAMINTERFACEMETHODREF_RESOLVED(interfaceClass, methodIndexAndArgCount) \
+	((NULL != (interfaceClass)) && ((J9_ITABLE_INDEX_UNRESOLVED != ((methodIndexAndArgCount) & ~255))))
+
+/* Macros for ValueTypes */
+#ifdef J9VM_OPT_VALHALLA_VALUE_TYPES
+#define J9_IS_J9CLASS_VALUETYPE(clazz) J9_ARE_ALL_BITS_SET((clazz)->classFlags, J9ClassIsValueType)
+#define J9_IS_J9CLASS_FLATTENED(clazz) J9_ARE_ALL_BITS_SET((clazz)->classFlags, J9ClassIsFlattened)
+#define J9_VALUETYPE_FLATTENED_SIZE(clazz)((clazz)->totalInstanceSize - (clazz)->backfillOffset)
+#else /* J9VM_OPT_VALHALLA_VALUE_TYPES */
+#define J9_IS_J9CLASS_VALUETYPE(clazz) FALSE
+#define J9_IS_J9CLASS_FLATTENED(clazz) FALSE
+#define J9_VALUETYPE_FLATTENED_SIZE(clazz)((UDATA) 0) /* It is not possible for this macro to be used since we always check J9_IS_J9CLASS_FLATTENED before ever using it. */
+#endif /* J9VM_OPT_VALHALLA_VALUE_TYPES */
+
+#if defined(OPENJ9_BUILD)
+#define J9_SHARED_CACHE_DEFAULT_BOOT_SHARING(vm) TRUE
+#else /* defined(OPENJ9_BUILD) */
+#define J9_SHARED_CACHE_DEFAULT_BOOT_SHARING(vm) FALSE
+#endif /* defined(OPENJ9_BUILD) */
+
+/* Annotation name which indicates that a class is not allowed to be modified by
+ * JVMTI ClassFileLoadHook or RedefineClasses.
+ */
+#define J9_UNMODIFIABLE_CLASS_ANNOTATION "Lcom/ibm/oti/vm/J9UnmodifiableClass;"
+
+typedef struct {
+	char tag;
+	char zero;
+	char size;
+	char data[LITERAL_STRLEN(J9_UNMODIFIABLE_CLASS_ANNOTATION)];
+} J9_UNMODIFIABLE_CLASS_ANNOTATION_DATA;
+
+#if 0 /* Until compile error are resolved */
+#if defined(__cplusplus)
+/* Hide the asserts from DDR */
+#if !defined(TYPESTUBS_H)
+static_assert((sizeof(J9_UNMODIFIABLE_CLASS_ANNOTATION_DATA) == (3 + LITERAL_STRLEN(J9_UNMODIFIABLE_CLASS_ANNOTATION))), "Annotation structure is not packed correctly");
+/* '/' is the lowest numbered character which appears in the annotation name (assume
+ * that no '$' exists in there). The name length must be smaller than '/' in order
+ * to ensure that there are no overlapping substrings which would mandate a more
+ * complex matching algorithm.
+ */
+static_assert((LITERAL_STRLEN(J9_UNMODIFIABLE_CLASS_ANNOTATION) < (size_t)'/'), "Annotation contains invalid characters");
+#endif /* !TYPESTUBS_H */
+#endif /* __cplusplus */
+#endif /* 0 */
 
 #endif /* J9_H */

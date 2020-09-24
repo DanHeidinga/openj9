@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -47,7 +47,7 @@ static IDATA checkMethodStructure (J9PortLibrary * portLib, J9CfrClassFile * cla
 static IDATA buildInstructionMap (J9CfrClassFile * classfile, J9CfrAttributeCode * code, U_8 * map, UDATA methodIndex, J9CfrError * error);
 static IDATA checkBytecodeStructure (J9CfrClassFile * classfile, UDATA methodIndex, UDATA length, U_8 * map, J9CfrError * error, U_32 flags, I_32 *hasRET);
 static IDATA checkStackMap (J9CfrClassFile* classfile, J9CfrMethod * method, J9CfrAttributeCode * code, U_8 * map, UDATA flags, StackmapExceptionDetails* exceptionDetails);
-static I_32 checkStackMapEntries (J9CfrClassFile* classfile, J9CfrAttributeCode * code, U_8 * map, U_8 ** entries, UDATA slotCount, U_8 * end);
+static I_32 checkStackMapEntries (J9CfrClassFile* classfile, J9CfrAttributeCode * code, U_8 * map, U_8 ** entries, UDATA slotCount, U_8 * end, UDATA checkAppendArraySize);
 
 static IDATA 
 buildInstructionMap (J9CfrClassFile * classfile, J9CfrAttributeCode * code, U_8 * map, UDATA methodIndex, J9CfrError * error)
@@ -165,9 +165,9 @@ checkBytecodeStructure (J9CfrClassFile * classfile, UDATA methodIndex, UDATA len
 	J9CfrMethod *method;
 	IDATA target, start, i1, i2, result, tableSize;
 	U_8 *bcStart, *bcInstructionStart, *bcIndex, *bcEnd;
-	UDATA bc, index, u1, u2, i, maxLocals, cpCount, tag, firstKey;
+	UDATA bc, index, u1, u2, i, maxLocals, cpCount, tag;
 	UDATA sigChar;
-	UDATA errorType;
+	UDATA errorType = 0;
 	UDATA errorDataIndex = 0;
 
 
@@ -228,28 +228,57 @@ checkBytecodeStructure (J9CfrClassFile * classfile, UDATA methodIndex, UDATA len
 				errorDataIndex = index;
 				goto _verifyError;
 			}
+
 			info = &(classfile->constantPool[index]);
 			tag = (UDATA) info->tag;
-
-			if (!((tag == CFR_CONSTANT_Integer)
-				  || (tag == CFR_CONSTANT_Float)
-				  || (tag == CFR_CONSTANT_String)
-				  || ((tag == CFR_CONSTANT_Class)
-							&& (((flags & BCT_MajorClassFileVersionMask) >= BCT_Java5MajorVersionShifted)
-									|| ((flags & BCT_MajorClassFileVersionMask) == 0)))
-				  || (((tag == CFR_CONSTANT_MethodType) || (tag == CFR_CONSTANT_MethodHandle))
-						  && (((flags & BCT_MajorClassFileVersionMask) >= BCT_Java7MajorVersionShifted)
-									|| ((flags & BCT_MajorClassFileVersionMask) == 0)))	)) {
-				errorType = J9NLS_CFR_ERR_BC_LDC_NOT_CONSTANT__ID;
-				/* Jazz 82615: Set the constant pool index to show up in the error message framework */
-				errorDataIndex = index;
-				goto _verifyError;
+			{
+				switch (tag) {
+				case CFR_CONSTANT_Integer:
+				case CFR_CONSTANT_Float:
+				case CFR_CONSTANT_String:
+					break;
+				case CFR_CONSTANT_Class:
+					if ((flags & BCT_MajorClassFileVersionMask) < BCT_Java5MajorVersionShifted) {
+						errorType = J9NLS_CFR_ERR_LDC_INDEX_INVALID_BEFORE_V49__ID;
+						errorDataIndex = index;
+						goto _verifyError;
+					}
+					break;
+				case CFR_CONSTANT_MethodType:
+				case CFR_CONSTANT_MethodHandle:
+					if ((flags & BCT_MajorClassFileVersionMask) < BCT_Java7MajorVersionShifted) {
+						errorType = J9NLS_CFR_ERR_LDC_INDEX_INVALID_BEFORE_V51__ID;
+						errorDataIndex = index;
+						goto _verifyError;
+					}
+					break;
+				case CFR_CONSTANT_Dynamic:
+					{
+						J9CfrConstantPoolInfo *constantDynamicSignature = &classfile->constantPool[classfile->constantPool[info->slot2].slot2];
+						if ((flags & BCT_MajorClassFileVersionMask) < BCT_Java11MajorVersionShifted) {
+							errorType = J9NLS_CFR_ERR_LDC_INDEX_INVALID_BEFORE_V55__ID;
+							errorDataIndex = index;
+							goto _verifyError;
+						} else if (('D' == constantDynamicSignature->bytes[0]) || ('J' == constantDynamicSignature->bytes[0])) {
+							errorType = J9NLS_CFR_ERR_BC_LDC_CONSTANT_DYNAMIC_RETURNS_LONG_OR_DOUBLE__ID;
+							errorDataIndex = index;
+							goto _verifyError;
+						}
+					}
+					break;
+				default:
+					errorType = J9NLS_CFR_ERR_BC_LDC_NOT_CONSTANT_OR_CONSTANT_DYNAMIC__ID;
+					errorDataIndex = index;
+					goto _verifyError;
+				}
 			}
 			break;
 
 		case CFR_BC_ldc2_w:
+
 			NEXT_U16(index, bcIndex);
-			if ((!index) || (index >= cpCount - 1)) {
+			/* Only check single slot index since Constant_Dynamic doesn't require double slots in the constant pool */
+			if ((!index) || (index >= cpCount)) {
 				errorType = J9NLS_CFR_ERR_BAD_INDEX__ID;
 				/* Jazz 82615: Set the constant pool index to show up in the error message framework */
 				errorDataIndex = index;
@@ -257,10 +286,27 @@ checkBytecodeStructure (J9CfrClassFile * classfile, UDATA methodIndex, UDATA len
 			}
 			info = &(classfile->constantPool[index]);
 			tag = (UDATA) info->tag;
-			if (!((tag == CFR_CONSTANT_Double)
-				  || (tag == CFR_CONSTANT_Long))) {
-				errorType = J9NLS_CFR_ERR_BC_LDC_NOT_CONSTANT__ID;
-				/* Jazz 82615: Set the constant pool index to show up in the error message framework */
+
+			if (CFR_CONSTANT_Dynamic == tag) {
+				J9CfrConstantPoolInfo *constantDynamicSignature = &classfile->constantPool[classfile->constantPool[info->slot2].slot2];
+				if ((flags & BCT_MajorClassFileVersionMask) < BCT_Java11MajorVersionShifted) {
+					errorType = J9NLS_CFR_ERR_LDC_INDEX_INVALID_BEFORE_V55__ID;
+					errorDataIndex = index;
+					goto _verifyError;
+				} else if (('D' != constantDynamicSignature->bytes[0]) && ('J' != constantDynamicSignature->bytes[0])) {
+					errorType = J9NLS_CFR_ERR_BC_LDC2W_CONSTANT_DYNAMIC_NOT_LONG_OR_DOUBLE__ID;
+					errorDataIndex = index;
+					goto _verifyError;
+				}
+			} else if (index >= (cpCount - 1)) {
+				/* Not Constant_Dynamic entry, then must be a double slot constant,
+				 * first check if second slot is valid before checking constant tag
+				 */
+				errorType = J9NLS_CFR_ERR_BAD_INDEX__ID;
+				errorDataIndex = index;
+				goto _verifyError;
+			} else if ((CFR_CONSTANT_Double != tag) && (CFR_CONSTANT_Long != tag)) {
+				errorType = J9NLS_CFR_ERR_BC_LDC2W_NOT_CONSTANT_OR_CONSTANT_DYNAMIC__ID;
 				errorDataIndex = index;
 				goto _verifyError;
 			}
@@ -699,17 +745,10 @@ checkBytecodeStructure (J9CfrClassFile * classfile, UDATA methodIndex, UDATA len
 			CHECK_END;
 			bcIndex -= (I_32) u1 * 8;
 
-			firstKey = TRUE;
 			for (i = 0; i < u1; i++) {
-				i1 = (IDATA) NEXT_U32(u2, bcIndex);
-				if (!firstKey) {
-					if ((I_32)i1 <= (I_32)i2) {
-						errorType = J9NLS_CFR_ERR_BC_SWITCH_NOT_SORTED__ID;
-						goto _verifyError;
-					}
-				}
-				firstKey = FALSE;
-				i2 = i1;
+				/* Skip over match/key part of match-offset pair. Match/key order is verified in the second verification pass */
+				NEXT_U32(u2, bcIndex);
+
 				target = start + (I_32) NEXT_U32(u2, bcIndex);
 				if ((UDATA) target >= length) {
 					errorType = J9NLS_CFR_ERR_BC_SWITCH_OFFSET__ID;
@@ -818,10 +857,10 @@ checkBytecodeStructure (J9CfrClassFile * classfile, UDATA methodIndex, UDATA len
 			}
 			info = &(classfile->constantPool[index]);
 			if (info->tag != CFR_CONSTANT_Methodref) {
-				if (((flags & BCT_MajorClassFileVersionMask) >= BCT_Java8MajorVersionShifted)
-				&& (bc != CFR_BC_invokevirtual) && (info->tag == CFR_CONSTANT_InterfaceMethodref)
-				) {
-					/* JVMS 4.9.1 Static Contraints:
+				BOOLEAN isJava8orLater = ((flags & BCT_MajorClassFileVersionMask) >= BCT_Java8MajorVersionShifted) || J9_ARE_ANY_BITS_SET(flags, BCT_Unsafe);
+
+				if (isJava8orLater && (bc != CFR_BC_invokevirtual) && (info->tag == CFR_CONSTANT_InterfaceMethodref)) {
+					/* JVMS 4.9.1 Static Constraints:
 					 * The indexbyte operands of each invokespecial and invokestatic instruction must represent
 					 * a valid index into the constant_pool table. The constant pool entry referenced by that
 					 * index must be either of type CONSTANT_Methodref or of type CONSTANT_InterfaceMethodref.
@@ -838,8 +877,9 @@ checkBytecodeStructure (J9CfrClassFile * classfile, UDATA methodIndex, UDATA len
 			info = &(classfile->constantPool[classfile->constantPool[index].slot1]);
 			if (info->bytes[0] == '<') {
 				if ((bc != CFR_BC_invokespecial)
-						||(info->tag != CFR_CONSTANT_Utf8)
-						|| (strncmp((char *) info->bytes, "<init>", 6))) {
+				|| (info->tag != CFR_CONSTANT_Utf8)
+				|| !J9UTF8_DATA_EQUALS("<init>", 6, info->bytes, info->slot1)
+				) {
 					errorType = J9NLS_CFR_ERR_BC_METHOD_INVALID__ID;
 					goto _verifyError;
 				}
@@ -1203,18 +1243,13 @@ checkStackMap (J9CfrClassFile* classfile, J9CfrMethod * method, J9CfrAttributeCo
 			U_8* end = entries + length;
 			UDATA j = 0;
 			UDATA offset = (UDATA) -1;
-			IDATA localSlots;
 			J9CfrConstantPoolInfo* info = &classfile->constantPool[method->descriptorIndex];
-
-			localSlots = j9bcv_checkMethodSignature(info, TRUE);
-			if ((method->accessFlags & CFR_ACC_STATIC) == 0) {
-				localSlots++;
-			}
 
 			for (j = 0; j < stackMap->numberOfEntries; j++) {
 				U_8 frameType;
 				UDATA delta;
 				IDATA slotCount;
+				UDATA checkAppendArraySize = FALSE;
 
 				if ((entries + 1) > end) {
 					errorCode = FATAL_CLASS_FORMAT_ERROR;
@@ -1231,7 +1266,7 @@ checkStackMap (J9CfrClassFile* classfile, J9CfrMethod * method, J9CfrAttributeCo
 						errorCode = FATAL_CLASS_FORMAT_ERROR;
 						goto _failedCheck;
 					}
-					offset += NEXT_U16(delta, entries);
+					offset += NEXT_U16(delta, entries); /* move past delta */
 				} else {
 					/* illegal frame type */
 					errorCode = FATAL_CLASS_FORMAT_ERROR;
@@ -1267,28 +1302,34 @@ checkStackMap (J9CfrClassFile* classfile, J9CfrMethod * method, J9CfrAttributeCo
 					slotCount = 0;
 					if ((frameType >= CFR_STACKMAP_SAME_LOCALS_1_STACK) && (frameType <= CFR_STACKMAP_SAME_LOCALS_1_STACK_EXTENDED)) {
 						slotCount = 1;
+
+						/* The stackmap entry is invalid if the size of stack (1 slot) exceeds the size of the max stack.*/
+						if (code->maxStack < slotCount) {
+							errorCode = FATAL_CLASS_FORMAT_ERROR;
+							goto _failedCheck;
+						}
 					}
 					if (frameType >= CFR_STACKMAP_CHOP_3) {
 						slotCount = (IDATA) frameType - CFR_STACKMAP_APPEND_BASE;
-						localSlots += slotCount;
 						if (slotCount < 0) {
 							slotCount = 0;
 						}
+
+						if ((frameType >= CFR_STACKMAP_APPEND_1) && (frameType <= CFR_STACKMAP_APPEND_3)) {
+							checkAppendArraySize = TRUE;
+						}
 					}
-			
 				} else {
 					/* full frame */
 					/* Executed with StackMap or StackMapTable */
-					NEXT_U16(slotCount, entries);
-					localSlots = slotCount;
-					errorCode = checkStackMapEntries (classfile, code, map, &entries, slotCount, end);
+					NEXT_U16(slotCount, entries); /* number_of_locals verified in checkStackMapEntries */
+					errorCode = checkStackMapEntries (classfile, code, map, &entries, slotCount, end, checkAppendArraySize);
 					if (0 != errorCode) {
 						goto _failedCheck;
 					}
-					NEXT_U16(slotCount, entries);
+					NEXT_U16(slotCount, entries); /* number_of_stack_items verified in checkStackMapEntries */
 				}
-
-				errorCode = checkStackMapEntries (classfile, code, map, &entries, slotCount, end);
+				errorCode = checkStackMapEntries (classfile, code, map, &entries, slotCount, end, checkAppendArraySize);
 				if (0 != errorCode) {
 					goto _failedCheck;
 				}
@@ -1321,7 +1362,7 @@ _failedCheck:
 
 
 static I_32
-checkStackMapEntries (J9CfrClassFile* classfile, J9CfrAttributeCode * code, U_8 * map, U_8 ** entries, UDATA slotCount, U_8 * end)
+checkStackMapEntries (J9CfrClassFile* classfile, J9CfrAttributeCode * code, U_8 * map, U_8 ** entries, UDATA slotCount, U_8 * end, UDATA checkAppendArraySize)
 {
 	U_8* entry = *entries;
 	U_8 entryType;
@@ -1329,6 +1370,9 @@ checkStackMapEntries (J9CfrClassFile* classfile, J9CfrAttributeCode * code, U_8 
 	U_16 cpIndex;
 	J9CfrConstantPoolInfo* cpBase = classfile->constantPool;
 	U_32 cpCount = (U_32) classfile->constantPoolCount;
+	/* append check */
+	U_16 slotTypeCounter = 0;
+	UDATA hasDoubleSlot = FALSE;
 
 	for (; slotCount; slotCount--) {
 		if ((entry + 1) > end) {
@@ -1375,6 +1419,20 @@ checkStackMapEntries (J9CfrClassFile* classfile, J9CfrAttributeCode * code, U_8 
 			}
 			/* Check index points to the right type of thing */
 			if(cpBase[cpIndex].tag != CFR_CONSTANT_Class) {
+				return FATAL_CLASS_FORMAT_ERROR;
+			}
+		}
+
+		/* A value of type long or double must occupy two consecutive local variables. Ensure that if there is is a long or double entry in 
+		 * an append frame maxLocals reflects the correct number of slots. An incorrect maxLocals value in all other cases will be handled 
+		 * in bcverify.c */
+		if (checkAppendArraySize) {
+			slotTypeCounter += 1;
+			if ((CFR_STACKMAP_TYPE_DOUBLE == entryType) || (CFR_STACKMAP_TYPE_LONG == entryType)) {
+				hasDoubleSlot = TRUE;
+				slotTypeCounter += 1;
+			}
+			if (hasDoubleSlot && (slotTypeCounter > code->maxLocals)) {
 				return FATAL_CLASS_FORMAT_ERROR;
 			}
 		}
@@ -1483,20 +1541,11 @@ checkMethodStructure (J9PortLibrary * portLib, J9CfrClassFile * classfile, UDATA
 
 	/* Throw a class format error if we are given a static <init> method (otherwise later we will throw a verify error due to back stack shape) */
 	info = &(classfile->constantPool[method->nameIndex]);
-	if (info->slot1 == 6) {		/* size of '<init>' */
-		if ((info->tag == CFR_CONSTANT_Utf8)
-				&& (!strncmp ((char *)info->bytes, "<init>", 6))) {
-			if (method->accessFlags & CFR_ACC_STATIC) {
-				errorType = J9NLS_CFR_ERR_ILLEGAL_METHOD_MODIFIERS__ID;
-				goto _formatError;
-			}
+	if (method->accessFlags & CFR_ACC_STATIC) {
+		if ((CFR_CONSTANT_Utf8 == info->tag) && J9UTF8_DATA_EQUALS("<init>", 6, info->bytes, info->slot1)) {
+			errorType = J9NLS_CFR_ERR_ILLEGAL_METHOD_MODIFIERS__ID;
+			goto _formatError;
 		}
-	}
-
-	result = checkBytecodeStructure (classfile, methodIndex, length, map, error, flags, hasRET);
-
-	if (result) {
-		goto _leaveProc;
 	}
 
 	if ((flags & J9_VERIFY_IGNORE_STACK_MAPS) == 0) {
@@ -1526,6 +1575,12 @@ checkMethodStructure (J9PortLibrary * portLib, J9CfrClassFile * classfile, UDATA
 				goto _formatError;
 			}
 		}
+	}
+
+	result = checkBytecodeStructure (classfile, methodIndex, length, map, error, flags, hasRET);
+
+	if (result) {
+		goto _leaveProc;
 	}
 
 	/* Should check thrown exceptions.  */
@@ -1656,6 +1711,8 @@ j9bcv_verifyClassStructure (J9PortLibrary * portLib, J9CfrClassFile * classfile,
 				}
 			}
 			break;
+		case CFR_CONSTANT_Dynamic: /* fall through */
+			/* No static constraints defined (so far) on slot1 (bsmIndex) */
 		case CFR_CONSTANT_Fieldref:
 			nameAndSig = &classfile->constantPool[info->slot2];
 			utf8 = &classfile->constantPool[nameAndSig->slot1];
@@ -1773,9 +1830,10 @@ j9bcv_verifyClassStructure (J9PortLibrary * portLib, J9CfrClassFile * classfile,
 		 * In a class file whose version number is 51.0 or above, the method
 		 * has its ACC_STATIC flag set and takes no arguments.
 		 */
-                 /* Leave this here to find usages of the following check:
-                  * if (J2SE_VERSION(vm) >= J2SE_19) {
-                  */
+		/* Leave this here to find usages of the following check:
+		 * J2SE_19 has been deprecated and replaced with J2SE_V11
+		 * if (J2SE_VERSION(vm) >= J2SE_V11) {
+		 */
 		if (vmVersionShifted >= BCT_Java9MajorVersionShifted) {
 			if (classfile->majorVersion >= 51) {
 				if ((CFR_METHOD_NAME_CLINIT == isInit) 

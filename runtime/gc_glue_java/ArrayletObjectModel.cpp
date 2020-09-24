@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -22,9 +22,8 @@
 
 #include "ArrayletObjectModel.hpp"
 #include "GCExtensionsBase.hpp"
+#include "ModronAssertions.h"
 #include "ObjectModel.hpp"
-
-#if defined(J9VM_GC_ARRAYLETS)
 
 bool
 GC_ArrayletObjectModel::initialize(MM_GCExtensionsBase *extensions)
@@ -38,6 +37,28 @@ GC_ArrayletObjectModel::tearDown(MM_GCExtensionsBase *extensions)
 	GC_ArrayletObjectModelBase::tearDown(extensions);
 }
 
+void
+GC_ArrayletObjectModel::AssertBadElementSize()
+{
+	Assert_MM_unreachable();
+}
+
+void
+GC_ArrayletObjectModel::AssertArrayletIsDiscontiguous(J9IndexableObject *objPtr)
+{
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+	if (!isDoubleMappingEnabled())
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
+	{
+		MM_GCExtensionsBase* extensions = MM_GCExtensionsBase::getExtensions(_omrVM);
+		UDATA arrayletLeafSize = _omrVM->_arrayletLeafSize;
+		UDATA remainderBytes = getDataSizeInBytes(objPtr) % arrayletLeafSize;
+		if (0 != remainderBytes) {
+			Assert_MM_true((getSpineSize(objPtr) + remainderBytes + extensions->getObjectAlignmentInBytes()) > arrayletLeafSize);
+		}
+	}
+}
+
 GC_ArrayletObjectModel::ArrayLayout
 GC_ArrayletObjectModel::getArrayletLayout(J9Class* clazz, UDATA dataSizeInBytes, UDATA largestDesirableSpine)
 {
@@ -45,13 +66,8 @@ GC_ArrayletObjectModel::getArrayletLayout(J9Class* clazz, UDATA dataSizeInBytes,
 	MM_GCExtensionsBase* extensions = MM_GCExtensionsBase::getExtensions(_omrVM);
 	UDATA objectAlignmentInBytes = extensions->getObjectAlignmentInBytes();
 
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
 	/* the spine need not contain a pointer to the data */
 	const UDATA minimumSpineSize = 0;
-#else
-	/* the spine always contains a single pointer to the data */
-	const UDATA minimumSpineSize = sizeof(fj9object_t);
-#endif
 	UDATA minimumSpineSizeAfterGrowing = minimumSpineSize;
 	if (extensions->isVLHGC()) {
 		/* CMVC 170688:  Ensure that we don't try to allocate an inline contiguous array of a size which will overflow the region if it ever grows
@@ -62,14 +78,12 @@ GC_ArrayletObjectModel::getArrayletLayout(J9Class* clazz, UDATA dataSizeInBytes,
 	}
 
 	/* CMVC 135307 : when checking for InlineContiguous layout, perform subtraction as adding to dataSizeInBytes could trigger overflow. */
-	if ((largestDesirableSpine == UDATA_MAX) || (dataSizeInBytes <= (largestDesirableSpine - minimumSpineSizeAfterGrowing - sizeof(J9IndexableObjectContiguous)))) {
+	if ((largestDesirableSpine == UDATA_MAX) || (dataSizeInBytes <= (largestDesirableSpine - minimumSpineSizeAfterGrowing - contiguousHeaderSize()))) {
 		layout = InlineContiguous;
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
 		if(0 == dataSizeInBytes) {
 			/* Zero sized NUA uses the discontiguous shape */
 			layout = Discontiguous;
 		}
-#endif /* defined(J9VM_GC_HYBRID_ARRAYLETS) */
 	} else {
 		UDATA arrayletLeafSize = _omrVM->_arrayletLeafSize;
 		UDATA lastArrayletBytes = dataSizeInBytes & (arrayletLeafSize - 1);
@@ -84,6 +98,11 @@ GC_ArrayletObjectModel::getArrayletLayout(J9Class* clazz, UDATA dataSizeInBytes,
 			if (extensions->isVLHGC()) {
 				adjustedHybridSpineBytesAfterMove += objectAlignmentInBytes;
 			}
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+			if (extensions->indexableObjectModel.isDoubleMappingEnabled()) {
+				layout = Discontiguous;
+			} else
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
 			/* if remainder data can fit in spine, make it hybrid */
 			if (adjustedHybridSpineBytesAfterMove <= largestDesirableSpine) {
 				/* remainder data can fit in spine, last arrayoid pointer points to empty data section in spine */
@@ -99,5 +118,3 @@ GC_ArrayletObjectModel::getArrayletLayout(J9Class* clazz, UDATA dataSizeInBytes,
 	}
 	return layout;
 }
-
-#endif /* defined(J9VM_GC_ARRAYLETS) */

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2014 IBM Corp. and others
+ * Copyright (c) 2001, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -168,7 +168,7 @@ SH_ByteDataManagerImpl::storeNew(J9VMThread* currentThread, const ShcItem* itemI
 
 	if (itemInCache->dataType == TYPE_BYTE_DATA) {
 		ByteDataWrapper *bdw = (ByteDataWrapper*)ITEMDATA(itemInCache);
-		const J9UTF8* key = (const J9UTF8*)BDWTOKEN(bdw);
+		const J9UTF8* key = (const J9UTF8*)_cache->getAddressFromJ9ShrOffset(&(bdw->tokenOffset));
 		UDATA type = BDWTYPE(bdw);
 
 		if (type <= J9SHR_DATA_TYPE_MAX) {
@@ -218,6 +218,8 @@ SH_ByteDataManagerImpl::findSingleEntry(J9VMThread* currentThread, const char* k
 	Trc_SHR_BDMI_findSingleEntry_Entry(currentThread, keylen, key, dataType, jvmID);
 
 	if ((found = (BdLinkedListImpl*)hllTableLookup(currentThread, key, (U_16)keylen, true))) {
+		/* set found to found->_next, so that we see the last added item first, which means we will always find the item in the higher layer cache first */
+		found = (BdLinkedListImpl*)found->_next;
 		walk = found;
 		do {
 			const ShcItem* item = walk->_item;
@@ -262,7 +264,8 @@ SH_ByteDataManagerImpl::markAllStaleForKey(J9VMThread* currentThread, const char
 
 	if ((found = (BdLinkedListImpl*)hllTableLookup(currentThread, key, (U_16)keylen, true))) {
 		U_16 jvmID = _cache->getCompositeCacheAPI()->getJVMID();
-		
+		/* set found to found->_next, so that we see the last added item first, which means we will always find the item in the higher layer cache first */
+		found = (BdLinkedListImpl*)found->_next;
 		walk = found;
 		do {
 			const ShcItem* item = walk->_item;
@@ -283,7 +286,7 @@ SH_ByteDataManagerImpl::setDescriptorFields(const ByteDataWrapper* wrapper, J9Sh
 {
 	Trc_SHR_BDMI_setDescriptorFields_Event(wrapper, descriptor);
 
-	descriptor->address = (U_8*)BDWDATA(wrapper);
+	descriptor->address = (U_8*)_cache->getDataFromByteDataWrapper(wrapper);
 	descriptor->length = wrapper->dataLength;
 	descriptor->type = (UDATA)wrapper->dataType;
 	descriptor->flags = 0;
@@ -326,6 +329,8 @@ SH_ByteDataManagerImpl::find(J9VMThread* currentThread, const char* key, UDATA k
 	Trc_SHR_BDMI_find_Entry(currentThread, keylen, key, limitDataType, includePrivateData, firstItem, descriptorPool);
 
 	if ((found = (BdLinkedListImpl*)hllTableLookup(currentThread, key, (U_16)keylen, true))) {
+		/* set found to found->_next, so that we see the last added item first, which means we will always find the item in the higher layer cache first */
+		found = (BdLinkedListImpl*)found->_next;
 		walk = found;
 		do {
 			const ShcItem* item = walk->_item;

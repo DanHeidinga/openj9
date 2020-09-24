@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2014 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -34,9 +34,9 @@
 
 #define TEST_METHOD_NAME "testMethod"
 #define TEST_METHOD_SIG "()"
-#define METHOD_SPEC "*."TEST_METHOD_NAME""TEST_METHOD_SIG
-#define METHOD_NAME_SIZE sizeof(TEST_METHOD_NAME) + sizeof(((J9UTF8 *)0)->length)
-#define METHOD_SIG_SIZE sizeof(TEST_METHOD_SIG) + sizeof(((J9UTF8 *)0)->length)
+#define METHOD_SPEC "*." TEST_METHOD_NAME "" TEST_METHOD_SIG
+#define METHOD_NAME_SIZE (sizeof(TEST_METHOD_NAME) + sizeof(J9UTF8))
+#define METHOD_SIG_SIZE (sizeof(TEST_METHOD_SIG) + sizeof(J9UTF8))
 #define NUM_ROMMETHOD 4
 
 typedef char* BlockPtr;
@@ -138,6 +138,7 @@ IDATA storeAndFindTest(J9JavaVM* vm)
 	sharedConfig->maxJIT = -1;
 	sharedConfig->cacheDescriptorList = (J9SharedClassCacheDescriptor*)((UDATA)sharedConfig + sizeof(J9SharedClassConfig));
 	sharedConfig->cacheDescriptorList->next = sharedConfig->cacheDescriptorList;
+	sharedConfig->cacheDescriptorList->previous = sharedConfig->cacheDescriptorList;
 
 	sharedpiConfig = (J9SharedClassPreinitConfig*)j9mem_allocate_memory(sizeof(J9SharedClassPreinitConfig), J9MEM_CATEGORY_CLASSES);
 	if (NULL == sharedpiConfig) {
@@ -205,7 +206,7 @@ IDATA storeAndFindTest(J9JavaVM* vm)
 
 	rc = cacheObject1->startup(vm->mainThread, sharedpiConfig, "Root1", NULL, J9SH_DIRPERM_ABSENT, cache, &cacheHasIntegrity);
 
-	/* Report progess so far */
+	/* Report progress so far */
 	INFOPRINTF5("Store And Find Test cos=%d cs=%d co=%x cba=%x rc=%d\n", cacheObjectSize, sharedpiConfig->sharedClassCacheSize, cacheObject1, cache, rc);
 	if (0 != rc) {
 		ERRPRINTF("Failed to startup cacheObject1\n");
@@ -427,7 +428,7 @@ IDATA storeAndFindTest(J9JavaVM* vm)
 		goto cleanup;
 	}
 
-	INFOPRINTF("Phase4 passed: The compiled method is succefully replaced in the cache\n");
+	INFOPRINTF("Phase4 passed: The compiled method is successfully replaced in the cache\n");
 
 	/* PHASE 5 Test the invalidate/revalidate operation on compiled method.
 	 * Attempt to invalidate the method
@@ -460,7 +461,7 @@ IDATA storeAndFindTest(J9JavaVM* vm)
 		ERRPRINTF("aotMethodOperation failed to revalidate method1 as expected\n");
 		rc = FAIL;
 	}
-	/* Try finding the method again, shoud be able to find */
+	/* Try finding the method again, should be able to find */
 	flags = 0;
 	foundMethod1 = cacheObject1->findCompiledMethod(vm->mainThread, romMethod1, &flags);
 	if (NULL == foundMethod1) {

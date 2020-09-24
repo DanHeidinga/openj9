@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -185,7 +185,7 @@ j9gc_initialize_parse_gc_colon(J9JavaVM *javaVM, char **scan_start)
 
 #endif /* J9VM_GC_REALTIME */
 
-//todo tempoary option to allow LOA to be enabled for testing with non-default gc policies
+//todo temporary option to allow LOA to be enabled for testing with non-default gc policies
 //Remove once LOA code stable 
 #if defined(J9VM_GC_LARGE_OBJECT_AREA)
 
@@ -197,11 +197,6 @@ j9gc_initialize_parse_gc_colon(J9JavaVM *javaVM, char **scan_start)
 		
 		extensions->largeObjectMinimumSize = MM_Math::roundToCeiling(extensions->heapAlignment, value);
 		
-		goto _exit;
-	}
-	
-	if(try_scan(scan_start, "debugLOAResize")) {
-		extensions->debugLOAResize = true;
 		goto _exit;
 	}
 	
@@ -232,7 +227,23 @@ j9gc_initialize_parse_gc_colon(J9JavaVM *javaVM, char **scan_start)
 		goto _exit;
 	}
 
+	if (try_scan(scan_start, "snapshotAtTheBeginningBarrier")) {
+		extensions->configurationOptions._forceOptionWriteBarrierSATB = true;
+		goto _exit;
+	}
+
 #if defined(J9VM_GC_MODRON_SCAVENGER)
+
+	if(try_scan(scan_start, "tenureBytesDeviationBoost=")) {
+		UDATA value;
+		if(!scan_udata_helper(javaVM, scan_start, &value, "tenureBytesDeviationBoost=")) {
+			goto _error;
+		}
+
+		extensions->tenureBytesDeviationBoost = value / (float)10.0; 
+		goto _exit;
+	}
+
 	if(try_scan(scan_start, "scavenge")) {
 		extensions->configurationOptions._forceOptionScavenge = true;
 		extensions->scavengerEnabled = true;
@@ -245,6 +256,20 @@ j9gc_initialize_parse_gc_colon(J9JavaVM *javaVM, char **scan_start)
 		goto _exit;
 	}
 
+	if(try_scan(scan_start, "concurrentKickoffTenuringHeadroom=")) {
+		UDATA value = 0;
+		if(!scan_udata_helper(javaVM, scan_start, &value, "concurrentKickoffTenuringHeadroom=")) {
+			goto _error;
+		}
+		if(value > 100) {
+			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_INTEGER_OUT_OF_RANGE, "concurrentKickoffTenuringHeadroom=", (UDATA)0, (UDATA)100);
+			goto _error;
+		}
+		extensions->concurrentKickoffTenuringHeadroom = ((float)value) / 100.0f;
+		goto _exit;
+	}
+
+
 #if defined(OMR_GC_CONCURRENT_SCAVENGER)
 	/* Parsing of concurrentScavengeBackground/Slack must happen before concurrentScavenge, since the later option is a substring of the former(s).
 	 * However, there is no effective limitation on relative order of these options in a command line. */
@@ -254,6 +279,17 @@ j9gc_initialize_parse_gc_colon(J9JavaVM *javaVM, char **scan_start)
 		}
 		goto _exit;
 	}
+
+	if(try_scan(scan_start, "concurrentScavengeAllocDeviationBoost=")) {
+		UDATA value;
+		if(!scan_udata_helper(javaVM, scan_start, &value, "concurrentScavengeAllocDeviationBoost=")) {
+			goto _error;
+		}
+
+		extensions->concurrentScavengerAllocDeviationBoost = value / (float)10.0;
+		goto _exit;
+	}
+
 	if(try_scan(scan_start, "concurrentScavengeBackground=")) {
 		if(!scan_udata_helper(javaVM, scan_start, &extensions->concurrentScavengerBackgroundThreads, "concurrentScavengeBackground=")) {
 			goto _error;
@@ -1051,7 +1087,19 @@ j9gc_initialize_parse_gc_colon(J9JavaVM *javaVM, char **scan_start)
 		j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTION_FVTEST_UNKNOWN_TYPE, *scan_start);
 		goto _error;
 	}
-	
+#if defined(J9VM_GC_VLHGC)
+#if defined(OMR_GC_VLHGC_CONCURRENT_COPY_FORWARD)
+	if (try_scan(scan_start, "concurrentCopyForward")) {
+		extensions->_isConcurrentCopyForward = true;
+		goto _exit;
+	}
+	if (try_scan(scan_start, "noConcurrentCopyForward")) {
+		extensions->_isConcurrentCopyForward = false;
+		goto _exit;
+	}
+#endif /* defined(OMR_GC_VLHGC_CONCURRENT_COPY_FORWARD) */
+#endif /* defined(J9VM_GC_VLHGC) */
+
 #if defined(J9VM_GC_MODRON_SCAVENGER)
 	if (try_scan(scan_start, "scanCacheSize=")) {
 		/* Read in restricted scan cache size */
@@ -1062,11 +1110,6 @@ j9gc_initialize_parse_gc_colon(J9JavaVM *javaVM, char **scan_start)
 			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_MUST_BE_ABOVE, "scanCacheSize=", (UDATA)0);
 			goto _error;
 		}
-		goto _exit;
-	}
-
-	if(try_scan(scan_start, "traceHotFields")) {
-		extensions->scavengerTraceHotFields = true;
 		goto _exit;
 	}
 	
@@ -1080,6 +1123,13 @@ j9gc_initialize_parse_gc_colon(J9JavaVM *javaVM, char **scan_start)
 		goto _exit;
 	}
 		
+	if(try_scan(scan_start, "dynamicBreadthFirstScanOrdering")) {
+		extensions->scavengerScanOrdering = MM_GCExtensions::OMR_GC_SCAVENGER_SCANORDERING_DYNAMIC_BREADTH_FIRST;
+		/* Below options are required options for dynamicBreadthFirstScanOrdering */
+		extensions->scavengerAlignHotFields = false;
+		goto _exit;
+	}
+
 #endif /* J9VM_GC_MODRON_SCAVENGER */
 
 	if(try_scan(scan_start, "alwaysCallWriteBarrier")) {
@@ -1100,7 +1150,7 @@ j9gc_initialize_parse_gc_colon(J9JavaVM *javaVM, char **scan_start)
 			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_MUST_BE_ABOVE, "sweepchunksize=", (UDATA)0);
 			goto _error;
 		}
-		extensions->parSweepChunkSize *= 1024; /* the value is specifed in kB on the command-line */
+		extensions->parSweepChunkSize *= 1024; /* the value is specified in kB on the command-line */
 
 		goto _exit;
 	}
@@ -1222,25 +1272,25 @@ gcParseXgcArguments(J9JavaVM *vm, char *optArg)
 			}
 			continue;
 		}
-		if (try_scan(&scan_start, "finalizeMasterPriority=")) {
-			if(!scan_udata_helper(vm, &scan_start, &extensions->finalizeMasterPriority, "finalizeMasterPriority=")) {
+		if (try_scan(&scan_start, "finalizeMainPriority=")) {
+			if(!scan_udata_helper(vm, &scan_start, &extensions->finalizeMainPriority, "finalizeMainPriority=")) {
 				returnValue = JNI_EINVAL;
 				break;
 			}
-			if((extensions->finalizeMasterPriority < J9THREAD_PRIORITY_USER_MIN) || (extensions->finalizeMasterPriority > J9THREAD_PRIORITY_USER_MAX)) {
-				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_INTEGER_OUT_OF_RANGE, "-Xgc:finalizeMasterPriority", (UDATA)J9THREAD_PRIORITY_USER_MIN, (UDATA)J9THREAD_PRIORITY_USER_MAX);
+			if((extensions->finalizeMainPriority < J9THREAD_PRIORITY_USER_MIN) || (extensions->finalizeMainPriority > J9THREAD_PRIORITY_USER_MAX)) {
+				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_INTEGER_OUT_OF_RANGE, "-Xgc:finalizeMainPriority", (UDATA)J9THREAD_PRIORITY_USER_MIN, (UDATA)J9THREAD_PRIORITY_USER_MAX);
 				returnValue = JNI_EINVAL;
 				break;
 			}
 			continue;
 		}
-		if (try_scan(&scan_start, "finalizeSlavePriority=")) {
-			if(!scan_udata_helper(vm, &scan_start, &extensions->finalizeSlavePriority, "finalizeSlavePriority=")) {
+		if (try_scan(&scan_start, "finalizeWorkerPriority=")) {
+			if(!scan_udata_helper(vm, &scan_start, &extensions->finalizeWorkerPriority, "finalizeWorkerPriority=")) {
 				returnValue = JNI_EINVAL;
 				break;
 			}
-			if((extensions->finalizeSlavePriority < J9THREAD_PRIORITY_USER_MIN) || (extensions->finalizeSlavePriority > J9THREAD_PRIORITY_USER_MAX)) {
-				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_INTEGER_OUT_OF_RANGE, "-Xgc:finalizeSlavePriority", (UDATA)J9THREAD_PRIORITY_USER_MIN, (UDATA)J9THREAD_PRIORITY_USER_MAX);
+			if((extensions->finalizeWorkerPriority < J9THREAD_PRIORITY_USER_MIN) || (extensions->finalizeWorkerPriority > J9THREAD_PRIORITY_USER_MAX)) {
+				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_INTEGER_OUT_OF_RANGE, "-Xgc:finalizeWorkerPriority", (UDATA)J9THREAD_PRIORITY_USER_MIN, (UDATA)J9THREAD_PRIORITY_USER_MAX);
 				returnValue = JNI_EINVAL;
 				break;
 			}
@@ -1353,7 +1403,7 @@ gcParseXgcArguments(J9JavaVM *vm, char *optArg)
 			continue;
 		}
 
-		/* see if they are requesting an initial suballocator heap sise */
+		/* see if they are requesting an initial suballocator heap size */
 		if (try_scan(&scan_start, "suballocatorInitialSize=")) {
 			if(!scan_udata_memory_size_helper(vm, &scan_start, &extensions->suballocatorInitialSize, "suballocatorInitialSize=")) {
 				returnValue = JNI_EINVAL;
@@ -1367,7 +1417,7 @@ gcParseXgcArguments(J9JavaVM *vm, char *optArg)
 			continue;
 		}
 		
-		/* see if they are requesting a commit suballocator heap sise */
+		/* see if they are requesting a commit suballocator heap size */
 		if (try_scan(&scan_start, "suballocatorCommitSize=")) {
 			if(!scan_udata_memory_size_helper(vm, &scan_start, &extensions->suballocatorCommitSize, "suballocatorCommitSize=")) {
 				returnValue = JNI_EINVAL;
@@ -1400,6 +1450,17 @@ gcParseXgcArguments(J9JavaVM *vm, char *optArg)
 			}
 			continue;
 		}
+
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+		if (try_scan(&scan_start, "enableArrayletDoubleMapping")) {
+			extensions->isArrayletDoubleMapRequested = true;
+			continue;
+		}
+		if (try_scan(&scan_start, "disableArrayletDoubleMapping")) {
+			extensions->isArrayletDoubleMapRequested = false;
+			continue;
+		}
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
 
 #if defined (J9VM_GC_VLHGC)
 		if (try_scan(&scan_start, "fvtest_tarokForceNUMANode=")) {

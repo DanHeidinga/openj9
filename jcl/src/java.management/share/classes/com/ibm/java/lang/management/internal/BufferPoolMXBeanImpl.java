@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar17]*/
 /*******************************************************************************
- * Copyright (c) 2005, 2016 IBM Corp. and others
+ * Copyright (c) 2005, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -28,13 +28,23 @@ import java.util.List;
 
 import javax.management.ObjectName;
 
-/*[IF Sidecar19-SE]*/
+/*[IF Java15]*/
+import jdk.internal.misc.VM.BufferPool;
+import jdk.internal.access.SharedSecrets;
+/*[ELSE]
+/*[IF Java12]
+import jdk.internal.access.JavaNioAccess.BufferPool;
+import jdk.internal.access.SharedSecrets;
+/*[ELSE]
+/*[IF Sidecar19-SE]
 import jdk.internal.misc.JavaNioAccess.BufferPool;
 import jdk.internal.misc.SharedSecrets;
 /*[ELSE]
 import sun.misc.JavaNioAccess.BufferPool;
 import sun.misc.SharedSecrets;
-/*[ENDIF]*/
+/*[ENDIF] Sidecar19-SE */
+/*[ENDIF] Java12 */
+/*[ENDIF] Java15 */
 
 /**
  * The implementation MXBean for {@link java.lang.management.BufferPoolMXBean}.
@@ -54,21 +64,23 @@ public final class BufferPoolMXBeanImpl implements BufferPoolMXBean {
 
 	/**
 	 * Get the list of all buffer pool beans.
-	 * 
+	 *
 	 * @return the list of all buffer pool beans
 	 */
 	public static List<BufferPoolMXBean> getBufferPoolMXBeans() {
 		return list;
 	}
 
-	private final ObjectName objectName;
+	private ObjectName objectName;
 
 	private final BufferPool pool;
 
+	private final String poolName;
+
 	private BufferPoolMXBeanImpl(BufferPool pool, String poolName) {
 		super();
-		this.objectName = ManagementUtils.createObjectName(ManagementUtils.BUFFERPOOL_MXBEAN_DOMAIN_TYPE, poolName);
 		this.pool = pool;
+		this.poolName = poolName;
 	}
 
 	/**
@@ -100,6 +112,9 @@ public final class BufferPoolMXBeanImpl implements BufferPoolMXBean {
 	 */
 	@Override
 	public ObjectName getObjectName() {
+		if (objectName == null) {
+			objectName = ManagementUtils.createObjectName(ManagementUtils.BUFFERPOOL_MXBEAN_DOMAIN_TYPE, poolName);
+		}
 		return objectName;
 	}
 

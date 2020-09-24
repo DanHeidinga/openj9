@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -129,13 +129,13 @@ MM_ClassLoaderRememberedSet::rememberInstance(MM_EnvironmentBase* env, J9Object*
 	Assert_MM_true(NULL != object);
 	UDATA regionIndex = _regionManager->physicalTableDescriptorIndexForAddress(object);
 
-	J9Class *clazz = J9GC_J9OBJECT_CLAZZ(object);
+	J9Class *clazz = J9GC_J9OBJECT_CLAZZ(object, env);
 	Assert_MM_mustBeClass(clazz);
 
 	if (J9_ARE_ANY_BITS_SET(J9CLASS_EXTENDED_FLAGS(clazz), J9ClassIsAnonymous)) {
 		/* this is anonymous class - it should be remembered on class level */
 		/* class should not be unloaded otherwise gcLink is used to form list of unloaded classes */
-		Assert_MM_true(!J9_ARE_ANY_BITS_SET(clazz->classDepthAndFlags, J9_JAVA_CLASS_DYING));
+		Assert_MM_true(!J9_ARE_ANY_BITS_SET(clazz->classDepthAndFlags, J9AccClassDying));
 		rememberRegionInternal(env, regionIndex, (volatile UDATA *)&clazz->gcLink);
 	} else {
 		/* non-anonymous classloader */
@@ -235,7 +235,7 @@ MM_ClassLoaderRememberedSet::isBitSet(MM_EnvironmentBase* env, volatile UDATA* b
 bool
 MM_ClassLoaderRememberedSet::isRemembered(MM_EnvironmentBase *env, J9ClassLoader *classLoader)
 {
-	/* This call is for non-anonymous classloaders only. Anonymous classloader should be hadled on classes level */
+	/* This call is for non-anonymous classloaders only. Anonymous classloader should be handled on classes level */
 	Assert_MM_true(!J9_ARE_ANY_BITS_SET(classLoader->flags, J9CLASSLOADER_ANON_CLASS_LOADER));
 
 	return isRememberedInternal(env, classLoader->gcRememberedSet);
@@ -247,7 +247,7 @@ MM_ClassLoaderRememberedSet::isClassRemembered(MM_EnvironmentBase *env, J9Class 
 	/* remembering on class level is supported for anonymous classes only */
 	Assert_MM_true(J9_ARE_ANY_BITS_SET(J9CLASS_EXTENDED_FLAGS(clazz), J9ClassIsAnonymous));
 	/* class should not be unloaded otherwise gcLink is used to form list of unloaded classes */
-	Assert_MM_true(!J9_ARE_ANY_BITS_SET(clazz->classDepthAndFlags, J9_JAVA_CLASS_DYING));
+	Assert_MM_true(!J9_ARE_ANY_BITS_SET(clazz->classDepthAndFlags, J9AccClassDying));
 
 	return isRememberedInternal(env, (UDATA)clazz->gcLink);
 }
@@ -283,13 +283,13 @@ MM_ClassLoaderRememberedSet::isInstanceRemembered(MM_EnvironmentBase *env, J9Obj
 	bool isRemembered = false;
 	Assert_MM_true(NULL != object);
 
-	J9Class *clazz = J9GC_J9OBJECT_CLAZZ(object);
+	J9Class *clazz = J9GC_J9OBJECT_CLAZZ(object, env);
 	Assert_MM_mustBeClass(clazz);
 	
 	UDATA regionIndex = _regionManager->physicalTableDescriptorIndexForAddress(object);
 	if (J9_ARE_ANY_BITS_SET(J9CLASS_EXTENDED_FLAGS(clazz), J9ClassIsAnonymous)) {
 		/* class should not be unloaded otherwise gcLink is used to form list of unloaded classes */
-		Assert_MM_true(!J9_ARE_ANY_BITS_SET(clazz->classDepthAndFlags, J9_JAVA_CLASS_DYING));
+		Assert_MM_true(!J9_ARE_ANY_BITS_SET(clazz->classDepthAndFlags, J9AccClassDying));
 		isRemembered = isRegionRemembered(env, regionIndex, (UDATA)clazz->gcLink);
 	} else {
 		J9ClassLoader *classLoader = clazz->classLoader;
@@ -382,7 +382,7 @@ MM_ClassLoaderRememberedSet::clearRememberedSets(MM_EnvironmentBase *env)
 				J9Class *clazz = NULL;
 				while(NULL != (clazz = classHeapIterator.nextClass())) {
 					/* class should not be unloaded otherwise gcLink is used to form list of unloaded classes */
-					Assert_MM_true(!J9_ARE_ANY_BITS_SET(clazz->classDepthAndFlags, J9_JAVA_CLASS_DYING));
+					Assert_MM_true(!J9_ARE_ANY_BITS_SET(clazz->classDepthAndFlags, J9AccClassDying));
 					clearRememberedSetsInternal(env, (volatile UDATA *)&clazz->gcLink);
 				}
 			}

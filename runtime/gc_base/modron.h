@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -78,24 +77,42 @@
 #define	J9GC_J9OBJECT_CLAZZ_FLAGS_MASK	((UDATA)(J9_REQUIRED_CLASS_ALIGNMENT - 1))
 #define	J9GC_J9OBJECT_CLAZZ_ADDRESS_MASK (~((UDATA)J9GC_J9OBJECT_CLAZZ_FLAGS_MASK))
 
-#define J9GC_J9OBJECT_CLAZZ(object) ((J9Class*)((UDATA)((object)->clazz) & J9GC_J9OBJECT_CLAZZ_ADDRESS_MASK))
-#define J9GC_J9OBJECT_CLAZZ_WITH_FLAGS(object) ((J9Class*)(UDATA)(object)->clazz)
-#define J9GC_J9OBJECT_CLAZZ_WITH_FLAGS_EA(object) (&((object)->clazz))
+/* boolean expression determines compressed or full */
+#define J9GC_J9OBJECT_CLAZZ_WITH_FLAGS_CMP(object, compressed) ((compressed) ? (UDATA)(((J9ObjectCompressed*)(object))->clazz) : (UDATA)(((J9ObjectFull*)(object))->clazz))
+#define J9GC_J9OBJECT_CLAZZ_CMP(object, compressed) ((J9Class*)(J9GC_J9OBJECT_CLAZZ_WITH_FLAGS_CMP(object, compressed) & J9GC_J9OBJECT_CLAZZ_ADDRESS_MASK))
+#define J9GC_J9OBJECT_FLAGS_FROM_CLAZZ_CMP(object, compressed) ((U_32)(J9GC_J9OBJECT_CLAZZ_WITH_FLAGS_CMP(object, compressed) & J9GC_J9OBJECT_CLAZZ_FLAGS_MASK))
 
-#define J9GC_J9OBJECT_FLAGS_FROM_CLAZZ(object) ((U_32)((UDATA)((object)->clazz) & J9GC_J9OBJECT_CLAZZ_FLAGS_MASK))
+/* J9VMThread determines compressed or full */
+#define J9GC_J9OBJECT_CLAZZ_WITH_FLAGS_THREAD(object, vmThread) J9GC_J9OBJECT_CLAZZ_WITH_FLAGS_CMP((object), J9VMTHREAD_COMPRESS_OBJECT_REFERENCES(vmThread))
+#define J9GC_J9OBJECT_CLAZZ_THREAD(object, vmThread) J9GC_J9OBJECT_CLAZZ_CMP((object), J9VMTHREAD_COMPRESS_OBJECT_REFERENCES(vmThread))
+#define J9GC_J9OBJECT_FLAGS_FROM_CLAZZ_THREAD(object, vmThread) J9GC_J9OBJECT_FLAGS_FROM_CLAZZ_CMP((object), J9VMTHREAD_COMPRESS_OBJECT_REFERENCES(vmThread))
 
-#define J9GC_J9OBJECT_FIRST_HEADER_SLOT(object) (*((j9objectclass_t *)(object)))
+/* J9JavaVM determines compressed or full */
+#define J9GC_J9OBJECT_CLAZZ_WITH_FLAGS_VM(object, vm) J9GC_J9OBJECT_CLAZZ_WITH_FLAGS_CMP((object), J9JAVAVM_COMPRESS_OBJECT_REFERENCES(vm))
+#define J9GC_J9OBJECT_CLAZZ_VM(object, vm) J9GC_J9OBJECT_CLAZZ_CMP((object), J9JAVAVM_COMPRESS_OBJECT_REFERENCES(vm))
+#define J9GC_J9OBJECT_FLAGS_FROM_CLAZZ_VM(object, vm) J9GC_J9OBJECT_FLAGS_FROM_CLAZZ_CMP((object), J9JAVAVM_COMPRESS_OBJECT_REFERENCES(vm))
+
+/* C++ object determines compressed or full (by calling compressObjectReferences() on the object) */
+#define J9GC_J9OBJECT_CLAZZ_WITH_FLAGS(object, cppobj) J9GC_J9OBJECT_CLAZZ_WITH_FLAGS_CMP((object), (cppobj)->compressObjectReferences())
+#define J9GC_J9OBJECT_CLAZZ(object, cppobj) J9GC_J9OBJECT_CLAZZ_CMP((object), (cppobj)->compressObjectReferences())
+#define J9GC_J9OBJECT_FLAGS_FROM_CLAZZ(object, cppobj) J9GC_J9OBJECT_FLAGS_FROM_CLAZZ_CMP((object), (cppobj)->compressObjectReferences())
+#define J9GC_OBJECT_HEADER_SIZE(cppobj) ((cppobj)->compressObjectReferences() ? sizeof(J9ObjectCompressed) : sizeof(J9ObjectFull))
+#define J9GC_REFERENCE_SIZE(cppobj) ((cppobj)->compressObjectReferences() ? sizeof(U_32) : sizeof(UDATA))
 
 /* 
  * NOTE: since these macros use getOmrVM() they only work in-process (not out-of-process).
  * They may not be used in gccheck.
  */
-#define J9GC_J9VMJAVALANGREFERENCE_REFERENT(env, object) (*(fj9object_t*)((U_8*)(object) + J9VMJAVALANGREFREFERENCE_REFERENT_OFFSET((J9VMThread*)(env)->getLanguageVMThread())))
-#define J9GC_J9VMJAVALANGREFERENCE_QUEUE(env, object) (*(fj9object_t*)((U_8*)(object) + J9VMJAVALANGREFREFERENCE_QUEUE_OFFSET((J9VMThread*)(env)->getLanguageVMThread())))
+#define J9GC_READ_OBJECT_SLOT(env, object, offset) \
+	((env)->compressObjectReferences() \
+		? (fj9object_t)(*(uint32_t*)((U_8*)(object) + (offset))) \
+		: (fj9object_t)(*(uintptr_t*)((U_8*)(object) + (offset))) \
+	)
+#define J9GC_J9VMJAVALANGREFERENCE_REFERENT_ADDRESS(env, object) ((fj9object_t*)((U_8*)(object) + J9VMJAVALANGREFREFERENCE_REFERENT_OFFSET((J9VMThread*)(env)->getLanguageVMThread())))
+#define J9GC_J9VMJAVALANGREFERENCE_REFERENT(env, object) J9GC_READ_OBJECT_SLOT(env, object, J9VMJAVALANGREFREFERENCE_REFERENT_OFFSET((J9VMThread*)(env)->getLanguageVMThread()))
+#define J9GC_J9VMJAVALANGREFERENCE_QUEUE(env, object) J9GC_READ_OBJECT_SLOT(env, object, J9VMJAVALANGREFREFERENCE_QUEUE_OFFSET((J9VMThread*)(env)->getLanguageVMThread()))
 #define J9GC_J9VMJAVALANGREFERENCE_STATE(env, object) (*(I_32*)((U_8*)(object) + J9VMJAVALANGREFREFERENCE_STATE_OFFSET((J9VMThread*)(env)->getLanguageVMThread())))
 #define J9GC_J9VMJAVALANGSOFTREFERENCE_AGE(env, object) (*(I_32*)((U_8*)(object) + J9VMJAVALANGREFSOFTREFERENCE_AGE_OFFSET((J9VMThread*)(env)->getLanguageVMThread())))
-
-#define J9GC_J9OBJECT_FIELD_EA(object, byteOffset) ((fj9object_t*)((U_8 *)(object) + (byteOffset) + sizeof(J9Object)))
 
 #define J9GC_J9CLASSLOADER_CLASSLOADEROBJECT(classLoader) ((j9object_t)(classLoader)->classLoaderObject)
 #define J9GC_J9CLASSLOADER_CLASSLOADEROBJECT_EA(classLoader) (&(classLoader)->classLoaderObject)
@@ -103,27 +120,19 @@
 #define J9GC_CLASS_SHAPE(ramClass)		(J9CLASS_SHAPE(ramClass))
 #define J9GC_CLASS_IS_ARRAY(ramClass)	(J9CLASS_IS_ARRAY(ramClass))
 
-#if defined (J9VM_GC_COMPRESSED_POINTERS)
+#if defined (OMR_GC_COMPRESSED_POINTERS)
 
 extern "C" mm_j9object_t j9gc_objaccess_pointerFromToken(J9VMThread *vmThread, fj9object_t token);
 extern "C" fj9object_t j9gc_objaccess_tokenFromPointer(J9VMThread *vmThread, mm_j9object_t object);
 
-#define mmPointerFromToken(vmThread, token) (j9gc_objaccess_pointerFromToken((vmThread), (token) ))
-#define mmTokenFromPointer(vmThread, object) (j9gc_objaccess_tokenFromPointer((vmThread), (object) ))
-
 /* The size of the reserved area at the beginning of the compressed pointer heap */
 #define J9GC_COMPRESSED_POINTER_NULL_REGION_SIZE 4096
 
-#else /* J9VM_GC_COMPRESSED_POINTERS */
+#endif /* OMR_GC_COMPRESSED_POINTERS */
 
-#define mmPointerFromToken(vmThread, token) ((mm_j9object_t)(token))
-#define mmTokenFromPointer(vmThread, object) ((fj9object_t)(object))
-
-#endif /* J9VM_GC_COMPRESSED_POINTERS */
-
-#if defined(J9VM_GC_STACCATO)
+#if defined(J9VM_GC_REALTIME)
 /* Note that the "reserved" index is used for 2 different purposes with the
- * staccatoRememberedSet:
+ * sATBBarrierRememberedSet:
  * 1) As a per-thread flag indicating the double barrier is on.
  * 2) As a global flag indicating the barrier is disabled.
  * 
@@ -132,7 +141,7 @@ extern "C" fj9object_t j9gc_objaccess_tokenFromPointer(J9VMThread *vmThread, mm_
  * check, we must ensure that both indexes aren't preserved at the same time.
  */
 #define J9GC_REMEMBERED_SET_RESERVED_INDEX 0
-#endif /* J9VM_GC_STACCATO */
+#endif /* J9VM_GC_REALTIME */
 
 /*
  * True if the given JLClass instance is fully initialized and known to be a JLClass instance.  This must be called
@@ -143,7 +152,7 @@ extern "C" fj9object_t j9gc_objaccess_tokenFromPointer(J9VMThread *vmThread, mm_
 #define J9GC_IS_INITIALIZED_HEAPCLASS(vmThread, _clazzObject) \
 		(\
 				(_clazzObject) && \
-				(J9GC_J9OBJECT_CLAZZ(_clazzObject) == J9VMJAVALANGCLASS_OR_NULL(J9VMTHREAD_JAVAVM(vmThread))) && \
+				(J9GC_J9OBJECT_CLAZZ_THREAD(_clazzObject, vmThread) == J9VMJAVALANGCLASS_OR_NULL(J9VMTHREAD_JAVAVM(vmThread))) && \
 				(0 != ((J9Class *)J9VMJAVALANGCLASS_VMREF((vmThread), (j9object_t)(_clazzObject)))) \
 		)
 

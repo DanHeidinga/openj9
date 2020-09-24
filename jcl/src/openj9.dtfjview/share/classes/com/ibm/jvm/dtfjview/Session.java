@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar18-SE]*/
 /*******************************************************************************
- * Copyright (c) 2004, 2017 IBM Corp. and others
+ * Copyright (c) 2004, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -89,7 +89,6 @@ public class Session implements ISession {
 	public static String prompt = "> ";
 	
 	private static final String ARG_CORE = "-core";
-	private static final String ARG_XML = "-xml";
 	private static final String ARG_ZIP = "-zip";
 	private static final String ARG_VERSION = "-version";
 	private static final String ARG_VERBOSE = "-verbose";
@@ -152,7 +151,6 @@ public class Session implements ISession {
 		pairedargs.add(ARG_CORE);
 		pairedargs.add(ARG_OUTFILE);
 		pairedargs.add(ARG_CHARSET);
-		pairedargs.add(ARG_XML);
 		pairedargs.add(ARG_ZIP);
 		
 		// define the list of session commands - ones which run against the session context, not the per-image context
@@ -216,7 +214,7 @@ public class Session implements ISession {
 		isInteractiveSession = (args.get(ARG_CMDFILE) == null) && (commands.isEmpty());		//interactive if no commands have been supplied
 		//create a console context which will allow other commands such as the open command to function
 		ctxroot = new CombinedContext(0, 0, null, null, null, null, -1);
-		initialiseContext(ctxroot);
+		initializeContext(ctxroot);
 		currentContext = ctxroot;			//default to the root context at startup
 	
 		// Set system property to switch off additional DDR processing for Node.JS
@@ -231,7 +229,7 @@ public class Session implements ISession {
 	}
 	
 	//initializes the supplied context with its starting parameters and property values
-	private void initialiseContext(IDTFJContext ctx) {
+	private void initializeContext(IDTFJContext ctx) {
 		ctx.refresh();
 		ctx.getProperties().put(SESSION_PROPERTY, this);
 		for(String key : variables.keySet()) {
@@ -464,15 +462,13 @@ public class Session implements ISession {
 	
 	//print some help for the user
 	private void printHelp() {
-		String launcher = System.getProperty(SYSPROP_LAUNCHER, "dtfjview");
+		String launcher = System.getProperty(SYSPROP_LAUNCHER, "jdmpview");
 		
 		out.print(
-				"Usage: \"" + launcher + " -core <core_file> [-xml <xml_file>] [-verbose]\" or \n" +
+				"Usage: \"" + launcher + " -core <core_file> [-verbose]\" or \n" +
 				"       \"" + launcher + " -zip <zip_file> [-verbose]\" or \n" +
 				"       \"" + launcher + " -version\"\n\n" +
-				"To analyze dumps from DDR-enabled JVMs, " + launcher + " only requires a core file, no XML file " +
-				"is needed.\n\nTo analyze dumps from non DDR-enabled JVMs, " + launcher + " requires both core and " +
-				"XML files (jextract must be run on the dump first, to produce the XML file).\n\n" +
+				"To analyze dumps from DDR-enabled JVMs, " + launcher + " only requires a core file.\n\n" + 
 				"The default ImageFactory is " + factoryName + ". To change the ImageFactory use: \n" +
 				"\t -J-D" + SYSPROP_FACTORY + "=<classname> \n\n");	
 		
@@ -612,11 +608,7 @@ public class Session implements ISession {
 				exit(ARG_ZIP + " and " + ARG_CORE + " cannot be specified at the same time", JDMPVIEW_SYNTAX_ERROR);
 			} else {
 				coreFilePath = args.get(ARG_CORE);
-				if(args.containsKey(ARG_XML)) {
-					ctxroot.execute("open " + coreFilePath + " " + args.get(ARG_XML) , out.getPrintStream());
-				} else {
-					ctxroot.execute("open " + coreFilePath , out.getPrintStream());
-				}
+				ctxroot.execute("open " + coreFilePath , out.getPrintStream());
 			}
 		} else {
 			coreFilePath = args.get(ARG_ZIP);	//if -core has been set it is handled in the first part of this if statement

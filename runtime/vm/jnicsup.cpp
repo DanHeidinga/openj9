@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -44,6 +44,7 @@
 #include "vm_internal.h"
 #include "j2sever.h"
 #include "util_api.h"
+#include "j9accessbarrier.h"
 
 #include "VMHelpers.hpp"
 #include "VMAccess.hpp"
@@ -78,8 +79,6 @@ static jint JNICALL ensureLocalCapacityWrapper (JNIEnv *env, jint capacity);
 #if (defined(J9VM_INTERP_FLOAT_SUPPORT))
 static jfloatArray JNICALL newFloatArray (JNIEnv *env, jsize length);
 static jdoubleArray JNICALL newDoubleArray (JNIEnv *env, jsize length);
-static void JNICALL setStaticFloatField (JNIEnv *env, jclass cls, jfieldID fieldID, jfloat value);
-static void JNICALL setStaticDoubleField (JNIEnv *env, jclass cls, jfieldID fieldID, jdouble value);
 #endif /* J9VM_INTERP_FLOAT_SUPPORT */
 
 #if  !defined(J9VM_INTERP_MINIMAL_JNI)
@@ -104,7 +103,6 @@ static void JNICALL deleteGlobalRef (JNIEnv *env, jobject globalRef);
 static jweak JNICALL newWeakGlobalRef (JNIEnv *env, jobject localOrGlobalRef);
 static jbooleanArray JNICALL newBooleanArray (JNIEnv *env, jsize length);
 static jobject allocateGlobalRef (JNIEnv *env, jobject localOrGlobalRef, jboolean isWeak);
-static void JNICALL setStaticLongField (JNIEnv *env, jclass cls, jfieldID fieldID, jlong value);
 static void ensurePendingJNIException (JNIEnv* env);
 static void deallocateGlobalRef (JNIEnv *env, jobject weakOrStrongGlobalRef, jboolean isWeak);
 static jobject JNICALL newLocalRef (JNIEnv *env, jobject object);
@@ -138,7 +136,9 @@ static void JNICALL releasePrimitiveArrayCritical(JNIEnv *env, jarray array, voi
 static const jchar * JNICALL getStringCritical(JNIEnv *env, jstring str, jboolean *isCopy);
 static void JNICALL releaseStringCritical(JNIEnv *env, jstring str, const jchar * elems);
 
+#if JAVA_SPEC_VERSION >= 9
 static jobject JNICALL getModule(JNIEnv *env, jclass clazz);
+#endif /* JAVA_SPEC_VERSION >= 9 */
 
 #define FIND_CLASS gpCheckFindClass
 #define TO_REFLECTED_METHOD gpCheckToReflectedMethod
@@ -237,32 +237,6 @@ static jobject JNICALL newObjectV(JNIEnv *env, jclass clazz, jmethodID methodID,
 }
 
 
-
-#if (defined(J9VM_INTERP_FLOAT_SUPPORT))
-static void JNICALL setStaticDoubleField(JNIEnv *env, jclass cls, jfieldID fieldID, jdouble value)
-{
-	setStaticDoubleFieldIndirect(env, cls, fieldID, &value);
-}
-
-#endif /* J9VM_INTERP_FLOAT_SUPPORT */
-
-
-#if (defined(J9VM_INTERP_FLOAT_SUPPORT))
-static void JNICALL setStaticFloatField(JNIEnv *env, jclass cls, jfieldID fieldID, jfloat value)
-{
-	setStaticIntField(env, cls, fieldID, *(jint*)&value);
-}
-
-#endif /* J9VM_INTERP_FLOAT_SUPPORT */
-
-
-static void JNICALL setStaticLongField(JNIEnv *env, jclass cls, jfieldID fieldID, jlong value)
-{
-	setStaticDoubleFieldIndirect(env, cls, fieldID, &value);
-}
-
-
-
 void JNICALL OMRNORETURN fatalError(JNIEnv *env, const char *msg)
 {
 	PORT_ACCESS_FROM_VMC( ((J9VMThread *) env) );
@@ -285,7 +259,7 @@ gpProtectedRunCallInMethod(void *entryArg)
 	runCallInMethod(args->env, args->receiver, args->clazz, args->methodID, args->args);
 	VM_VMAccess::inlineExitVMToJNI(vmThread);
 
-	return 0;					/* return value required to clonform to port library definition */
+	return 0;					/* return value required to clone from to port library definition */
 }
 
 
@@ -310,7 +284,8 @@ static UDATA gpProtectedToReflected(void *entryArg)
 
 static jclass JNICALL gpCheckFindClass(JNIEnv * env, const char *name)
 {
-	if (((J9VMThread *) env)->gpProtected) {
+	/* Check if already protected or -Xrs is set and short-circuit the path through gpProtectAndRun */
+	if ((((J9VMThread *) env)->gpProtected) || (J9_ARE_ALL_BITS_SET(((J9VMThread *) env)->javaVM->sigFlags, J9_SIG_XRS_SYNC))) {
 		return findClass(env, name);
 	} else {
 		J9RedirectedFindClassArgs args;
@@ -325,7 +300,8 @@ static jclass JNICALL gpCheckFindClass(JNIEnv * env, const char *name)
 #if  !defined(J9VM_INTERP_MINIMAL_JNI)
 static jobject JNICALL gpCheckToReflectedField(JNIEnv * env, jclass clazz, jfieldID fieldID, jboolean isStatic)
 {
-	if (((J9VMThread *) env)->gpProtected) {
+	/* Check if already protected or -Xrs is set and short-circuit the path through gpProtectAndRun */
+	if ((((J9VMThread *) env)->gpProtected) || (J9_ARE_ALL_BITS_SET(((J9VMThread *) env)->javaVM->sigFlags, J9_SIG_XRS_SYNC))) {
 		return (jobject) toReflectedField(env, clazz, fieldID, isStatic);
 	} else {
 		J9RedirectedToReflectedArgs args;
@@ -344,7 +320,8 @@ static jobject JNICALL gpCheckToReflectedField(JNIEnv * env, jclass clazz, jfiel
 #if  !defined(J9VM_INTERP_MINIMAL_JNI)
 static jobject JNICALL gpCheckToReflectedMethod(JNIEnv * env, jclass clazz, jmethodID methodID, jboolean isStatic)
 {
-	if (((J9VMThread *) env)->gpProtected) {
+	/* Check if already protected or -Xrs is set and short-circuit the path through gpProtectAndRun */
+	if ((((J9VMThread *) env)->gpProtected) || (J9_ARE_ALL_BITS_SET(((J9VMThread *) env)->javaVM->sigFlags, J9_SIG_XRS_SYNC))) {
 		return (jobject) toReflectedMethod(env, clazz, methodID, isStatic);
 	} else {
 		J9RedirectedToReflectedArgs args;
@@ -402,7 +379,7 @@ JNICALL throwNew(JNIEnv *env, jclass clazz, const char *message)
 
 static void JNICALL setStaticBooleanField(JNIEnv *env, jclass cls, jfieldID fieldID, jboolean value)
 {
-	setStaticIntField(env, cls, fieldID, (jint)(value != 0));
+	setStaticIntField(env, cls, fieldID, (jint)(value & 1));
 }
 
 
@@ -437,9 +414,10 @@ static UDATA gpProtectedInitialize(void * entryArg)
 
 
 
-void JNICALL    gpCheckInitialize(J9VMThread* env, J9Class* clazz)
+void JNICALL gpCheckInitialize(J9VMThread* env, J9Class* clazz)
 {
-	if (((J9VMThread *) env)->gpProtected) {
+	/* Check if already protected or -Xrs is set and short-circuit the path through gpProtectAndRun */
+	if ((((J9VMThread *) env)->gpProtected) || (J9_ARE_ALL_BITS_SET(((J9VMThread *) env)->javaVM->sigFlags, J9_SIG_XRS_SYNC))) {
 		initializeClass(env, clazz);
 	} else {
 		J9RedirectedInitializeArgs args;
@@ -462,7 +440,8 @@ gpCheckCallin(JNIEnv *env, jobject receiver, jclass cls, jmethodID methodID, voi
 	handlerArgs.methodID = methodID;
 	handlerArgs.args = args;
 
-	if (((J9VMThread *) env)->gpProtected) {
+	/* Check if already protected or -Xrs is set and short-circuit the path through gpProtectAndRun */
+	if ((((J9VMThread *) env)->gpProtected) || (J9_ARE_ALL_BITS_SET(((J9VMThread *) env)->javaVM->sigFlags, J9_SIG_XRS_SYNC))) {
 		gpProtectedRunCallInMethod(&handlerArgs);
 	} else {
 		gpProtectAndRun(gpProtectedRunCallInMethod, env, &handlerArgs);
@@ -470,14 +449,10 @@ gpCheckCallin(JNIEnv *env, jobject receiver, jclass cls, jmethodID methodID, voi
 }
 
 
-UDATA JNICALL   pushArguments(J9VMThread *vmThread, J9Method* method, void *args) {
+UDATA JNICALL pushArguments(J9VMThread *vmThread, J9Method* method, void *args) {
 	jvalue* jvalues;
 	U_8 *sigChar;
 	jobject objArg;
-	jdouble dbl;
-	jlong lng;
-	UDATA* lngOrDblPtr;
-	jfloat *fltPtr;
 	UDATA* sp;
 
 	if ( (UDATA)args & 1 ) {
@@ -489,22 +464,29 @@ UDATA JNICALL   pushArguments(J9VMThread *vmThread, J9Method* method, void *args
 #define ARG(type, sig) (jvalues ? (jvalues++->sig) : va_arg(*(va_list*)args, type))
 
 	/* process the arguments */
-	sigChar = &J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(J9_CLASS_FROM_METHOD(method)->romClass, J9_ROM_METHOD_FROM_RAM_METHOD(method)))[1];	/* skip the opening '(' */
+	sigChar = &J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(J9_ROM_METHOD_FROM_RAM_METHOD(method)))[1];	/* skip the opening '(' */
 
 	sp = vmThread->sp;
 
 	for (;;) {
+		BOOLEAN skipSignature = TRUE;
 		switch (*sigChar++) {
 			case '[':
 				/* skip the rest of the signature */
-				while (*sigChar == '[') sigChar++;
-				if (*sigChar++ != 'L') goto dontSkipClassName;
-			case 'L':
+				while ('[' == *sigChar) {
+					sigChar += 1;
+				}
+				skipSignature = ('L' == *sigChar++);
+			case 'L': /* FALLTHROUGH */
 				/* skip the rest of the signature */
-				while (*sigChar++ != ';');
-dontSkipClassName:
+				if (skipSignature) {
+					while (';' != *sigChar) {
+						sigChar += 1;
+					}
+				}
+				sp -= 1;
 				objArg = ARG(jobject, l);
-				*--sp = objArg ? (UDATA)*(j9object_t*)objArg : 0;
+				*sp = (NULL == objArg) ? 0: (UDATA) *((j9object_t*) objArg);
 				break;
 			case 'B':
 				/* byte type */
@@ -529,29 +511,20 @@ dontSkipClassName:
 #ifdef J9VM_INTERP_FLOAT_SUPPORT
 			case 'F':
 				/* float type */
-				fltPtr = (jfloat*)--sp;
-				/* The Linux SH4 compiler needs the next two lines to be two steps.  If you combine them it fails to compile */
-				dbl = ARG(jdouble, f);
-				*fltPtr = (jfloat)dbl;
-				break;
+				sp -= 1;
+				/* jfloat is promoted to double when passed through '...' */
+				*((jfloat*) sp) = (jfloat) ARG(jdouble, f);
+			break;
 			case 'D':
 				/* double type */
-				dbl = ARG(jdouble, d);
-				lngOrDblPtr = (UDATA *) &dbl;
-				goto pushLongOrDouble;
+				sp -= 2;
+				*((jdouble*) sp) = ARG(jdouble, d);
+				break;
 #endif
 			case 'J':
 				/* long type */
-				lng = ARG(jlong, j);
-				lngOrDblPtr = (UDATA *) &lng;
-pushLongOrDouble:
-#ifdef J9VM_ENV_DATA64
-				--sp;
-				*--sp = *(lngOrDblPtr);
-#else
-				*--sp = *(lngOrDblPtr + 1);
-				*--sp = *(lngOrDblPtr);
-#endif
+				sp -= 2;
+				*((jlong*) sp) = ARG(jlong, j);
 				break;
 			case ')':
 				vmThread->sp = sp;
@@ -564,9 +537,10 @@ pushLongOrDouble:
 
 
 
-void JNICALL    gpCheckSetCurrentException(J9VMThread* env, UDATA exceptionNumber, UDATA* detailMessage)
+void JNICALL gpCheckSetCurrentException(J9VMThread* env, UDATA exceptionNumber, UDATA* detailMessage)
 {
-	if (((J9VMThread *) env)->gpProtected) {
+	/* Check if already protected or -Xrs is set and short-circuit the path through gpProtectAndRun */
+	if ((((J9VMThread *) env)->gpProtected) || (J9_ARE_ALL_BITS_SET(((J9VMThread *) env)->javaVM->sigFlags, J9_SIG_XRS_SYNC))) {
 		setCurrentException(env, exceptionNumber, detailMessage);
 	} else {
 		J9RedirectedSetCurrentExceptionArgs args;
@@ -1140,9 +1114,10 @@ exceptionOccurred(JNIEnv *env)
 }
 
 
-void JNICALL    gpCheckSetCurrentExceptionNLS(J9VMThread* env, UDATA exceptionNumber, U_32 moduleName, U_32 messageNumber)
+void JNICALL gpCheckSetCurrentExceptionNLS(J9VMThread* env, UDATA exceptionNumber, U_32 moduleName, U_32 messageNumber)
 {
-	if (((J9VMThread *) env)->gpProtected) {
+	/* Check if already protected or -Xrs is set and short-circuit the path through gpProtectAndRun */
+	if ((((J9VMThread *) env)->gpProtected) || (J9_ARE_ALL_BITS_SET(((J9VMThread *) env)->javaVM->sigFlags, J9_SIG_XRS_SYNC))) {
 		setCurrentExceptionNLS(env, exceptionNumber, moduleName, messageNumber);
 	} else {
 		J9RedirectedSetCurrentExceptionNLSArgs args;
@@ -1173,9 +1148,10 @@ gpProtectedSetNativeOutOfMemoryError(void * entryArg)
 	return 0;
 }
 
-void JNICALL    gpCheckSetNativeOutOfMemoryError(J9VMThread* env, U_32 moduleName, U_32 messageNumber)
+void JNICALL gpCheckSetNativeOutOfMemoryError(J9VMThread* env, U_32 moduleName, U_32 messageNumber)
 {
-	if (((J9VMThread *) env)->gpProtected) {
+	/* Check if already protected or -Xrs is set and short-circuit the path through gpProtectAndRun */
+	if ((((J9VMThread *) env)->gpProtected) || (J9_ARE_ALL_BITS_SET(((J9VMThread *) env)->javaVM->sigFlags, J9_SIG_XRS_SYNC))) {
 		setNativeOutOfMemoryError(env, moduleName, messageNumber);
 	} else {
 		J9RedirectedSetCurrentExceptionNLSArgs args;
@@ -1195,9 +1171,10 @@ gpProtectedSetHeapOutOfMemoryError(void * entryArg)
 	return 0;
 }
 
-void JNICALL    gpCheckSetHeapOutOfMemoryError(J9VMThread* env)
+void JNICALL gpCheckSetHeapOutOfMemoryError(J9VMThread* env)
 {
-	if (((J9VMThread *) env)->gpProtected) {
+	/* Check if already protected or -Xrs is set and short-circuit the path through gpProtectAndRun */
+	if ((((J9VMThread *) env)->gpProtected) || (J9_ARE_ALL_BITS_SET(((J9VMThread *) env)->javaVM->sigFlags, J9_SIG_XRS_SYNC))) {
 		setHeapOutOfMemoryError(env);
 	} else {
 		J9RedirectedSetCurrentExceptionNLSArgs args;
@@ -1498,7 +1475,9 @@ struct JNINativeInterface_ EsJNIFunctions = {
 	getDirectBufferAddress,
 	getDirectBufferCapacity,
 	getObjectRefType,
+#if JAVA_SPEC_VERSION >= 9
 	getModule,
+#endif /* JAVA_SPEC_VERSION >= 9 */
 };
 
 void  initializeJNITable(J9JavaVM *vm)
@@ -1678,7 +1657,7 @@ retry:
 				(U_8*)name, strlen(name),
 				(U_8*)signature, strlen(signature),
 				&declaringClass, &element,
-				J9_RESOLVE_FLAG_SEARCH_INTERFACES,
+				0,
 				NULL);
 
 			if (fieldAddress == NULL) {
@@ -1729,14 +1708,14 @@ retry:
 		}
 	}
 
+	TRIGGER_J9HOOK_VM_LOOKUP_JNI_ID(vmThread->javaVM->hookInterface,
+			vmThread, classReference, name, signature, (U_8)isStatic, (U_8)isField, id);
+
 	VM_VMAccess::inlineExitVMToJNI(vmThread);
 
 	if (id == NULL) {
 		ensurePendingJNIException(env);
 	}
-
-	TRIGGER_J9HOOK_VM_LOOKUP_JNI_ID(vmThread->javaVM->hookInterface,
-		vmThread, classReference, name, signature, (U_8)isStatic, (U_8)isField, id);
 
 	Trc_VM_getMethodOrFieldID_Exit(vmThread, id);
 
@@ -1879,15 +1858,23 @@ monitorEnter(JNIEnv* env, jobject obj)
 	VM_VMAccess::inlineEnterVMFromJNI(vmThread);
 
 	j9object_t object = *(j9object_t*)obj;
-	IDATA monstatus = objectMonitorEnter(vmThread, object);
+	UDATA monstatus = objectMonitorEnter(vmThread, object);
 
-	if (0 == monstatus) {
-oom:
-		SET_NATIVE_OUT_OF_MEMORY_ERROR(vmThread, J9NLS_VM_FAILED_TO_ALLOCATE_MONITOR);
+	if (J9_OBJECT_MONITOR_ENTER_FAILED(monstatus)) {
+fail:
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+		if (J9_OBJECT_MONITOR_VALUE_TYPE_IMSE == monstatus) {
+			J9UTF8 *badClassName = J9ROMCLASS_CLASSNAME(J9OBJECT_CLAZZ(vmThread, obj)->romClass);
+			setCurrentExceptionNLSWithArgs(vmThread, J9NLS_VM_ERROR_BYTECODE_OBJECTREF_CANNOT_BE_VALUE_TYPE, J9VMCONSTANTPOOL_JAVALANGILLEGALMONITORSTATEEXCEPTION, J9UTF8_LENGTH(badClassName), J9UTF8_DATA(badClassName));
+		} else
+#endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
+		if (J9_OBJECT_MONITOR_OOM == monstatus) {
+			SET_NATIVE_OUT_OF_MEMORY_ERROR(vmThread, J9NLS_VM_FAILED_TO_ALLOCATE_MONITOR);
+		}
 		rc = -1;
 	} else if (J9_UNEXPECTED(!VM_ObjectMonitor::recordJNIMonitorEnter(vmThread, (j9object_t)monstatus))) {
 		objectMonitorExit(vmThread, (j9object_t)monstatus);
-		goto oom;
+		goto fail;
 	}
 
 	VM_VMAccess::inlineExitVMToJNI(vmThread);
@@ -2106,7 +2093,8 @@ initializeMethodID(J9VMThread * currentThread, J9JNIMethodID * methodID, J9Metho
 {
 	UDATA vTableIndex = 0;
 
-	if ((J9_ROM_METHOD_FROM_RAM_METHOD(method)->modifiers & J9AccStatic) == 0) {
+	/* The vTable does not contain private or static methods */
+	if (J9_ARE_NO_BITS_SET(J9_ROM_METHOD_FROM_RAM_METHOD(method)->modifiers, J9AccStatic | J9AccPrivate)) {
 		J9Class * declaringClass = J9_CLASS_FROM_METHOD(method);
 
 		if (declaringClass->romClass->modifiers & J9AccInterface) {
@@ -2114,9 +2102,14 @@ initializeMethodID(J9VMThread * currentThread, J9JNIMethodID * methodID, J9Metho
 			 * always use the declaring class of the interface method.  Pass NULL here to allow
 			 * for methodIDs to be created on obsolete classes for HCR purposes.
 			 */
-			vTableIndex = getITableIndexForMethod(method, NULL) | J9_JNI_MID_INTERFACE;
+			vTableIndex = getITableIndexForMethod(method, NULL);
+			/* Ensure the iTableIndex isn't so large it sets J9_JNI_MID_INTERFACE */
+			Assert_VM_false(J9_ARE_ANY_BITS_SET(vTableIndex, J9_JNI_MID_INTERFACE));
+			vTableIndex |= J9_JNI_MID_INTERFACE;
 		} else {
-			vTableIndex = getVTableIndexForMethod(method, declaringClass, currentThread);
+			vTableIndex = getVTableOffsetForMethod(method, declaringClass, currentThread);
+			/* Ensure the vTableOffset isn't so large it sets J9_JNI_MID_INTERFACE */
+			Assert_VM_false(J9_ARE_ANY_BITS_SET(vTableIndex, J9_JNI_MID_INTERFACE));
 		}
 	}
 
@@ -2140,8 +2133,8 @@ findJNIMethod(J9VMThread* currentThread, J9Class* clazz, char* name, char* signa
 		J9UTF8 * methodName = NULL;
 
 		romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(method);
-		methodSignature = J9ROMMETHOD_GET_SIGNATURE(clazz->romClass, romMethod);
-		methodName = J9ROMMETHOD_GET_NAME(clazz->romClass, romMethod);
+		methodSignature = J9ROMMETHOD_SIGNATURE(romMethod);
+		methodName = J9ROMMETHOD_NAME(romMethod);
 		if ((J9UTF8_LENGTH(methodSignature) == signatureLength)
 		&& (J9UTF8_LENGTH(methodName) == nameLength)
 		&& (memcmp(J9UTF8_DATA(methodSignature), signature, signatureLength) == 0)
@@ -2252,6 +2245,7 @@ done:
 	return rc;
 }
 
+#if JAVA_SPEC_VERSION >= 9
 static jobject JNICALL
 getModule(JNIEnv *env, jclass clazz)
 {
@@ -2271,6 +2265,7 @@ getModule(JNIEnv *env, jclass clazz)
 	VM_VMAccess::inlineExitVMToJNI(vmThread);
 	return module;
 }
+#endif /* JAVA_SPEC_VERSION >= 9 */
 
 
 IDATA

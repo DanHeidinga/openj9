@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -24,8 +24,17 @@
 
 #define OBJECTACCESSBARRIERAPI_HPP_
 
-#include "j9.h"
 #include "j9cfg.h"
+
+#if defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES)
+#if OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES
+#define MM_ObjectAccessBarrierAPI MM_ObjectAccessBarrierAPICompressed
+#else /* OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES */
+#define MM_ObjectAccessBarrierAPI MM_ObjectAccessBarrierAPIFull
+#endif /* OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES */
+#endif /* OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES */
+
+#include "j9.h"
 #include "j9modron.h"
 #include "omrmodroncore.h"
 #include "omr.h"
@@ -39,7 +48,7 @@
 class MM_ObjectAccessBarrierAPI
 {
 	friend class MM_ObjectAccessBarrier;
-	friend class MM_StaccatoAccessBarrier;
+	friend class MM_RealtimeAccessBarrier;
 
 /* Data members & types */
 public:
@@ -47,9 +56,12 @@ protected:
 private:
 	const UDATA _writeBarrierType;
 	const UDATA _readBarrierType;
-#if defined (J9VM_GC_COMPRESSED_POINTERS)
+#if defined (OMR_GC_COMPRESSED_POINTERS)
 	const UDATA _compressedPointersShift;
-#endif /* J9VM_GC_COMPRESSED_POINTERS */
+#if defined(OMR_GC_FULL_POINTERS)
+	bool const _compressObjectReferences;
+#endif /* OMR_GC_FULL_POINTERS */
+#endif /* OMR_GC_COMPRESSED_POINTERS */
 
 /* Methods */
 public:
@@ -60,10 +72,33 @@ public:
 	MM_ObjectAccessBarrierAPI(J9VMThread *currentThread)
 		: _writeBarrierType(currentThread->javaVM->gcWriteBarrierType)
 		, _readBarrierType(currentThread->javaVM->gcReadBarrierType)
-#if defined (J9VM_GC_COMPRESSED_POINTERS)
+#if defined (OMR_GC_COMPRESSED_POINTERS)
 		, _compressedPointersShift(currentThread->javaVM->compressedPointersShift)
-#endif /* J9VM_GC_COMPRESSED_POINTERS */
+#if defined(OMR_GC_FULL_POINTERS)
+		, _compressObjectReferences(J9VMTHREAD_COMPRESS_OBJECT_REFERENCES(currentThread))
+#endif /* OMR_GC_FULL_POINTERS */
+#endif /* OMR_GC_COMPRESSED_POINTERS */
 	{}
+
+	/**
+	 * Return back true if object references are compressed
+	 * @return true, if object references are compressed
+	 */
+	MMINLINE bool compressObjectReferences() {
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+#if defined(OMR_GC_FULL_POINTERS)
+#if defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES)
+		return (bool)OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES;
+#else /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+		return _compressObjectReferences;
+#endif /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+#else /* defined(OMR_GC_FULL_POINTERS) */
+		return true;
+#endif /* defined(OMR_GC_FULL_POINTERS) */
+#else /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return false;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+	}
 
 	static VMINLINE void
 	internalPostBatchStoreObjectCardTableAndGenerational(J9VMThread *vmThread, j9object_t object)
@@ -302,17 +337,17 @@ public:
 	 * does not have an inline lockword.
 	 */
 	VMINLINE j9objectmonitor_t *
-	getLockwordAddress(J9Object *object)
+	getLockwordAddress(J9VMThread *currentThread, J9Object *object)
 	{
-#if defined(J9VM_THR_LOCK_NURSERY)
-		UDATA lockOffset = TMP_J9OBJECT_CLAZZ(object)->lockOffset;
-		if ((IDATA) lockOffset < 0) {
-			return NULL;
+		j9objectmonitor_t *lockwordAddress = NULL;
+		J9Class *clazz = J9OBJECT_CLAZZ(currentThread, object);
+		if (!J9_IS_J9CLASS_VALUETYPE(clazz)) {
+			UDATA lockOffset = clazz->lockOffset;
+			if ((IDATA) lockOffset >= 0) {
+				lockwordAddress = (j9objectmonitor_t *)(((U_8 *)object) + lockOffset);
+			}
 		}
-		return (j9objectmonitor_t *)(((U_8 *)object) + lockOffset);
-#else /* J9VM_THR_LOCK_NURSERY */
-		return &(object->monitor);
-#endif /* J9VM_THR_LOCK_NURSERY */
+		return lockwordAddress;
 	}
 
 	VMINLINE void
@@ -324,40 +359,28 @@ public:
 		bool copyLockword = true;
 		
 		if (OBJECT_HEADER_SHAPE_POINTERS == J9CLASS_SHAPE(objectClass)) {
-			if (j9gc_modron_readbar_none != _readBarrierType) {
-				copyLockword = false;
-				if (j9gc_modron_readbar_evacuate == _readBarrierType) {
-					/* TODO implement HW barriers */
-					currentThread->javaVM->memoryManagerFunctions->j9gc_objaccess_cloneIndexableObject(currentThread, (J9IndexableObject*)original, (J9IndexableObject*)copy);
-				} else {
-					currentThread->javaVM->memoryManagerFunctions->j9gc_objaccess_cloneIndexableObject(currentThread, (J9IndexableObject*)original, (J9IndexableObject*)copy);
-				}
-			} else {
-				VM_ArrayCopyHelpers::referenceArrayCopy(currentThread, original, 0, copy, 0, size);
-			}
+			VM_ArrayCopyHelpers::referenceArrayCopy(currentThread, original, 0, copy, 0, size);
 		} else {
 			VM_ArrayCopyHelpers::primitiveArrayCopy(currentThread, original, 0, copy, 0, size, (((J9ROMArrayClass*)objectClass->romClass)->arrayShape & 0x0000FFFF));
 		}
-#if defined(J9VM_THR_LOCK_NURSERY)
 		if (copyLockword) {
 			/* zero lockword, if present */
-			j9objectmonitor_t *lockwordAddress = getLockwordAddress(copy);
+			j9objectmonitor_t *lockwordAddress = getLockwordAddress(currentThread, copy);
 			if (NULL != lockwordAddress) {
-				*lockwordAddress = 0;
+				J9_STORE_LOCKWORD(currentThread, lockwordAddress, 0);
 			}
 		}
-#endif /* J9VM_THR_LOCK_NURSERY */
 #endif /* defined(J9VM_GC_ALWAYS_CALL_OBJECT_ACCESS_BARRIER) */
 	}
 
 	VMINLINE UDATA
 	mixedObjectGetHeaderSize()
 	{
-		return sizeof(J9Object);
+		return compressObjectReferences() ? sizeof(J9ObjectCompressed) : sizeof(J9ObjectFull);
 	}
 
 	VMINLINE UDATA
-	mixedObjectGetDataSize(J9Class *objectClass, j9object_t object)
+	mixedObjectGetDataSize(J9Class *objectClass)
 	{
 		return objectClass->totalInstanceSize;
 	}
@@ -365,33 +388,85 @@ public:
 	VMINLINE void
 	cloneObject(J9VMThread *currentThread, j9object_t original, j9object_t copy, J9Class *objectClass)
 	{
-#if defined(J9VM_GC_ALWAYS_CALL_OBJECT_ACCESS_BARRIER) 
-		currentThread->javaVM->memoryManagerFunctions->j9gc_objaccess_cloneObject(currentThread, original, copy);
+		copyObjectFields(currentThread, objectClass, original, mixedObjectGetHeaderSize(), copy, mixedObjectGetHeaderSize());
+	}
+
+	VMINLINE void 
+	copyObjectFieldsToFlattenedArrayElement(J9VMThread *vmThread, J9ArrayClass *arrayClazz, j9object_t srcObject, J9IndexableObject *arrayRef, UDATA index)
+	{
+		/* TODO optimizations for non-arraylet path will be added in the future */
+		vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_copyObjectFieldsToFlattenedArrayElement(vmThread, arrayClazz, srcObject, arrayRef, (I_32)index);
+	}
+	
+	VMINLINE void 
+	copyObjectFieldsFromFlattenedArrayElement(J9VMThread *vmThread, J9ArrayClass *arrayClazz, j9object_t destObject, J9IndexableObject *arrayRef, UDATA index)
+	{
+		/* TODO optimizations for non-arraylet path will be added in the future */
+		vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_copyObjectFieldsFromFlattenedArrayElement(vmThread, arrayClazz, destObject, arrayRef, (I_32)index);
+	}
+
+	VMINLINE BOOLEAN
+	structuralFlattenedCompareObjects(J9VMThread *vmThread, J9Class *valueClass, j9object_t lhsObject, j9object_t rhsObject, UDATA startOffset)
+	{
+#if defined(J9VM_GC_ALWAYS_CALL_OBJECT_ACCESS_BARRIER)
+		return vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_structuralCompareFlattenedObjects(vmThread, valueClass, lhsObject, rhsObject, startOffset);
 #else /* defined(J9VM_GC_ALWAYS_CALL_OBJECT_ACCESS_BARRIER) */
-		/* TODO implement HW barriers */
-		if (j9gc_modron_readbar_none != _readBarrierType) {	
-			if (j9gc_modron_readbar_evacuate == _readBarrierType) {
-				currentThread->javaVM->memoryManagerFunctions->j9gc_objaccess_cloneObject(currentThread, original, copy);
-			} else if (j9gc_modron_readbar_always == _readBarrierType) {
-				currentThread->javaVM->memoryManagerFunctions->j9gc_objaccess_cloneObject(currentThread, original, copy);
-			}
+		if (j9gc_modron_readbar_none != _readBarrierType) {
+			return vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_structuralCompareFlattenedObjects(vmThread, valueClass, lhsObject, rhsObject, startOffset);
 		} else {
-			UDATA offset = mixedObjectGetHeaderSize();
-			UDATA limit = offset + mixedObjectGetDataSize(objectClass, original);
-			while (offset < limit) {
-				/* No need for pre-store barrier as we are always overwriting 0's in the new object */
-				*(fj9object_t *)((UDATA)copy + offset) = *(fj9object_t *)((UDATA)original + offset);
-				offset += sizeof(fj9object_t);
+			startOffset += valueClass->backfillOffset;
+			UDATA compareSize = mixedObjectGetDataSize(valueClass) - valueClass->backfillOffset;
+
+			return (0 == memcmp((void*)((UDATA)lhsObject + startOffset), (void*)((UDATA)rhsObject + startOffset), (size_t)compareSize));
+		}
+#endif /* defined(J9VM_GC_ALWAYS_CALL_OBJECT_ACCESS_BARRIER) */
+	}
+
+	/**
+	 * Copy valueType from sourceObject to destObject
+	 * See MM_ObjectAccessBarrier::copyObjectFields for detailed description
+	 *
+	 * @param vmThread vmthread token
+	 * @param valueClass The valueType class
+	 * @param srcObject The object being used.
+	 * @param srcOffset The offset of the field.
+	 * @param destObject The object being used.
+	 * @param destOffset The offset of the field.
+	 */
+	VMINLINE void
+	copyObjectFields(J9VMThread *vmThread, J9Class *objectClass, j9object_t srcObject, UDATA srcOffset, j9object_t destObject, UDATA destOffset)
+	{
+#if defined(J9VM_GC_ALWAYS_CALL_OBJECT_ACCESS_BARRIER)
+		vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_copyObjectFields(vmThread, objectClass, srcObject, srcOffset, destObject, destOffset);
+#else /* defined(J9VM_GC_ALWAYS_CALL_OBJECT_ACCESS_BARRIER) */
+		if (j9gc_modron_readbar_none != _readBarrierType) {	
+			vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_copyObjectFields(vmThread, objectClass, srcObject, srcOffset, destObject, destOffset);
+		} else {
+			UDATA offset = 0;
+			UDATA limit = mixedObjectGetDataSize(objectClass);
+			if (J9_IS_J9CLASS_VALUETYPE(objectClass)) {
+				offset += objectClass->backfillOffset;
+			}
+
+			if (J9VMTHREAD_COMPRESS_OBJECT_REFERENCES(vmThread)) {
+				while (offset < limit) {
+					*(uint32_t*)((UDATA)destObject + offset + destOffset) = *(uint32_t*)((UDATA)srcObject + offset + srcOffset);
+					offset += sizeof(uint32_t);
+				}
+			} else {
+				while (offset < limit) {
+					*(uintptr_t*)((UDATA)destObject + offset + destOffset) = *(uintptr_t*)((UDATA)srcObject + offset + srcOffset);
+					offset += sizeof(uintptr_t);
+				}
 			}
 		
-#if defined(J9VM_THR_LOCK_NURSERY)
 			/* zero lockword, if present */
-			j9objectmonitor_t *lockwordAddress = getLockwordAddress(copy);
+			j9objectmonitor_t *lockwordAddress = getLockwordAddress(vmThread, destObject);
 			if (NULL != lockwordAddress) {
-				*lockwordAddress = 0;
+				J9_STORE_LOCKWORD(vmThread, lockwordAddress, 0);
 			}
-#endif /* J9VM_THR_LOCK_NURSERY */
-			postBatchStoreObject(currentThread, copy);
+
+			postBatchStoreObject(vmThread, destObject);
 		}
 #endif /* defined(J9VM_GC_ALWAYS_CALL_OBJECT_ACCESS_BARRIER) */
 	}
@@ -485,6 +560,7 @@ public:
 		if (j9gc_modron_wrtbar_always == _writeBarrierType) {
 			return (1 == vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_compareAndSwapObject(vmThread, destObject, (J9Object **)destAddress, compareObject, swapObject));
 		} else {
+			preMixedObjectReadObject(vmThread, destObject, destAddress);
 			preMixedObjectStoreObject(vmThread, destObject, destAddress, swapObject);
 
 			protectIfVolatileBefore(isVolatile, false);
@@ -526,6 +602,7 @@ public:
 		if (j9gc_modron_wrtbar_always == _writeBarrierType) {
 			return vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_compareAndExchangeObject(vmThread, destObject, (J9Object **)destAddress, compareObject, swapObject);
 		} else {
+			preMixedObjectReadObject(vmThread, destObject, destAddress);
 			preMixedObjectStoreObject(vmThread, destObject, destAddress, swapObject);
 
 			protectIfVolatileBefore(isVolatile, false);
@@ -973,6 +1050,7 @@ public:
 		} else {
 			j9object_t classObject = J9VM_J9CLASS_TO_HEAPCLASS(clazz);
 
+			preStaticReadObject(vmThread, clazz, destAddress);
 			preStaticStoreObject(vmThread, classObject, destAddress, swapObject);
 
 			protectIfVolatileBefore(isVolatile, false);
@@ -1014,6 +1092,7 @@ public:
 		} else {
 			j9object_t classObject = J9VM_J9CLASS_TO_HEAPCLASS(clazz);
 
+			preStaticReadObject(vmThread, clazz, destAddress);
 			preStaticStoreObject(vmThread, classObject, destAddress, swapObject);
 
 			protectIfVolatileBefore(isVolatile, false);
@@ -1814,8 +1893,13 @@ public:
 #if defined(J9VM_GC_ALWAYS_CALL_OBJECT_ACCESS_BARRIER)
 		return vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_indexableReadObject(vmThread, (J9IndexableObject *)srcArray, (I_32)srcIndex, isVolatile);
 #elif defined(J9VM_GC_COMBINATION_SPEC)  
-		fj9object_t *actualAddress = J9JAVAARRAY_EA(vmThread, srcArray, srcIndex, fj9object_t);
-		
+		fj9object_t *actualAddress = NULL;
+		if (J9VMTHREAD_COMPRESS_OBJECT_REFERENCES(vmThread)) {
+			actualAddress = (fj9object_t*)J9JAVAARRAY_EA(vmThread, srcArray, srcIndex, U_32);
+		} else {
+			actualAddress = (fj9object_t*)J9JAVAARRAY_EA(vmThread, srcArray, srcIndex, UDATA);
+		}
+
 		preIndexableObjectReadObject(vmThread, srcArray, actualAddress);
 
 		protectIfVolatileBefore(isVolatile, true);
@@ -1847,7 +1931,12 @@ public:
 		if (j9gc_modron_wrtbar_always == _writeBarrierType) {
 			vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_indexableStoreObject(vmThread, (J9IndexableObject *)srcArray, (I_32)srcIndex, value, isVolatile);
 		} else {
-			fj9object_t *actualAddress = J9JAVAARRAY_EA(vmThread, srcArray, srcIndex, fj9object_t);
+			fj9object_t *actualAddress = NULL;
+			if (J9VMTHREAD_COMPRESS_OBJECT_REFERENCES(vmThread)) {
+				actualAddress = (fj9object_t*)J9JAVAARRAY_EA(vmThread, srcArray, srcIndex, U_32);
+			} else {
+				actualAddress = (fj9object_t*)J9JAVAARRAY_EA(vmThread, srcArray, srcIndex, UDATA);
+			}
 
 			preIndexableObjectStoreObject(vmThread, srcArray, actualAddress, value);
 
@@ -1879,7 +1968,12 @@ public:
 	VMINLINE bool
 	inlineIndexableObjectCompareAndSwapObject(J9VMThread *vmThread, j9object_t destArray, UDATA destIndex, j9object_t compareObject, j9object_t swapObject, bool isVolatile = false)
 	{
-		fj9object_t *actualAddress = J9JAVAARRAY_EA(vmThread, destArray, destIndex, fj9object_t);
+		fj9object_t *actualAddress = NULL;
+		if (J9VMTHREAD_COMPRESS_OBJECT_REFERENCES(vmThread)) {
+			actualAddress = (fj9object_t*)J9JAVAARRAY_EA(vmThread, destArray, destIndex, U_32);
+		} else {
+			actualAddress = (fj9object_t*)J9JAVAARRAY_EA(vmThread, destArray, destIndex, UDATA);
+		}
 
 #if defined(J9VM_GC_ALWAYS_CALL_OBJECT_ACCESS_BARRIER)
 		return (1 == vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_compareAndSwapObject(vmThread, destArray, (J9Object **)actualAddress, compareObject, swapObject));
@@ -1887,6 +1981,7 @@ public:
 		if (j9gc_modron_wrtbar_always == _writeBarrierType) {
 			return (1 == vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_compareAndSwapObject(vmThread, destArray, (J9Object **)actualAddress, compareObject, swapObject));
 		} else {
+			preIndexableObjectReadObject(vmThread, destArray, actualAddress);
 			preIndexableObjectStoreObject(vmThread, destArray, actualAddress, swapObject);
 
 			protectIfVolatileBefore(isVolatile, false);
@@ -1920,7 +2015,12 @@ public:
 	VMINLINE j9object_t
 	inlineIndexableObjectCompareAndExchangeObject(J9VMThread *vmThread, j9object_t destArray, UDATA destIndex, j9object_t compareObject, j9object_t swapObject, bool isVolatile = false)
 	{
-		fj9object_t *actualAddress = J9JAVAARRAY_EA(vmThread, destArray, destIndex, fj9object_t);
+		fj9object_t *actualAddress = NULL;
+		if (J9VMTHREAD_COMPRESS_OBJECT_REFERENCES(vmThread)) {
+			actualAddress = (fj9object_t*)J9JAVAARRAY_EA(vmThread, destArray, destIndex, U_32);
+		} else {
+			actualAddress = (fj9object_t*)J9JAVAARRAY_EA(vmThread, destArray, destIndex, UDATA);
+		}
 
 #if defined(J9VM_GC_ALWAYS_CALL_OBJECT_ACCESS_BARRIER)
 		return vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_compareAndExchangeObject(vmThread, destArray, (J9Object **)actualAddress, compareObject, swapObject);
@@ -1928,6 +2028,7 @@ public:
 		if (j9gc_modron_wrtbar_always == _writeBarrierType) {
 			return vmThread->javaVM->memoryManagerFunctions->j9gc_objaccess_compareAndExchangeObject(vmThread, destArray, (J9Object **)actualAddress, compareObject, swapObject);
 		} else {
+			preIndexableObjectReadObject(vmThread, destArray, actualAddress);
 			preIndexableObjectStoreObject(vmThread, destArray, actualAddress, swapObject);
 
 			protectIfVolatileBefore(isVolatile, false);
@@ -1944,38 +2045,6 @@ public:
 #else /* J9VM_GC_ALWAYS_CALL_OBJECT_ACCESS_BARRIER */
 #error unsupported barrier
 #endif /* J9VM_GC_ALWAYS_CALL_OBJECT_ACCESS_BARRIER */
-	}
-
-	/**
-	 * Call to convert an object pointer to an object token
-	 *
-	 * @param pointer the object pointer to convert
-	 * @return the object token
-	 */
-	static VMINLINE fj9object_t
-	convertTokenFromPointer(j9object_t pointer, UDATA compressedPointersShift)
-	{
-#if defined (J9VM_GC_COMPRESSED_POINTERS)
-		return (fj9object_t)((UDATA)pointer >> compressedPointersShift);
-#else /* J9VM_GC_COMPRESSED_POINTERS */
-		return (fj9object_t)pointer;
-#endif /* J9VM_GC_COMPRESSED_POINTERS */
-	}
-
-	/**
-	 * Call to convert an object token to an object pointer
-	 *
-	 * @param token the object token to convert
-	 * @return the object pointer
-	 */
-	static VMINLINE j9object_t
-	convertPointerFromToken(fj9object_t token, UDATA compressedPointersShift)
-	{
-#if defined (J9VM_GC_COMPRESSED_POINTERS)
-		return (mm_j9object_t)((UDATA)token << compressedPointersShift);
-#else /* J9VM_GC_COMPRESSED_POINTERS */
-		return (mm_j9object_t)token;
-#endif /* J9VM_GC_COMPRESSED_POINTERS */
 	}
 
 	/* Return an j9object_t that can be stored in the constantpool.
@@ -2114,7 +2183,6 @@ protected:
 		internalPreReadObject(vmThread, object, srcAddress);
 	}
 	
-
 	/**
 	 * Read a non-object address (pointer to internal VM data) from an object.
 	 * This function is only concerned with moving the actual data. Do not re-implement
@@ -2262,7 +2330,13 @@ protected:
 	VMINLINE mm_j9object_t
 	readObjectImpl(J9VMThread *vmThread, fj9object_t *srcAddress, bool isVolatile)
 	{
-		return internalConvertPointerFromToken(*srcAddress);
+		mm_j9object_t result = NULL;
+		if (J9VMTHREAD_COMPRESS_OBJECT_REFERENCES(vmThread)) {
+			result = internalConvertPointerFromToken((fj9object_t)(UDATA)*(U_32*)srcAddress);
+		} else {
+			result = (mm_j9object_t)*(UDATA*)srcAddress;
+		}
+		return result;
 	}
 	
 	/**
@@ -2476,7 +2550,11 @@ protected:
 	VMINLINE void
 	storeObjectImpl(J9VMThread *vmThread, fj9object_t *destAddress, mm_j9object_t value, bool isVolatile)
 	{
-		*destAddress = internalConvertTokenFromPointer(value);
+		if (J9VMTHREAD_COMPRESS_OBJECT_REFERENCES(vmThread)) {
+			*(U_32*)destAddress = (U_32)internalConvertTokenFromPointer(value);
+		} else {
+			*(UDATA*)destAddress = (UDATA)value;
+		}
 	}
 
 	VMINLINE bool
@@ -2486,10 +2564,10 @@ protected:
 		fj9object_t swapValue = internalConvertTokenFromPointer(swapObject);
 		bool result = true;
 
-		if (sizeof(fj9object_t) == sizeof(UDATA)) {
-			result = ((UDATA)compareValue == VM_AtomicSupport::lockCompareExchange((UDATA *)destAddress, (UDATA)compareValue, (UDATA)swapValue));
-		} else if (sizeof(fj9object_t) == sizeof(U_32)) {
+		if (J9VMTHREAD_COMPRESS_OBJECT_REFERENCES(vmThread)) {
 			result = ((U_32)(UDATA)compareValue == VM_AtomicSupport::lockCompareExchangeU32((U_32 *)destAddress, (U_32)(UDATA)compareValue, (U_32)(UDATA)swapValue));
+		} else {
+			result = ((UDATA)compareValue == VM_AtomicSupport::lockCompareExchange((UDATA *)destAddress, (UDATA)compareValue, (UDATA)swapValue));
 		}
 
 		return result;
@@ -2502,10 +2580,10 @@ protected:
 		fj9object_t swapValue = internalConvertTokenFromPointer(swapObject);
 		fj9object_t result = (fj9object_t)NULL;
 
-		if (sizeof(fj9object_t) == sizeof(UDATA)) {
-			result = (fj9object_t)VM_AtomicSupport::lockCompareExchange((UDATA *)destAddress, (UDATA)compareValue, (UDATA)swapValue);
-		} else if (sizeof(fj9object_t) == sizeof(U_32)) {
+		if (J9VMTHREAD_COMPRESS_OBJECT_REFERENCES(vmThread)) {
 			result = (fj9object_t)VM_AtomicSupport::lockCompareExchangeU32((U_32 *)destAddress, (U_32)(UDATA)compareValue, (U_32)(UDATA)swapValue);
+		} else {
+			result = (fj9object_t)VM_AtomicSupport::lockCompareExchange((UDATA *)destAddress, (UDATA)compareValue, (UDATA)swapValue);
 		}
 
 		return result;
@@ -2582,11 +2660,14 @@ protected:
 	VMINLINE fj9object_t
 	internalConvertTokenFromPointer(j9object_t pointer)
 	{
-#if defined (J9VM_GC_COMPRESSED_POINTERS)
-		return convertTokenFromPointer(pointer, _compressedPointersShift);
-#else /* J9VM_GC_COMPRESSED_POINTERS */
-		return (fj9object_t)pointer;
-#endif /* J9VM_GC_COMPRESSED_POINTERS */
+#if defined (OMR_GC_COMPRESSED_POINTERS)
+		if (compressObjectReferences()) {
+			return (fj9object_t)((UDATA)pointer >> _compressedPointersShift);
+		} else
+#endif /* OMR_GC_COMPRESSED_POINTERS */
+		{
+			return (fj9object_t)(UDATA)pointer;
+		}
 	}
 
 	/**
@@ -2598,11 +2679,14 @@ protected:
 	VMINLINE j9object_t
 	internalConvertPointerFromToken(fj9object_t token)
 	{
-#if defined (J9VM_GC_COMPRESSED_POINTERS)
-		return convertPointerFromToken(token, _compressedPointersShift);
-#else /* J9VM_GC_COMPRESSED_POINTERS */
-		return (mm_j9object_t)token;
-#endif /* J9VM_GC_COMPRESSED_POINTERS */
+#if defined (OMR_GC_COMPRESSED_POINTERS)
+		if (compressObjectReferences()) {
+			return (mm_j9object_t)((UDATA)token << _compressedPointersShift);
+		} else
+#endif /* OMR_GC_COMPRESSED_POINTERS */
+		{
+			return (mm_j9object_t)(UDATA)token;
+		}
 	}
 
 private:
@@ -2621,8 +2705,9 @@ private:
 	VMINLINE void
 	internalPreStoreObject(J9VMThread *vmThread, j9object_t object, fj9object_t *destAddress, j9object_t value)
 	{
-		if (j9gc_modron_wrtbar_realtime == _writeBarrierType) {
-			internalPreStoreObjectRealtime(vmThread, object, destAddress, value);
+		if ((j9gc_modron_wrtbar_satb == _writeBarrierType) ||
+				(j9gc_modron_wrtbar_satb_and_oldcheck == _writeBarrierType)) {
+			internalPreStoreObjectSATB(vmThread, object, destAddress, value);
 		}
 	}
 
@@ -2640,8 +2725,9 @@ private:
 	VMINLINE void
 	internalStaticPreStoreObject(J9VMThread *vmThread, j9object_t object, j9object_t *destAddress, j9object_t value)
 	{
-		if (j9gc_modron_wrtbar_realtime == _writeBarrierType) {
-			internalStaticPreStoreObjectRealtime(vmThread, object, destAddress, value);
+		if ((j9gc_modron_wrtbar_satb == _writeBarrierType) ||
+				(j9gc_modron_wrtbar_satb_and_oldcheck == _writeBarrierType)) {
+			internalStaticPreStoreObjectSATB(vmThread, object, destAddress, value);
 		}
 	}
 
@@ -2654,18 +2740,18 @@ private:
 	 *
 	 */
 	VMINLINE void
-	internalPreStoreObjectRealtime(J9VMThread *vmThread, j9object_t object, fj9object_t *destAddress, j9object_t value)
+	internalPreStoreObjectSATB(J9VMThread *vmThread, j9object_t object, fj9object_t *destAddress, j9object_t value)
 	{
 #if defined(J9VM_GC_REALTIME)
-		J9VMGCRememberedSetFragment *fragment =  &vmThread->staccatoRememberedSetFragment;
-		J9VMGCRememberedSet *parent = fragment->fragmentParent;
+		MM_GCRememberedSetFragment *fragment =  &vmThread->sATBBarrierRememberedSetFragment;
+		MM_GCRememberedSet *parent = fragment->fragmentParent;
 		/* Check if the barrier is enabled.  No work if barrier is not enabled */
 		if (0 != parent->globalFragmentIndex) {
 			/* if the double barrier is enabled call OOL */
 			if (0 == fragment->localFragmentIndex) {
 				vmThread->javaVM->memoryManagerFunctions->J9MetronomeWriteBarrierStore(vmThread, object, destAddress, value);
 			} else {
-				j9object_t oldObject = internalConvertPointerFromToken(*destAddress);
+				j9object_t oldObject = readObjectImpl(vmThread, destAddress, false);
 				if (NULL != oldObject) {
 					if (!isMarked(vmThread, oldObject)) {
 						vmThread->javaVM->memoryManagerFunctions->J9MetronomeWriteBarrierStore(vmThread, object, destAddress, value);
@@ -2685,11 +2771,11 @@ private:
 	 *
 	 */
 	VMINLINE void
-	internalStaticPreStoreObjectRealtime(J9VMThread *vmThread, j9object_t object, j9object_t *destAddress, j9object_t value)
+	internalStaticPreStoreObjectSATB(J9VMThread *vmThread, j9object_t object, j9object_t *destAddress, j9object_t value)
 	{
 #if defined(J9VM_GC_REALTIME)
-		J9VMGCRememberedSetFragment *fragment =  &vmThread->staccatoRememberedSetFragment;
-		J9VMGCRememberedSet *parent = fragment->fragmentParent;
+		MM_GCRememberedSetFragment *fragment =  &vmThread->sATBBarrierRememberedSetFragment;
+		MM_GCRememberedSet *parent = fragment->fragmentParent;
 		/* Check if the barrier is enabled.  No work if barrier is not enabled */
 		if (0 != parent->globalFragmentIndex) {
 			/* if the double barrier is enabled call OOL */
@@ -2759,7 +2845,9 @@ private:
 			internalPostObjectStoreCardTable(vmThread, object, value);
 			break;
 		case j9gc_modron_wrtbar_none:
-		case j9gc_modron_wrtbar_realtime:
+		case j9gc_modron_wrtbar_satb:
+		case j9gc_modron_wrtbar_satb_and_oldcheck:
+			//TODO SATB change to handle gencon, decide where to do it in pre/post store
 			break;
 		default:
 			/* Should assert as all real types are handled.  Should never get here
@@ -2786,7 +2874,8 @@ private:
 			internalPostBatchStoreObjectCardTable(vmThread, object);
 			break;
 		case j9gc_modron_wrtbar_none:
-		case j9gc_modron_wrtbar_realtime:
+		case j9gc_modron_wrtbar_satb:
+		case j9gc_modron_wrtbar_satb_and_oldcheck:
 			break;
 		default:
 			/* Should assert as all real types are handled.  Should never get here
@@ -2838,7 +2927,7 @@ private:
 	rememberObject(J9VMThread *vmThread, j9object_t object)
 	{
 #if defined (J9VM_GC_GENERATIONAL)
-		if (atomicSetRemembered(object)) {
+		if (atomicSetRemembered(vmThread, object)) {
 			J9VMGCSublistFragment *fragment = &vmThread->gcRememberedSet;
 			do {
 				UDATA *slot = fragment->fragmentCurrent;
@@ -2866,28 +2955,37 @@ private:
 	 * @return true if the bit was set, false otherwise
 	 */
 	static VMINLINE bool
-	atomicSetRemembered(j9object_t objectPtr)
+	atomicSetRemembered(J9VMThread *currentThread, j9object_t objectPtr)
 	{
 		bool result = true;
 
-		volatile j9objectclass_t* flagsPtr = (j9objectclass_t*) &objectPtr->clazz;
-		j9objectclass_t oldFlags;
-		j9objectclass_t newFlags;
-
-		do {
-			oldFlags = *flagsPtr;
-			if((oldFlags & J9_OBJECT_HEADER_REMEMBERED_MASK_FOR_TEST) >= J9_OBJECT_HEADER_REMEMBERED_BITS_TO_SET) {
-				/* Remembered state in age was set by somebody else */
-				result = false;
-				break;
-			}
-			newFlags = (oldFlags & ~J9_OBJECT_HEADER_REMEMBERED_MASK_FOR_CLEAR) | J9_OBJECT_HEADER_REMEMBERED_BITS_TO_SET;
+		if (J9VMTHREAD_COMPRESS_OBJECT_REFERENCES(currentThread)) {
+			volatile U_32* flagsPtr = &(((J9ObjectCompressed*)objectPtr)->clazz);
+			U_32 oldFlags = 0;
+			U_32 newFlags = 0;
+			do {
+				oldFlags = *flagsPtr;
+				if((oldFlags & J9_OBJECT_HEADER_REMEMBERED_MASK_FOR_TEST) >= J9_OBJECT_HEADER_REMEMBERED_BITS_TO_SET) {
+					/* Remembered state in age was set by somebody else */
+					result = false;
+					break;
+				}
+				newFlags = (oldFlags & ~J9_OBJECT_HEADER_REMEMBERED_MASK_FOR_CLEAR) | J9_OBJECT_HEADER_REMEMBERED_BITS_TO_SET;
+			} while (oldFlags != VM_AtomicSupport::lockCompareExchangeU32(flagsPtr, oldFlags, newFlags));
+		} else {
+			volatile UDATA* flagsPtr = &(((J9ObjectFull*)objectPtr)->clazz);
+			UDATA oldFlags = 0;
+			UDATA newFlags = 0;
+			do {
+				oldFlags = *flagsPtr;
+				if((oldFlags & J9_OBJECT_HEADER_REMEMBERED_MASK_FOR_TEST) >= J9_OBJECT_HEADER_REMEMBERED_BITS_TO_SET) {
+					/* Remembered state in age was set by somebody else */
+					result = false;
+					break;
+				}
+				newFlags = (oldFlags & ~J9_OBJECT_HEADER_REMEMBERED_MASK_FOR_CLEAR) | J9_OBJECT_HEADER_REMEMBERED_BITS_TO_SET;
+			} while (oldFlags != VM_AtomicSupport::lockCompareExchange(flagsPtr, oldFlags, newFlags));
 		}
-#if defined(J9VM_INTERP_COMPRESSED_OBJECT_HEADER)
-		while (oldFlags != VM_AtomicSupport::lockCompareExchangeU32(flagsPtr, oldFlags, newFlags));
-#else /* defined(J9VM_INTERP_COMPRESSED_OBJECT_HEADER) */
-		while (oldFlags != VM_AtomicSupport::lockCompareExchange(flagsPtr, (UDATA)oldFlags, (UDATA)newFlags));
-#endif /* defined(J9VM_INTERP_COMPRESSED_OBJECT_HEADER) */
 
 		return result;
 	}

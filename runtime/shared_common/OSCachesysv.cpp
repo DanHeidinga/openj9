@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2018 IBM Corp. and others
+ * Copyright (c) 2001, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -43,7 +43,7 @@
 #define OSCACHESYSV_RESTART 4
 #define OSCACHESYSV_OPENED 3
 #define OSCACHESYSV_CREATED 2
-#define OSCACHESYSV_EXIST   1
+#define OSCACHESYSV_EXIST 1
 #define OSCACHESYSV_NOT_EXIST 0
 #define OSCACHESYSV_FAILURE -1
 
@@ -62,14 +62,14 @@
  *
  * This is a wrapper method for @ref SH_OSCache::startup
  * This c'tor is currently used during unit testing only. Therefore we pass J9SH_DIRPERM_ABSENT as cacheDirPerm to startup().
- * 
+ *
  * @param [in]  portLibrary The Port library
  * @param [in]  sharedClassConfig
  * @param [in]  cacheName The name of the cache to be opened/created
  * @param [in]  piconfig Pointer to a configuration structure
  * @param [in]  numLocks The number of locks to be initialized
  * @param [in]  createFlag Indicates whether cache is to be opened or created.
- * \args J9SH_OSCACHE_CREATE Create the cache if it does not exists, otherwise open existsing cache
+ * \args J9SH_OSCACHE_CREATE Create the cache if it does not exists, otherwise open existing cache
  * \args J9SH_OSCACHE_OPEXIST Open an existing cache only, failed if it doesn't exist.
  * @param [in]  verboseFlags Verbose flags
  * @param [in]  openMode Mode to open the cache in. One of the following flags:
@@ -77,29 +77,30 @@
  * \args J9OSCACHE_OPEN_MODE_TRY_READONLY_ON_FAIL - if the cache could not be opened read/write - try readonly
  * \args J9OSCACHE_OPEN_MODE_GROUPACCESS - creates a cache with group access
  * @param [in]  versionData Version data of the cache to connect to
- * @param [in]  i Pointer to an initialiser to be used to initialise the data
- * 				area of a new cache
+ * @param [in]  i Pointer to an initializer to be used to initialize the data
+ *              area of a new cache
  */
 SH_OSCachesysv::SH_OSCachesysv(J9PortLibrary* portLibrary, J9JavaVM* vm, const char* cachedirname, const char* cacheName, J9SharedClassPreinitConfig* piconfig, IDATA numLocks,
-		UDATA createFlag, UDATA verboseFlags, U_64 runtimeFlags, I_32 openMode, J9PortShcVersion* versionData, SH_OSCache::SH_OSCacheInitialiser* i)
+		UDATA createFlag, UDATA verboseFlags, U_64 runtimeFlags, I_32 openMode, J9PortShcVersion* versionData, SH_OSCache::SH_OSCacheInitializer* i)
 {
 	Trc_SHR_OSC_Constructor_Entry(cacheName, piconfig->sharedClassCacheSize, createFlag);
-	initialize(portLibrary, NULL, OSCACHE_CURRENT_CACHE_GEN);
+	initialize(portLibrary, NULL, OSCACHE_CURRENT_CACHE_GEN, OSCACHE_CURRENT_LAYER_LAYER);
 	startup(vm, cachedirname, J9SH_DIRPERM_ABSENT, cacheName, piconfig, numLocks, createFlag, verboseFlags, runtimeFlags, openMode, 0, versionData, i, SHR_STARTUP_REASON_NORMAL);
 	Trc_SHR_OSC_Constructor_Exit(cacheName);
 }
 
 /**
- * Method to initialise object variables
- * 
+ * Method to initialize object variables
+ *
  * @param [in]  portLib  The Port library
  * @param [in]  memForConstructor  Pointer to the memory to build the OSCachemmap into
  * @param [in]  generation  The generation of this cache
+ * @param [in]  layer The layer number of this cache
  */
 void
-SH_OSCachesysv::initialize(J9PortLibrary* portLib, char* memForConstructor, UDATA generation)
+SH_OSCachesysv::initialize(J9PortLibrary* portLib, char* memForConstructor, UDATA generation, I_8 layer)
 {
-	commonInit(portLib, generation);
+	commonInit(portLib, generation, layer);
 	_attach_count = 0;
 	_shmhandle = NULL;
 	_semhandle = NULL;
@@ -119,7 +120,7 @@ SH_OSCachesysv::initialize(J9PortLibrary* portLib, char* memForConstructor, UDAT
  * setup an OSCache Instance
  * This method will create necessary Operating System resources to support cross-process shared memory
  * If successful a memory area which can be attached by other process will be created
- * User can query the result of the setup operation using getError() method. If the startup has failed, 
+ * User can query the result of the setup operation using getError() method. If the startup has failed,
  * all further operation on the shared cache will be failed.
  *
  * @param [in]  cacheName The name of the cache to be opened/created
@@ -127,7 +128,7 @@ SH_OSCachesysv::initialize(J9PortLibrary* portLib, char* memForConstructor, UDAT
  * @param [in]  piconfig Pointer to a configuration structure
  * @param [in]  numLocks The number of locks to be initialized
  * @param [in]  createFlag Indicates whether cache is to be opened or created.
- * \args J9SH_OSCACHE_CREATE Create the cache if it does not exists, otherwise open existsing cache
+ * \args J9SH_OSCACHE_CREATE Create the cache if it does not exists, otherwise open existing cache
  * \args J9SH_OSCACHE_OPEXIST Open an existing cache only, failed if it doesn't exist.
  * @param [in]  verboseFlags Verbose flags
  * @param [in]  openMode Mode to open the cache in. One of the following flags:
@@ -135,33 +136,43 @@ SH_OSCachesysv::initialize(J9PortLibrary* portLib, char* memForConstructor, UDAT
  * \args J9OSCACHE_OPEN_MODE_TRY_READONLY_ON_FAIL - if the cache could not be opened read/write - try readonly
  * \args J9OSCACHE_OPEN_MODE_GROUPACCESS - creates a cache with group access
  * @param [in]  versionData Version data of the cache to connect to
- * @param [in]  i Pointer to an initialiser to be used to initialise the data
- * 				area of a new cache
+ * @param [in]  i Pointer to an initializer to be used to initialize the data
+ *              area of a new cache
  * @param [in]  reason Reason for starting up the cache. Not used for non-persistent cache startup
- * 
+ *
  * @return true on success, false on failure
  */
 bool
 SH_OSCachesysv::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPerm, const char* cacheName, J9SharedClassPreinitConfig* piconfig, IDATA numLocks, UDATA create,
-		UDATA verboseFlags_, U_64 runtimeFlags_, I_32 openMode, UDATA storageKeyTesting, J9PortShcVersion* versionData, SH_OSCache::SH_OSCacheInitialiser* i, UDATA reason)
+		UDATA verboseFlags_, U_64 runtimeFlags_, I_32 openMode, UDATA storageKeyTesting, J9PortShcVersion* versionData, SH_OSCache::SH_OSCacheInitializer* i, UDATA reason)
 {
 	IDATA retryCount;
 	IDATA shsemrc = 0;
 	IDATA semLength = 0;
 	LastErrorInfo lastErrorInfo;
+	UDATA defaultCacheSize = J9_SHARED_CLASS_CACHE_DEFAULT_SIZE;
 
+#if defined(J9VM_ENV_DATA64)
+#if defined(OPENJ9_BUILD)
+	defaultCacheSize = J9_SHARED_CLASS_CACHE_DEFAULT_SIZE_64BIT_PLATFORM;
+#else /* OPENJ9_BUILD */
+	if (J2SE_VERSION(vm) >= J2SE_V11) {
+		defaultCacheSize = J9_SHARED_CLASS_CACHE_DEFAULT_SIZE_64BIT_PLATFORM;
+	}
+#endif /* OPENJ9_BUILD */
+#endif /* J9VM_ENV_DATA64 */
 	PORT_ACCESS_FROM_PORT(_portLibrary);
-	
-	Trc_SHR_OSC_startup_Entry(cacheName, (piconfig!= NULL)? piconfig->sharedClassCacheSize : J9_SHARED_CLASS_CACHE_DEFAULT_SIZE, create);
+
+	Trc_SHR_OSC_startup_Entry(cacheName, (piconfig!= NULL)? piconfig->sharedClassCacheSize : defaultCacheSize, create);
 
 	if (openMode & J9OSCACHE_OPEN_MODE_GROUPACCESS) {
 		_groupPerm = 1;
 	}
-	
+
 	versionData->cacheType = J9PORT_SHR_CACHE_TYPE_NONPERSISTENT;
-	_cacheSize = (piconfig!= NULL) ? (U_32)piconfig->sharedClassCacheSize : J9_SHARED_CLASS_CACHE_DEFAULT_SIZE;
-	_initialiser = i;
-	_totalNumSems = numLocks + 1;		/* +1 because of header mutex */
+	_cacheSize = (piconfig!= NULL) ? (U_32)piconfig->sharedClassCacheSize : (U_32)defaultCacheSize;
+	_initializer = i;
+	_totalNumSems = numLocks + 1; /* +1 because of header mutex */
 	_userSemCntr = 0;
 	retryCount=J9SH_OSCACHE_RETRYMAX;
 
@@ -182,7 +193,8 @@ SH_OSCachesysv::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 #else
 	semLength = strlen(_cacheNameWithVGen) + (strlen(J9SH_SEMAPHORE_ID) - strlen(J9SH_MEMORY_ID)) + 1;
 	/* Unfortunate case is that Java5 and early Java6 caches did not have _G append on the semaphore file,
-	 * so to connect with a generation 1 or 2 cache (Java5 was only ever G01), remove the _G01 from the semaphore file name */
+	 * so to connect with a generation 1 or 2 cache (Java5 was only ever G01), remove the _G01 from the semaphore file name
+	 */
 	if (_activeGeneration < 3) {
 		semLength -= strlen("_GXX");
 	}
@@ -191,12 +203,12 @@ SH_OSCachesysv::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 		OSC_ERR_TRACE(J9NLS_SHRC_OSCACHE_ALLOC_FAILED);
 		return false;
 	}
-	getCacheVersionAndGen(PORTLIB, vm, _semFileName, semLength, cacheName, versionData, _activeGeneration, false);
+	getCacheVersionAndGen(PORTLIB, vm, _semFileName, semLength, cacheName, versionData, _activeGeneration, false, _layer);
 #endif
-	
-	while(retryCount>0) {
+
+	while (retryCount>0) {
 		IDATA rc;
-		
+
 		if (_openMode & J9OSCACHE_OPEN_MODE_DO_READONLY) {
 			/* Try read-only mode only if shared memory control file exists
 			 * because we can't create a new control file when running in read-only mode.
@@ -228,17 +240,17 @@ SH_OSCachesysv::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 			lastErrorInfo.lastErrorMsg = j9error_last_error_message();
 #endif
 		}
-	
+
 		if (shsemrc == J9PORT_INFO_SHSEM_PARTIAL) {
 			/*
 			 * J9PORT_INFO_SHSEM_PARTIAL indicates one of the following cases:
-			 * 	- j9shsem_deprecated_openDeprecated() was called and the control files for the semaphore does not exist, or
+			 *  - j9shsem_deprecated_openDeprecated() was called and the control files for the semaphore does not exist, or
 			 *  - j9shsem_deprecated_openDeprecated() was called and the sysv object matching the control file has been deleted, or
 			 *  - j9shsem_deprecated_open() failed and flag OPEXIST_STATS is set, or
 			 *  - j9shsem_deprecated_open() was called with flag OPEXIST_DESTROY and control files for the semaphore does not exist
-			 *  
+			 *
 			 * In such cases continue without the semaphore as readonly
-			 * 
+			 *
 			 * If we are starting up the cache for 'destroy' i.e. OPEXIST_DESTROY is set,
 			 * then do not set READONLY flag as it may prevent unlinking of control files in port library if required.
 			 */
@@ -249,8 +261,8 @@ SH_OSCachesysv::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 			_semhandle = NULL;
 		}
 
-		switch(shsemrc) {
-	  
+		switch (shsemrc) {
+
 		case J9PORT_INFO_SHSEM_CREATED:
 #if !defined(WIN32)
 			if (J9_ARE_ALL_BITS_SET(_openMode, J9OSCACHE_OPEN_MODE_GROUPACCESS)) {
@@ -347,7 +359,7 @@ SH_OSCachesysv::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 				rc = OSCACHESYSV_FAILURE;
 			}
 			break;
-					 
+
 		case J9PORT_ERROR_SHSEM_OPFAILED:
 		case J9PORT_ERROR_SHSEM_OPFAILED_CONTROL_FILE_LOCK_FAILED:
 		case J9PORT_ERROR_SHSEM_OPFAILED_CONTROL_FILE_CORRUPT:
@@ -435,7 +447,7 @@ SH_OSCachesysv::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 			rc=OSCACHESYSV_FAILURE;
 			break;
 		}
-		
+
 		switch (rc) {
 		case OSCACHESYSV_CREATED:
 			if (_verboseFlags & J9SHR_VERBOSEFLAG_ENABLE_VERBOSE) {
@@ -457,7 +469,7 @@ SH_OSCachesysv::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 					retryCount = 0;
 					continue;
 				}
-				
+
 				memset(&statBuf, 0, sizeof(statBuf));
 				if (0 == j9file_stat(_cachePathName, 0, &statBuf)) {
 					if (1 != statBuf.perm.isGroupReadable) {
@@ -480,7 +492,7 @@ SH_OSCachesysv::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 			Trc_SHR_OSC_startup_Exit_Created(cacheName);
 			_startupCompleted=true;
 			return true;
-				
+
 		case OSCACHESYSV_OPENED:
 			if (_verboseFlags & J9SHR_VERBOSEFLAG_ENABLE_VERBOSE) {
 				if (_runningReadOnly) {
@@ -494,11 +506,11 @@ SH_OSCachesysv::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 			Trc_SHR_OSC_startup_Exit_Opened(cacheName);
 			_startupCompleted=true;
 			return true;
-			
+
 		case OSCACHESYSV_RESTART:
 			Trc_SHR_OSC_startup_attempt_Restart(cacheName);
 			break;
-		
+
 		case OSCACHESYSV_FAILURE:
 			retryCount = 0;
 			continue;
@@ -512,10 +524,10 @@ SH_OSCachesysv::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 		default:
 			break;
 		}
-		
+
 		retryCount--;
-		
-	} /* END while(retryCount>0) */
+
+	} /* END while (retryCount>0) */
 
 	setError(J9SH_OSCACHE_FAILURE);
 	Trc_SHR_OSC_startup_Exit_Failed(cacheName);
@@ -523,7 +535,7 @@ SH_OSCachesysv::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 }
 
 /* The caller should hold the mutex */
-IDATA 
+IDATA
 SH_OSCachesysv::openCache(const char* cacheDirName, J9PortShcVersion* versionData, bool semCreated)
 {
 	/* we are attaching to existing cache! */
@@ -531,7 +543,7 @@ SH_OSCachesysv::openCache(const char* cacheDirName, J9PortShcVersion* versionDat
 	IDATA rc;
 	IDATA result = OSCACHESYSV_FAILURE;
 	LastErrorInfo lastErrorInfo;
-	   
+
 	PORT_ACCESS_FROM_PORT(_portLibrary);
 
 	rc = shmemOpenWrapper(_shmFileName, &lastErrorInfo);
@@ -592,7 +604,7 @@ SH_OSCachesysv::openCache(const char* cacheDirName, J9PortShcVersion* versionDat
 		 * we should set it up, but don't need to init semaphore
 		 */
 		rc = initializeHeader(cacheDirName, versionData, lastErrorInfo);
-		if(rc == OSCACHESYSV_FAILURE) {
+		if (rc == OSCACHESYSV_FAILURE) {
 			Trc_SHR_OSC_openCache_Exit_CreatedHeaderInitFailed(_cacheName);
 			result = OSCACHESYSV_FAILURE;
 			break;
@@ -600,16 +612,16 @@ SH_OSCachesysv::openCache(const char* cacheDirName, J9PortShcVersion* versionDat
 		Trc_SHR_OSC_openCache_Exit_Created(_cacheName);
 		result = OSCACHESYSV_CREATED;
 		break;
-				
+
 	case J9PORT_ERROR_SHMEM_WAIT_FOR_CREATION_MUTEX_TIMEDOUT:
 		errorHandler(J9NLS_SHRC_OSCACHE_SHMEM_OPEN_WAIT_FOR_CREATION_MUTEX_TIMEDOUT, &lastErrorInfo);
 		Trc_SHR_OSC_openCache_Exit4();
 		result = OSCACHESYSV_FAILURE;
 		break;
-	
+
 	case J9PORT_INFO_SHMEM_PARTIAL:
 		/* If J9PORT_INFO_SHMEM_PARTIAL then ::startup() was called by j9shr_destroy_cache().
-		 * Returning OSCACHESYSV_OPENED will cause j9shr_destroy_cache() to call ::destroy(), 
+		 * Returning OSCACHESYSV_OPENED will cause j9shr_destroy_cache() to call ::destroy(),
 		 * which will cleanup any control files that have there SysV IPC objects del
 		 */
 		result = OSCACHESYSV_OPENED;
@@ -648,7 +660,7 @@ SH_OSCachesysv::openCache(const char* cacheDirName, J9PortShcVersion* versionDat
 				shmid = j9shmem_getid(_shmhandle);
 				j9mem_free_memory(_shmhandle);
 			}
-			
+
 			if ((J9PORT_ERROR_SHMEM_OPFAILED == rc) || (J9PORT_ERROR_SHMEM_OPFAILED_SHARED_MEMORY_NOT_FOUND == rc)) {
 				errorHandler(J9NLS_SHRC_OSCACHE_SHMEM_OPFAILED_V1, &lastErrorInfo);
 				if ((J9PORT_ERROR_SHMEM_OPFAILED == rc) && (0 != shmid)) {
@@ -708,11 +720,11 @@ SH_OSCachesysv::verifyCacheHeader(J9PortShcVersion* versionData)
 	IDATA rc = 0;
 
 	PORT_ACCESS_FROM_PORT(_portLibrary);
-	
+
 	if (header == NULL) {
 		return J9SH_OSCACHE_HEADER_MISSING;
 	}
-	
+
 	/* In readonly, we can't get a header lock, so if the cache is mid-init, give it a chance to complete initialization */
 	if (_runningReadOnly) {
 		while ((!header->oscHdr.cacheInitComplete) && (retryCntr < J9SH_OSCACHE_READONLY_RETRY_COUNT)) {
@@ -723,20 +735,20 @@ SH_OSCachesysv::verifyCacheHeader(J9PortShcVersion* versionData)
 			return J9SH_OSCACHE_HEADER_MISSING;
 		}
 	}
-	
+
 	if (J9_ARE_NO_BITS_SET(_runtimeFlags, J9SHR_RUNTIMEFLAG_RESTORE | J9SHR_RUNTIMEFLAG_RESTORE_CHECK)) {
 		/* When running "restoreFromSnapshot" utility, headerMutex is already acquired */
 		rc = enterHeaderMutex(&lastErrorInfo);
 	}
 	if (0 == rc) {
 		/* First, check the eyecatcher */
-		if(strcmp(header->eyecatcher, J9PORT_SHMEM_EYECATCHER)) {
+		if (strcmp(header->eyecatcher, J9PORT_SHMEM_EYECATCHER)) {
 			OSC_ERR_TRACE(J9NLS_SHRC_OSCACHE_ERROR_WRONG_EYECATCHER);
 			Trc_SHR_OSC_recreateSemaphore_Exit1();
 			OSC_ERR_TRACE1(J9NLS_SHRC_OSCACHE_CORRUPT_CACHE_HEADER_BAD_EYECATCHER, header->eyecatcher);
 			setCorruptionContext(CACHE_HEADER_BAD_EYECATCHER, (UDATA)(header->eyecatcher));
 			headerRc = J9SH_OSCACHE_HEADER_CORRUPT;
-		}		
+		}
 		if (J9SH_OSCACHE_HEADER_OK == headerRc) {
 			headerRc = checkOSCacheHeader(&(header->oscHdr), versionData, SHM_CACHEHEADERSIZE);
 		}
@@ -748,7 +760,7 @@ SH_OSCachesysv::verifyCacheHeader(J9PortShcVersion* versionData)
 				 * In both cases we ignore the below check.
 				 */
 				_semid = j9shsem_deprecated_getid(_semhandle);
-				if((_runtimeFlags & J9SHR_RUNTIMEFLAG_ENABLE_SEMAPHORE_CHECK) && (header->attachedSemid != 0) && (header->attachedSemid != _semid)) {
+				if ((_runtimeFlags & J9SHR_RUNTIMEFLAG_ENABLE_SEMAPHORE_CHECK) && (header->attachedSemid != 0) && (header->attachedSemid != _semid)) {
 					Trc_SHR_OSC_recreateSemaphore_Exit4(header->attachedSemid, _semid);
 					OSC_ERR_TRACE2(J9NLS_SHRC_OSCACHE_CORRUPT_CACHE_SEMAPHORE_MISMATCH, header->attachedSemid, _semid);
 					setCorruptionContext(CACHE_SEMAPHORE_MISMATCH, (UDATA)_semid);
@@ -756,7 +768,7 @@ SH_OSCachesysv::verifyCacheHeader(J9PortShcVersion* versionData)
 				}
 			}
 		}
-		
+
 		if (J9_ARE_NO_BITS_SET(_runtimeFlags, J9SHR_RUNTIMEFLAG_RESTORE | J9SHR_RUNTIMEFLAG_RESTORE_CHECK)) {
 			/* When running "restoreFromSnapshot" utility, do not release headerMutex here */
 			rc = exitHeaderMutex(&lastErrorInfo);
@@ -775,12 +787,12 @@ SH_OSCachesysv::verifyCacheHeader(J9PortShcVersion* versionData)
 	return headerRc;
 }
 
-IDATA 
+IDATA
 SH_OSCachesysv::detachRegion(void)
 {
 	IDATA rc = OSCACHESYSV_FAILURE;
 	PORT_ACCESS_FROM_PORT(_portLibrary);
-	
+
 	Trc_SHR_OSC_detachRegion_Entry();
 
 	if (_shmhandle != NULL) {
@@ -799,12 +811,12 @@ SH_OSCachesysv::detachRegion(void)
 		_headerStart = 0;
 	}
 
-	Trc_SHR_OSC_detachRegion_Exit();		
+	Trc_SHR_OSC_detachRegion_Exit();
 	return rc;
 }
 
 /**
- * This is the deconstructor routine. 
+ * This is the deconstructor routine.
  *
  * It will remove any memory allocated by this class.
  * However it will not remove any shared memory / mutex resources from the underlying OS.
@@ -818,51 +830,51 @@ SH_OSCachesysv::cleanup(void)
 	Trc_SHR_OSC_cleanup_Entry();
 	detachRegion();
 	/* now free the handles */
-	if(_shmhandle != NULL) {
+	if (_shmhandle != NULL) {
 		j9shmem_close(&_shmhandle);
 	}
-	if(_semhandle != NULL) {
+	if (_semhandle != NULL) {
 		j9shsem_deprecated_close(&_semhandle);
 	}
 	commonCleanup();
 #if !defined(WIN32)
 	if (_semFileName) {
 		j9mem_free_memory(_semFileName);
-	}
+	} 
+	
 #endif
 	Trc_SHR_OSC_cleanup_Exit();
 
 }
 
-IDATA 
+IDATA
 SH_OSCachesysv::detach(void)
 {
 	IDATA rc=OSCACHESYSV_FAILURE;
 	Trc_SHR_OSC_detach_Entry();
 
-	if(_shmhandle == NULL) {
+	if (_shmhandle == NULL) {
 		Trc_SHR_OSC_detach_Exit1();
 		return OSCACHESYSV_SUCCESS;
 	}
 
-	Trc_SHR_OSC_detach_Debug(_cacheName, _dataStart);    
+	Trc_SHR_OSC_detach_Debug(_cacheName, _dataStart);
 
 	_attach_count--;
-  
-	if(_attach_count == 0) {
+
+	if (_attach_count == 0) {
 		detachRegion();
 		rc=OSCACHESYSV_SUCCESS;
-	} 
-  
+	}
+
 	Trc_SHR_OSC_detach_Exit();
 	return rc;
 }
 
-
 /* The caller is responsible for locking the shared memory area */
-IDATA 
+IDATA
 SH_OSCachesysv::initializeHeader(const char* cacheDirName, J9PortShcVersion* versionData, LastErrorInfo lastErrorInfo)
-{  
+{
 	PORT_ACCESS_FROM_PORT(_portLibrary);
 	void* region;
 	OSCachesysv_header_version_current* myHeader;
@@ -870,7 +882,7 @@ SH_OSCachesysv::initializeHeader(const char* cacheDirName, J9PortShcVersion* ver
 	U_32 readWriteBytes = (U_32)((_config->sharedClassReadWriteBytes > 0) ? _config->sharedClassReadWriteBytes : 0);
 	U_32 totalSize = getTotalSize();
 	U_32 softMaxSize = (U_32)_config->sharedClassSoftMaxBytes;
-	
+
 	if (_config->sharedClassSoftMaxBytes < 0) {
 		softMaxSize = (U_32)-1;
 	} else if (softMaxSize > totalSize) {
@@ -878,7 +890,7 @@ SH_OSCachesysv::initializeHeader(const char* cacheDirName, J9PortShcVersion* ver
 		softMaxSize = totalSize;
 	}
 
-	if(_cacheSize <= SHM_CACHEHEADERSIZE) {
+	if (_cacheSize <= SHM_CACHEHEADERSIZE) {
 		errorHandler(J9NLS_SHRC_OSCACHE_TOOSMALL, &lastErrorInfo);
 		return OSCACHESYSV_FAILURE;
 	} else {
@@ -887,7 +899,7 @@ SH_OSCachesysv::initializeHeader(const char* cacheDirName, J9PortShcVersion* ver
 
 	region = j9shmem_attach(_shmhandle, J9MEM_CATEGORY_CLASSES_SHC_CACHE);
 
-	if(region == NULL) {
+	if (region == NULL) {
 		lastErrorInfo.lastErrorCode = j9error_last_error_number();
 		lastErrorInfo.lastErrorMsg = j9error_last_error_message();
 		errorHandler(J9NLS_SHRC_OSCACHE_SHMEM_ATTACH, &lastErrorInfo);
@@ -902,34 +914,34 @@ SH_OSCachesysv::initializeHeader(const char* cacheDirName, J9PortShcVersion* ver
 	myHeader = (OSCachesysv_header_version_current*) region;
 
 	memset(myHeader, 0, SHM_CACHEHEADERSIZE);
-	strncpy(myHeader->eyecatcher, J9PORT_SHMEM_EYECATCHER, J9PORT_SHMEM_EYECATCHER_LENGTH);
-	
+	memcpy(myHeader->eyecatcher, J9PORT_SHMEM_EYECATCHER, J9PORT_SHMEM_EYECATCHER_LENGTH);
+
 	initOSCacheHeader(&(myHeader->oscHdr), versionData, SHM_CACHEHEADERSIZE);
-	
+
 	myHeader->attachedSemid = j9shsem_deprecated_getid(_semhandle);
 
 	/* If this is not being written into the default control file dir, mark it as such so that it cannot be auto-deleted */
 	myHeader->inDefaultControlDir = (cacheDirName == NULL);
-	
+
 	/* jump over to the data area*/
 	region = SHM_DATASTARTFROMHEADER(myHeader);
 
-	if(_initialiser != NULL) { 
-		_initialiser->init((char*)region, dataLength, (I_32)_config->sharedClassMinAOTSize, (I_32)_config->sharedClassMaxAOTSize, (I_32)_config->sharedClassMinJITSize, (I_32)_config->sharedClassMaxJITSize, readWriteBytes, softMaxSize);
+	if (_initializer != NULL) {
+		_initializer->init((char*)region, dataLength, (I_32)_config->sharedClassMinAOTSize, (I_32)_config->sharedClassMaxAOTSize, (I_32)_config->sharedClassMinJITSize, (I_32)_config->sharedClassMaxJITSize, readWriteBytes, softMaxSize);
 	}
 
 	if (J9_ARE_NO_BITS_SET(_runtimeFlags, J9SHR_RUNTIMEFLAG_RESTORE)) {
-	/* Do not set oscHdr.cacheInitComplete to 1 if the cache is to be restored */
+		/* Do not set oscHdr.cacheInitComplete to 1 if the cache is to be restored */
 		myHeader->oscHdr.cacheInitComplete = 1;
 	}
 
 	/*ALL DONE */
-	
-	return OSCACHESYSV_SUCCESS; 
+
+	return OSCACHESYSV_SUCCESS;
 }
 
 /**
- * Attaches the shared memory into the process address space, and returns the address of the mapped 
+ * Attaches the shared memory into the process address space, and returns the address of the mapped
  * shared memory.
  *
  * This method send a request to the operating system to map the shared memory into the caller's address
@@ -937,12 +949,11 @@ SH_OSCachesysv::initializeHeader(const char* cacheDirName, J9PortShcVersion* ver
  * if the region is being mapped for the first time.
  *
  * @param [in] expectedVersionData  If not NULL, function checks the version data of the cache against the values in this struct
- * 
- * @return The address of the memory mapped area for the caller's process - This is not guranteed to be the same
- * for two different process.
  *
+ * @return The address of the memory mapped area for the caller's process - This is not guaranteed to be the same
+ * for two different process.
  */
-void * 
+void *
 SH_OSCachesysv::attach(J9VMThread *currentThread, J9PortShcVersion* expectedVersionData)
 {
 	J9JavaVM *vm = currentThread->javaVM;
@@ -958,14 +969,14 @@ SH_OSCachesysv::attach(J9VMThread *currentThread, J9PortShcVersion* expectedVers
 
 	if ((((_runtimeFlags & J9SHR_RUNTIMEFLAG_CREATE_OLD_GEN) == 0) && (_activeGeneration != getCurrentCacheGen())) ||
 		(((_runtimeFlags & J9SHR_RUNTIMEFLAG_CREATE_OLD_GEN) != 0) && (_activeGeneration != getCurrentCacheGen()-1))
-	){
+	) {
 		Trc_SHR_OSC_attach_ExitWrongGen();
 		return NULL;
 	}
 
-	/* Cache is opened attached, the call here will simply return the 
-	 * address memory already attached. 
-	 * 
+	/* Cache is opened attached, the call here will simply return the
+	 * address memory already attached.
+	 *
 	 * Note: Unless ::detach was called ... which I believe does not currently occur.
 	 */
 	Trc_SHR_OSC_attach_Try_Attach1(UnitTest::unitTest);
@@ -1007,7 +1018,7 @@ SH_OSCachesysv::attach(J9VMThread *currentThread, J9PortShcVersion* expectedVers
 
 	/*_dataStart is set here, and possibly initializeHeader if its a new cache */
 	_dataStart = SHM_DATASTARTFROMHEADER(((OSCachesysv_header_version_current*)_headerStart));
-	
+
 	_dataLength = SHM_CACHEDATASIZE(((OSCachesysv_header_version_current*)_headerStart)->oscHdr.size);
 	_attach_count++;
 
@@ -1021,38 +1032,38 @@ SH_OSCachesysv::attach(J9VMThread *currentThread, J9PortShcVersion* expectedVers
 
 /**
  * Attempt to destroy the cache that is currently attached
- * 
+ *
  * @param[in] suppressVerbose suppresses verbose output
  * @param[in] True if reset option is being used, false otherwise.
- * 
+ *
  * This method will detach shared memory from the process address space, and attempt
- * to remove any operating system shared memory and mutex region. 
+ * to remove any operating system shared memory and mutex region.
  * When this call is complete you should consider the shared memory region will not be
  * available for use, and must be recreated.
- * 
+ *
  * @return 0 for success and -1 for failure
  */
-IDATA 
+IDATA
 SH_OSCachesysv::destroy(bool suppressVerbose, bool isReset)
 {
 	IDATA rc;
 	PORT_ACCESS_FROM_PORT(_portLibrary);
 	UDATA origVerboseFlags = _verboseFlags;
-	IDATA returnVal = -1;		/* Assume failure */
-	
+	IDATA returnVal = -1; /* Assume failure */
+
 	Trc_SHR_OSC_destroy_Entry();
-	
+
 	if (suppressVerbose) {
 		_verboseFlags = 0;
 	}
 
-	/* We will try our best and destroy the OSCache here */      
+	/* We will try our best and destroy the OSCache here */
 	detachRegion();
 
 #if !defined(WIN32)
 	/*If someone is still detached, don't do it, warn and exit*/
 	/* isCacheActive isn't really accurate for Win32, so can't check */
-	if(isCacheActive()) {
+	if (isCacheActive()) {
 		IDATA corruptionCode;
 		OSC_TRACE1(J9NLS_SHRC_OSCACHE_SHARED_CACHE_STILL_ATTACH, _cacheName);
 		/* Even if cache is active, we destroy the semaphore if the cache has been marked as corrupt due to CACHE_SEMAPHORE_MISMATCH. */
@@ -1066,7 +1077,7 @@ SH_OSCachesysv::destroy(bool suppressVerbose, bool isReset)
 		}
 		goto _done;
 	}
-#endif  
+#endif
 
 	/* Now try to remove the shared memory region */
 	if (_shmhandle != NULL) {
@@ -1075,19 +1086,19 @@ SH_OSCachesysv::destroy(bool suppressVerbose, bool isReset)
 #else
 		rc = j9shmem_destroy(_cacheDirName, _groupPerm, &_shmhandle);
 #endif
-		if(rc != 0) {
+		if (rc != 0) {
 			OSC_ERR_TRACE1(J9NLS_SHRC_OSCACHE_SHARED_CACHE_MEMORY_REMOVE_FAILED, _cacheName);
 			goto _done;
 		}
 	}
-	
+
 	if (_semhandle != NULL) {
 #if !defined(WIN32)
 		rc = DestroySysVSemHelper();
 #else
 		rc = j9shsem_deprecated_destroy(&_semhandle);
 #endif
-		if(rc!=0) {
+		if (rc!=0) {
 			OSC_ERR_TRACE1(J9NLS_SHRC_OSCACHE_SHARED_CACHE_SEMAPHORE_REMOVE_FAILED, _cacheName);
 			goto _done;
 		}
@@ -1125,7 +1136,7 @@ _done :
 
 /**
  * Get an ID for a new write lock
- * 
+ *
  * @return a non-negative lockID on success, -1 on failure
  */
 IDATA
@@ -1161,42 +1172,42 @@ SH_OSCachesysv::getReadWriteLockID() {
 /**
  * Obtain the exclusive access right for the shared cache
  *
- * If this method succeeds, the caller will own the exclusive access right to the lock specified 
+ * If this method succeeds, the caller will own the exclusive access right to the lock specified
  * and any other thread that attempts to call this method will be suspended.
- * If the process which owns the exclusive access right has crashed without relinquishing the access right, 
+ * If the process which owns the exclusive access right has crashed without relinquishing the access right,
  * it will automatically resume one of the waiting threads which will then own the access right.
  *
  * @param[in] lockID  The ID of the lock to acquire
- * 
+ *
  * @return 0 if the operation has been successful, -1 if an error has occured
  */
-IDATA 
-SH_OSCachesysv::acquireWriteLock(UDATA lockID) 
+IDATA
+SH_OSCachesysv::acquireWriteLock(UDATA lockID)
 {
 	PORT_ACCESS_FROM_PORT(_portLibrary);
 	IDATA rc;
 	Trc_SHR_OSC_enterMutex_Entry(_cacheName);
-	if(_semhandle == NULL) {
+	if (_semhandle == NULL) {
 		Trc_SHR_OSC_enterMutex_Exit1();
 		Trc_SHR_Assert_ShouldNeverHappen();
 		return -1;
 	}
-	
+
 	if (lockID > (_totalNumSems-1)) {
 		Trc_SHR_OSC_enterMutex_Exit2_V2(lockID, _totalNumSems-1);
 		Trc_SHR_Assert_ShouldNeverHappen();
 		return -1;
 	}
-	
+
 	rc = j9shsem_deprecated_wait(_semhandle, lockID, J9PORT_SHSEM_MODE_UNDO);
 	if (rc == -1) {
 		/* CMVC 97181 : Don't print error message because if JVM terminates with ^C signal, this function will return -1 and this is not an error*/
 		I_32 myerror = j9error_last_error_number();
 		if ( ((I_32)(myerror | 0xFFFF0000)) != J9PORT_ERROR_SYSV_IPC_ERRNO_EINTR) {
 #if !defined(WIN32)
-			OSC_ERR_TRACE2(J9NLS_SHRC_CC_SYSV_AQUIRE_LOCK_FAILED_ENTER_MUTEX, j9shsem_deprecated_getid(_semhandle), myerror);
+			OSC_ERR_TRACE2(J9NLS_SHRC_CC_SYSV_ACQUIRE_LOCK_FAILED_ENTER_MUTEX, j9shsem_deprecated_getid(_semhandle), myerror);
 #else
-			OSC_ERR_TRACE1(J9NLS_SHRC_CC_AQUIRE_LOCK_FAILED_ENTER_MUTEX, myerror);
+			OSC_ERR_TRACE1(J9NLS_SHRC_CC_ACQUIRE_LOCK_FAILED_ENTER_MUTEX, myerror);
 #endif
 			Trc_SHR_OSC_enterMutex_Exit3(myerror);
 			Trc_SHR_Assert_ShouldNeverHappen();
@@ -1210,21 +1221,21 @@ SH_OSCachesysv::acquireWriteLock(UDATA lockID)
 /**
  * Relinquish the exclusive access right
  *
- * If this method succeeds, the caller will return the exclusive access right to the lock specified. 
- * If there is one or more thread(s) suspended on the Mutex by calling @ref SH_OSCache::acquireWriteLock, 
+ * If this method succeeds, the caller will return the exclusive access right to the lock specified.
+ * If there is one or more thread(s) suspended on the Mutex by calling @ref SH_OSCache::acquireWriteLock,
  * then one of the threads will be resumed and become the new owner of the exclusive access rights for the lock
- * 
+ *
  * @param[in] lockID  The ID of the lock to release
  *
  * @return 0 if the operations has been successful, -1 if an error has occured
  */
-IDATA 
-SH_OSCachesysv::releaseWriteLock(UDATA lockID) 
+IDATA
+SH_OSCachesysv::releaseWriteLock(UDATA lockID)
 {
 	PORT_ACCESS_FROM_PORT(_portLibrary);
 	IDATA rc;
 	Trc_SHR_OSC_exitMutex_Entry(_cacheName);
-	if(_semhandle == NULL) {
+	if (_semhandle == NULL) {
 		Trc_SHR_OSC_exitMutex_Exit1();
 		Trc_SHR_Assert_ShouldNeverHappen();
 		return -1;
@@ -1239,6 +1250,17 @@ SH_OSCachesysv::releaseWriteLock(UDATA lockID)
 	rc = j9shsem_deprecated_post(_semhandle, lockID, J9PORT_SHSEM_MODE_UNDO);
 	Trc_SHR_OSC_exitMutex_Exit(_cacheName);
 	return rc;
+}
+
+/**
+ * Get the createTime from the OSCache_header2
+ * 
+ * @return the createTime
+ */
+U_64
+SH_OSCachesysv::getCreateTime() {
+	OSCachesysv_header_version_current* header = (OSCachesysv_header_version_current*)_headerStart;
+	return header->oscHdr.createTime;
 }
 
 IDATA
@@ -1266,7 +1288,7 @@ SH_OSCachesysv::enterHeaderMutex(LastErrorInfo *lastErrorInfo)
 
 IDATA
 SH_OSCachesysv::exitHeaderMutex(LastErrorInfo *lastErrorInfo)
-{	
+{
 	PORT_ACCESS_FROM_PORT(_portLibrary);
 	IDATA rc = 0;
 	if (NULL != lastErrorInfo) {
@@ -1296,17 +1318,17 @@ SH_OSCachesysv::isCacheActive(void)
 	if (-1 == rc) {
 		/* CMVC 143141: If shared memory can not be stat'd then it
 		 * doesn't exist.  In this case we return 0 because a cache
-		 * that does not exist on the system then it should not be active. 
+		 * that does not exist on the system then it should not be active.
 		 */
 		return 0;
 	}
 
-	if(statbuf.nattach > 0) {
+	if (statbuf.nattach > 0) {
 		return 1;
 	}
-		
+
 	return 0;
-	
+
 }
 
 void
@@ -1324,9 +1346,9 @@ SH_OSCachesysv::printErrorMessage(LastErrorInfo *lastErrorInfo)
 		Trc_SHR_Assert_True(errormsg != NULL);
 		OSC_ERR_TRACE1(J9NLS_SHRC_OSCACHE_PORT_ERROR_MESSAGE, errormsg);
 	}
-	
+
 	/*Handle general errors*/
-	switch(errorCodeMasked) {
+	switch (errorCodeMasked) {
 		case J9PORT_ERROR_SHMEM_TOOBIG:
 		case J9PORT_ERROR_SYSV_IPC_ERRNO_E2BIG:
 #if defined(J9ZOS390)
@@ -1361,10 +1383,10 @@ SH_OSCachesysv::printErrorMessage(LastErrorInfo *lastErrorInfo)
 		case J9PORT_ERROR_SYSV_IPC_ERRNO_EMFILE:
 			OSC_ERR_TRACE(J9NLS_SHRC_OSCACHE_ERROR_MAX_OPEN_FILES_REACHED);
 			break;
-			
+
 		default:
-			break;			
-	}	
+			break;
+	}
 
 }
 
@@ -1387,7 +1409,7 @@ SH_OSCachesysv::cleanupSysvResources(void)
 #if !defined(WIN32)
 	/*If someone is still attached, don't destroy it*/
 	/* isCacheActive isn't really accurate for Win32, so can't check */
-	if(isCacheActive()) {
+	if (isCacheActive()) {
 		if (NULL != _semhandle) {
 			j9shsem_deprecated_close(&_semhandle);
 			OSC_ERR_TRACE(J9NLS_SHRC_OSCACHE_HANDLE_ERROR_ACTION_CLOSESEM);
@@ -1471,7 +1493,7 @@ SH_OSCachesysv::cleanupSysvResources(void)
 	}
 }
 
-void 
+void
 SH_OSCachesysv::errorHandler(U_32 module_name, U_32 message_num, LastErrorInfo *lastErrorInfo)
 {
 	PORT_ACCESS_FROM_PORT(_portLibrary);
@@ -1482,9 +1504,9 @@ SH_OSCachesysv::errorHandler(U_32 module_name, U_32 message_num, LastErrorInfo *
 			printErrorMessage(lastErrorInfo);
 		}
 	}
-	
+
 	setError(J9SH_OSCACHE_FAILURE);
-	if(!_startupCompleted && _openSharedMemory == false) {
+	if (!_startupCompleted && _openSharedMemory == false) {
 		cleanupSysvResources();
 	}
 }
@@ -1492,7 +1514,7 @@ SH_OSCachesysv::errorHandler(U_32 module_name, U_32 message_num, LastErrorInfo *
 void
 SH_OSCachesysv::setError(IDATA ec)
 {
-	_errorCode = ec;	
+	_errorCode = ec;
 }
 
 /**
@@ -1501,8 +1523,8 @@ SH_OSCachesysv::setError(IDATA ec)
  *
  * @return Error Code
  */
-IDATA 
-SH_OSCachesysv::getError(void) 
+IDATA
+SH_OSCachesysv::getError(void)
 {
 	return _errorCode;
 }
@@ -1557,7 +1579,7 @@ SH_OSCachesysv::shmemOpenWrapper(const char *cacheName, LastErrorInfo *lastError
 			}
 #if !defined(WIN32)
 		}
-#endif		
+#endif
 	}
 	if (((rc == J9PORT_INFO_SHMEM_OPENED) || (rc == J9PORT_INFO_SHMEM_OPENED_STALE)) && (perm == J9SH_SHMEM_PERM_READ)) {
 		Trc_SHR_OSC_Event_OpenReadOnly();
@@ -1579,9 +1601,9 @@ SH_OSCachesysv::runExitCode(void)
 #if defined (J9SHR_MSYNC_SUPPORT)
 /**
  * Synchronise cache updates to disk
- * 
+ *
  * This function is not supported for the shared memory cache
- * 
+ *
  * @return -1 as this function is not supported
  */
 IDATA
@@ -1593,9 +1615,9 @@ SH_OSCachesysv::syncUpdates(void* start, UDATA length, U_32 flags)
 
 /**
  * Return the locking capabilities of this shared classes cache implementation
- * 
+ *
  * Write locks (only) are supported for this implementation
- * 
+ *
  * @return J9OSCACHE_DATA_WRITE_LOCK
  */
 IDATA
@@ -1608,17 +1630,17 @@ SH_OSCachesysv::getLockCapabilities(void)
  * Sets the protection as specified by flags for the memory pages containing all or part of the interval address->(address+len)
  *
  * @param[in] portLibrary An instance of portLibrary
- * @param[in] address 	Pointer to the shared memory region.
- * @param[in] length	The size of memory in bytes spanning the region in which we want to set protection
- * @param[in] flags 	The specified protection to apply to the pages in the specified interval
- * 
+ * @param[in] address   Pointer to the shared memory region.
+ * @param[in] length    The size of memory in bytes spanning the region in which we want to set protection
+ * @param[in] flags     The specified protection to apply to the pages in the specified interval
+ *
  * @return 0 if the operations has been successful, -1 if an error has occured
  */
 IDATA
 SH_OSCachesysv::setRegionPermissions(struct J9PortLibrary* portLibrary, void *address, UDATA length, UDATA flags)
 {
 	PORT_ACCESS_FROM_PORT(portLibrary);
-		
+
 	return j9shmem_protect(_cacheDirName, _groupPerm, address, length, flags);
 }
 
@@ -1626,7 +1648,7 @@ SH_OSCachesysv::setRegionPermissions(struct J9PortLibrary* portLibrary, void *ad
  * Returns the minimum sized region of a shared classes cache on which the process can set permissions, in the number of bytes.
  *
  * @param[in] portLibrary An instance of portLibrary
- * 
+ *
  * @return the minimum size of region on which we can control permissions size or 0 if unsupported
  *
  */
@@ -1639,9 +1661,9 @@ SH_OSCachesysv::getPermissionsRegionGranularity(struct J9PortLibrary* portLibrar
 
 /**
  * Returns the total size of the cache memory
- * 
+ *
  * This value is not derived from the cache header, so is reliable even if the cache is corrupted
- * 
+ *
  * @return size of cache memory
  */
 U_32
@@ -1655,17 +1677,16 @@ SH_OSCachesysv::getTotalSize()
 	}
 
 	if (j9shmem_stat(_cacheDirName, _groupPerm, _shmFileName, &statbuf) == (UDATA)-1) {
-		/* CMVC 143141: If shared memory can not be stat'd then it 
-		 * doesn't exist.  In this case we return 0 because a cache 
-		 * that does not exist on the system then it has zero size. 
+		/* CMVC 143141: If shared memory can not be stat'd then it
+		 * doesn't exist.  In this case we return 0 because a cache
+		 * that does not exist on the system then it has zero size.
 		 */
 		return 0;
 	}
-	
+
 	_actualCacheSize = (U_32)statbuf.size;
 	return _actualCacheSize;
 }
-
 
 UDATA
 SH_OSCachesysv::getHeaderSize(void)
@@ -1675,25 +1696,25 @@ SH_OSCachesysv::getHeaderSize(void)
 
 /**
  * Populates some of cacheInfo for 'SH_OSCachesysv::getCacheStats' and 'SH_OSCachesysv::getJavacoreData'
- * 
+ *
  * @param [in] vm  The Java VM
  * @param [in] ctrlDirName  Cache directory
  * @param [in] groupPerm  Group permissions to open the cache directory
  * @param [in] cacheNameWithVGen current cache name
- * @param [out] cacheInfo stucture to be populated with cache statistics
+ * @param [out] cacheInfo structure to be populated with cache statistics
  * @param [in] reason Indicates the reason for getting cache stats. Refer sharedconsts.h for valid values.
  * @return 0 on success
  */
-IDATA 
+IDATA
 SH_OSCachesysv::getCacheStatsHelper(J9JavaVM* vm, const char* cacheDirName, UDATA groupPerm, const char* cacheNameWithVGen, SH_OSCache_Info* cacheInfo, UDATA reason)
 {
 	PORT_ACCESS_FROM_PORT(vm->portLibrary);
 	J9PortShmemStatistic statbuf;
 	UDATA versionLen;
 	UDATA statrc = 0;
-	
+
 	Trc_SHR_OSC_Sysv_getCacheStatsHelper_Entry(cacheNameWithVGen);
-	
+
 #if defined(WIN32)
 	versionLen = J9SH_VERSION_STRING_LEN;
 #else
@@ -1709,7 +1730,7 @@ SH_OSCachesysv::getCacheStatsHelper(J9JavaVM* vm, const char* cacheDirName, UDAT
 #else
 	statrc = j9shmem_stat(cacheDirName, groupPerm, cacheNameWithVGen, &statbuf);
 #endif
-	
+
 	if (statrc == 0) {
 #if defined(J9ZOS390)
 		if ((J9SH_ADDRMODE != cacheInfo->versionData.addrmode) && (0 == statbuf.size)) {
@@ -1745,30 +1766,31 @@ SH_OSCachesysv::getCacheStatsHelper(J9JavaVM* vm, const char* cacheDirName, UDAT
 		Trc_SHR_OSC_Sysv_getCacheStatsHelper_cacheStatFailed();
 		return -1;
 	}
-	Trc_SHR_OSC_Sysv_getCacheStatsHelper_Exit();
+	Trc_SHR_OSC_Sysv_getCacheStatsHelper_Exit1(cacheInfo->name, cacheInfo->os_shmid, cacheInfo->lastattach, cacheInfo->lastdetach, cacheInfo->nattach);
 	return 0;
 }
 
 /**
  * Populates cacheInfo with cache statistics.
- * 
+ *
  * @param [in] vm  The Java VM
  * @param [in] ctrlDirName  Cache directory
  * @param [in] groupPerm  Group permissions to open the cache directory
  * @param [in] cacheNameWithVGen current cache name
- * @param [out] cacheInfo stucture to be populated with cache statistics
+ * @param [out] cacheInfo structure to be populated with cache statistics
  * @param [in] reason Indicates the reason for getting cache stats. Refer sharedconsts.h for valid values.
+ * @param [out] lowerLayerList A list of SH_OSCache_Info for lower layer caches.
  *
  * @return 0 on success
  */
 IDATA 
-SH_OSCachesysv::getCacheStats(J9JavaVM* vm, const char* ctrlDirName, UDATA groupPerm, const char* cacheNameWithVGen, SH_OSCache_Info* cacheInfo, UDATA reason)
+SH_OSCachesysv::getCacheStats(J9JavaVM* vm, const char* ctrlDirName, UDATA groupPerm, const char* cacheNameWithVGen, SH_OSCache_Info* cacheInfo, UDATA reason, J9Pool** lowerLayerList)
 {
 	IDATA retval = 0;
 	PORT_ACCESS_FROM_JAVAVM(vm);
 	char cacheDirName[J9SH_MAXPATH];
 
-	SH_OSCache::getCacheDir(PORTLIB, ctrlDirName, cacheDirName, J9SH_MAXPATH, J9PORT_SHR_CACHE_TYPE_NONPERSISTENT);
+	SH_OSCache::getCacheDir(vm, ctrlDirName, cacheDirName, J9SH_MAXPATH, J9PORT_SHR_CACHE_TYPE_NONPERSISTENT);
 	if (SH_OSCachesysv::getCacheStatsHelper(vm, cacheDirName, groupPerm, cacheNameWithVGen, cacheInfo, reason) == 0) {
 		/* Using 'SH_OSCachesysv cacheStruct' breaks the pattern of calling getRequiredConstrBytes(), and then allocating memory.
 		 * However it is consistent with 'SH_OSCachemmap::getCacheStats'.
@@ -1783,12 +1805,12 @@ SH_OSCachesysv::getCacheStats(J9JavaVM* vm, const char* ctrlDirName, UDATA group
 		versionData.cacheType = J9PORT_SHR_CACHE_TYPE_NONPERSISTENT;
 
 		if ((SHR_STATS_REASON_ITERATE == reason) || (SHR_STATS_REASON_LIST == reason)) {
-			cache = (SH_OSCachesysv *) SH_OSCache::newInstance(PORTLIB, &cacheStruct, cacheInfo->name, cacheInfo->generation, &versionData);
+			cache = (SH_OSCachesysv *) SH_OSCache::newInstance(PORTLIB, &cacheStruct, cacheInfo->name, cacheInfo->generation, &versionData, getLayerFromName(cacheNameWithVGen));
 
 			if (!cache->startup(vm, ctrlDirName, vm->sharedCacheAPI->cacheDirPerm, cacheInfo->name, &piconfig, SH_CompositeCacheImpl::getNumRequiredOSLocks(), J9SH_OSCACHE_OPEXIST_STATS, 0, 0/*runtime flags*/, J9OSCACHE_OPEN_MODE_TRY_READONLY_ON_FAIL, vm->sharedCacheAPI->storageKeyTesting, &versionData, NULL, reason)) {
 				goto done;
 			}
-		
+
 			/* Avoid calling attach() for incompatible cache since its anyway going to fail.
 			 * But we can still get semid from _semhandle as it got populated during startup itself.
 			 */
@@ -1812,7 +1834,7 @@ SH_OSCachesysv::getCacheStats(J9JavaVM* vm, const char* ctrlDirName, UDATA group
 				}
 
 				if (SHR_STATS_REASON_ITERATE == reason) {
-					getCacheStatsCommon(vm, cache, cacheInfo);
+					getCacheStatsCommon(vm, ctrlDirName, groupPerm, cache, cacheInfo, lowerLayerList);
 				}
 
 				if (attachedMem == true) {
@@ -1829,25 +1851,71 @@ done:
 }
 
 /**
+ * Method to get a SH_OSCache_Info for a compatible non-top layer shared classes cache.
+ * 
+ * @param[in] vm The Java VM
+ * @param[in] ctrlDirName Cache directory
+ * @param[in] groupPerm Group permissions to open the cache directory
+ * @param[in] cacheNameWithVGen Filename of the cache to stat
+ * @param[out] cacheInfo Pointer to the structure to be completed with the cache's details
+ * @param[in] reason Indicates the reason for getting cache stats. Refer sharedconsts.h for valid values.
+ * @param[in] A pointer of SH_OSCachesysv
+ * 
+ * @return 0 on success and -1 for failure
+ */
+IDATA 
+SH_OSCachesysv::getNonTopLayerCacheInfo(J9JavaVM* vm, const char* ctrlDirName, UDATA groupPerm, const char *cacheNameWithVGen, SH_OSCache_Info *cacheInfo, UDATA reason, SH_OSCachesysv* oscache)
+{
+	IDATA retval = 0;
+	PORT_ACCESS_FROM_JAVAVM(vm);
+	char cacheDirName[J9SH_MAXPATH];
+	
+	Trc_SHR_OSC_Sysv_getNonTopLayerCacheInfo_Entry(ctrlDirName, groupPerm, cacheNameWithVGen, reason);
+
+	Trc_SHR_Assert_True(SHR_STATS_REASON_ITERATE == reason);
+	SH_OSCache::getCacheDir(vm, ctrlDirName, cacheDirName, J9SH_MAXPATH, J9PORT_SHR_CACHE_TYPE_NONPERSISTENT);
+	if (SH_OSCachesysv::getCacheStatsHelper(vm, cacheDirName, groupPerm, cacheNameWithVGen, cacheInfo, reason) == 0) {
+		/* Using 'SH_OSCachesysv cacheStruct' breaks the pattern of calling getRequiredConstrBytes(), and then allocating memory.
+		 * However it is consistent with 'SH_OSCachemmap::getCacheStats'.
+		 */
+		J9PortShcVersion versionData;
+
+		getValuesFromShcFilePrefix(PORTLIB, cacheNameWithVGen, &versionData);
+		versionData.cacheType = J9PORT_SHR_CACHE_TYPE_NONPERSISTENT;
+
+		Trc_SHR_Assert_True(1 == cacheInfo->isCompatible);
+		if (0 != oscache->_semid) {
+			cacheInfo->os_semid = oscache->_semid;
+		}
+
+	} else {
+		retval = -1;
+	}
+	
+	Trc_SHR_OSC_Sysv_getNonTopLayerCacheInfo_Exit(retval);
+	return retval;
+}
+
+/**
  * Find the first cache file in a given cacheDir
  * Follows the format of j9file_findfirst
- * 
+ *
  * @param [in] portLibrary  A port library
  * @param [in] sharedClassConfig
- * @param [out] resultbuf  The name of the file found 
- * 
+ * @param [out] resultbuf  The name of the file found
+ *
  * @return A handle to the first cache file found or -1 if the cache doesn't exist
- */ 
-UDATA 
+ */
+UDATA
 SH_OSCachesysv::findfirst(struct J9PortLibrary *portLibrary, char *cacheDir, char *resultbuf)
 {
 	UDATA rc;
 	PORT_ACCESS_FROM_PORT(portLibrary);
-	
+
 	Trc_SHR_OSC_Sysv_findfirst_Entry();
-	
+
 	rc = j9shmem_findfirst(cacheDir, resultbuf);
-	
+
 	Trc_SHR_OSC_Sysv_findfirst_Exit(rc);
 	return rc;
 }
@@ -1855,23 +1923,23 @@ SH_OSCachesysv::findfirst(struct J9PortLibrary *portLibrary, char *cacheDir, cha
 /**
  * Find the next file in a given cacheDir
  * Follows the format of j9file_findnext
- * 
+ *
  * @param [in] portLibrary  A port library
  * @param [in] findHandle  The handle of the last file found
- * @param [out] resultbuf  The name of the file found 
- * 
+ * @param [out] resultbuf  The name of the file found
+ *
  * @return A handle to the cache file found or -1 if the cache doesn't exist
  */
-I_32 
+I_32
 SH_OSCachesysv::findnext(struct J9PortLibrary *portLibrary, UDATA findHandle, char *resultbuf)
 {
 	I_32 rc;
 	PORT_ACCESS_FROM_PORT(portLibrary);
-	
+
 	Trc_SHR_OSC_Sysv_findnext_Entry(findHandle);
-	
+
 	rc = j9shmem_findnext(findHandle, resultbuf);
-	
+
 	Trc_SHR_OSC_Sysv_findnext_Exit(rc);
 	return rc;
 }
@@ -1879,11 +1947,11 @@ SH_OSCachesysv::findnext(struct J9PortLibrary *portLibrary, UDATA findHandle, ch
 /**
  * Finish finding caches
  * Follows the format of j9file_findclose
- * 
+ *
  * @param [in] portLibrary  A port library
  * @param [in] findHandle  The handle of the last file found
  */
-void 
+void
 SH_OSCachesysv::findclose(struct J9PortLibrary *portLibrary, UDATA findhandle)
 {
 	PORT_ACCESS_FROM_PORT(portLibrary);
@@ -1894,67 +1962,31 @@ SH_OSCachesysv::findclose(struct J9PortLibrary *portLibrary, UDATA findhandle)
 }
 
 /* Used for connecting to legacy cache headers */
-void* 
+void*
 SH_OSCachesysv::getSysvHeaderFieldAddressForGen(void* header, UDATA headerGen, UDATA fieldID)
 {
 	return (U_8*)header + getSysvHeaderFieldOffsetForGen(headerGen, fieldID);
 }
 
 /* Used for connecting to legacy cache headers */
-IDATA 
+IDATA
 SH_OSCachesysv::getSysvHeaderFieldOffsetForGen(UDATA headerGen, UDATA fieldID)
 {
-	switch(headerGen) {
-	case OSCACHE_CURRENT_CACHE_GEN :
-	case 34:
-	case 33:
-	case 32:
-	case 31:
-	case 30:
-	case 29:
-	case 28:
-	case 27:
-	case 26:
-	case 25:
-	case 24:
-	case 23:
-    case 22:
-    case 21:
-	case 20:
-	case 19:
-	case 18:
-	case 17:
-	case 16:
-	case 15:
-	case 14:
-	case 13:
-	case 12:
-	case 11:
-	case 10:
-	case 9 :
-	case 8 :
-	case 7 :
-	case 6 :
-	case 5 :
-	{
+	if ((4 < headerGen) && (headerGen <= OSCACHE_CURRENT_CACHE_GEN)) {
 		switch (fieldID) {
 		case OSCACHESYSV_HEADER_FIELD_IN_DEFAULT_CONTROL_DIR :
 			return offsetof(OSCachesysv_header_version_current, inDefaultControlDir);
 		default :
 			return offsetof(OSCachesysv_header_version_current, oscHdr) + getHeaderFieldOffsetForGen(headerGen, fieldID);
 		}
-	}
-	case 4 :
-	{
+	} else if (4 == headerGen) {
 		switch (fieldID) {
 		case OSCACHESYSV_HEADER_FIELD_IN_DEFAULT_CONTROL_DIR :
 			return offsetof(OSCachesysv_header_version_G04, inDefaultControlDir);
 		default :
 			return offsetof(OSCachesysv_header_version_G04, oscHdr) + getHeaderFieldOffsetForGen(headerGen, fieldID);
 		}
-	}
-	case 3 :
-	{
+	} else if (3 == headerGen) {
 		switch (fieldID) {
 		case OSCACHESYSV_HEADER_FIELD_IN_DEFAULT_CONTROL_DIR :
 			return offsetof(OSCachesysv_header_version_G03, inDefaultControlDir);
@@ -1964,21 +1996,17 @@ SH_OSCachesysv::getSysvHeaderFieldOffsetForGen(UDATA headerGen, UDATA fieldID)
 			return offsetof(OSCachesysv_header_version_G03, oscHdr) + getHeaderFieldOffsetForGen(headerGen, fieldID);
 		}
 	}
-	default :
-		break;
-		/* Should never happen */
-	}
 	Trc_SHR_Assert_ShouldNeverHappen();
 	return 0;
 }
 
-UDATA 
+UDATA
 SH_OSCachesysv::getJavacoreData(J9JavaVM *vm, J9SharedClassJavacoreDataDescriptor* descriptor)
 {
 #if !defined(WIN32)
 	SH_OSCache_Info cacheInfo;
 #endif
-	
+
 	descriptor->cacheGen = _activeGeneration;
 #if defined(WIN32)
 	descriptor->shmid = descriptor->semid = -2;
@@ -1998,9 +2026,9 @@ SH_OSCachesysv::getJavacoreData(J9JavaVM *vm, J9SharedClassJavacoreDataDescripto
 
 /**
  * This method performs additional checks to catch scenarios that are not handled by permission and/or mode settings provided by operating system,
- * to avoid any unintended access to sempahore set.
+ * to avoid any unintended access to semaphore set.
  *
- * @param[in] lastErrorInfo	Pointer to store last portable error code and/or message
+ * @param[in] lastErrorInfo Pointer to store last portable error code and/or message
  *
  * @return enum SH_SysvSemAccess indicating if the process can access the semaphore set or not
  */
@@ -2110,7 +2138,7 @@ _end:
  * This method performs additional checks to catch scenarios that are not handled by permission and/or mode settings provided by operating system,
  * to avoid any unintended access to shared memory.
  *
- * @param[in] lastErrorInfo	Pointer to store last portable error code and/or message
+ * @param[in] lastErrorInfo Pointer to store last portable error code and/or message
  *
  * @return enum SH_SysvShmAccess indicating if the process can access the shared memory or not
  */
@@ -2186,7 +2214,7 @@ SH_OSCachesysv::checkSharedMemoryAccess(LastErrorInfo *lastErrorInfo)
 						Trc_SHR_OSC_Sysv_checkSharedMemoryAccess_GroupAccessRequired(shmid);
 
 						if (statBuf.perm.isGroupWriteable) {
-							/* The shared memory has group read-write permission set, so this process can use it if 'groupAcccess' option is specified. */
+							/* The shared memory has group read-write permission set, so this process can use it if 'groupAccess' option is specified. */
 							shmAccess = J9SH_SHM_ACCESS_GROUP_ACCESS_REQUIRED;
 						} else {
 							/* The shared memory does not have group write permission set, so this process can use it in readonly mode. */
@@ -2265,7 +2293,7 @@ SH_OSCachesysv::OpenSysVSemaphoreHelper(J9PortShcVersion* versionData, LastError
 		flags |= J9SHSEM_OPEN_DO_NOT_CREATE;
 	}
 
-	switch(action){
+	switch (action) {
 		case J9SH_SYSV_REGULAR_CONTROL_FILE:
 			rc = j9shsem_deprecated_open(_cacheDirName, _groupPerm, &_semhandle, _semFileName, (int)_totalNumSems, 0, flags, &_controlFileStatus);
 			break;
@@ -2310,13 +2338,13 @@ SH_OSCachesysv::DestroySysVSemHelper()
 
 	action = SH_OSCachesysv::SysVCacheFileTypeHelper(cacheVMVersion, genVersion);
 
-	switch(action){
+	switch (action) {
 		case J9SH_SYSV_REGULAR_CONTROL_FILE:
 			rc = j9shsem_deprecated_destroy(&_semhandle);
 			break;
 		case J9SH_SYSV_OLDER_EMPTY_CONTROL_FILE:
 			rc = j9shsem_deprecated_destroyDeprecated(&_semhandle, J9SH_SYSV_OLDER_EMPTY_CONTROL_FILE);
-			break; 
+			break;
 		case J9SH_SYSV_OLDER_CONTROL_FILE:
 			rc = j9shsem_deprecated_destroyDeprecated(&_semhandle, J9SH_SYSV_OLDER_CONTROL_FILE);
 			break;
@@ -2335,7 +2363,7 @@ SH_OSCachesysv::DestroySysVSemHelper()
 			OSC_ERR_TRACE1(J9NLS_SHRC_OSCACHE_SEMAPHORE_DESTROY_NOT_PERMITTED, j9shsem_deprecated_getid(_semhandle));
 		} else {
 			const char * errormsg = j9error_last_error_message();
-			
+
 			OSC_ERR_TRACE1(J9NLS_SHRC_OSCACHE_DESTROYSEM_ERROR_WITH_SEMID, j9shsem_deprecated_getid(_semhandle));
 			OSC_ERR_TRACE1(J9NLS_SHRC_OSCACHE_PORT_ERROR_NUMBER_SYSV_ERR, errorno);
 			Trc_SHR_Assert_True(errormsg != NULL);
@@ -2344,7 +2372,7 @@ SH_OSCachesysv::DestroySysVSemHelper()
 #else /* !defined(WIN32) */
 		I_32 errorno = j9error_last_error_number();
 		const char * errormsg = j9error_last_error_message();
-		
+
 		OSC_ERR_TRACE(J9NLS_SHRC_OSCACHE_DESTROYSEM_ERROR);
 		OSC_ERR_TRACE1(J9NLS_SHRC_OSCACHE_PORT_ERROR_NUMBER_SYSV_ERR, errorno);
 		Trc_SHR_Assert_True(errormsg != NULL);
@@ -2384,7 +2412,7 @@ SH_OSCachesysv::OpenSysVMemoryHelper(const char* cacheName, U_32 perm, LastError
 
 	action = SH_OSCachesysv::SysVCacheFileTypeHelper(cacheVMVersion, genVersion);
 
-	switch(action){
+	switch (action) {
 		case J9SH_SYSV_REGULAR_CONTROL_FILE:
 			if (J9_ARE_ANY_BITS_SET(_createFlags, J9SH_OSCACHE_OPEXIST_STATS)) {
 				flags |= J9SHMEM_OPEN_FOR_STATS;
@@ -2395,8 +2423,8 @@ SH_OSCachesysv::OpenSysVMemoryHelper(const char* cacheName, U_32 perm, LastError
 			}
 #if defined(J9ZOS390)
 			if (0 != (_runtimeFlags & J9SHR_RUNTIMEFLAG_ENABLE_STORAGEKEY_TESTING)) {
-				flags |=  J9SHMEM_STORAGE_KEY_TESTING;
-				flags |=  _storageKeyTesting << J9SHMEM_STORAGE_KEY_TESTING_SHIFT;
+				flags |= J9SHMEM_STORAGE_KEY_TESTING;
+				flags |= _storageKeyTesting << J9SHMEM_STORAGE_KEY_TESTING_SHIFT;
 			}
 			flags |= J9SHMEM_PRINT_STORAGE_KEY_WARNING;
 #endif
@@ -2444,7 +2472,7 @@ SH_OSCachesysv::StatSysVMemoryHelper(J9PortLibrary* portLibrary, const char* cac
 
 	action = SH_OSCachesysv::SysVCacheFileTypeHelper(cacheVMVersion, genVersion);
 
-	switch(action){
+	switch (action) {
 		case J9SH_SYSV_REGULAR_CONTROL_FILE:
 			rc = j9shmem_stat(cacheDirName, groupPerm, cacheNameWithVGen, statbuf);
 			break;
@@ -2463,7 +2491,6 @@ SH_OSCachesysv::StatSysVMemoryHelper(J9PortLibrary* portLibrary, const char* cac
 	Trc_SHR_OSC_Sysv_StatSysVMemoryHelper_Exit(rc);
 	return rc;
 }
-
 
 IDATA
 SH_OSCachesysv::DestroySysVMemoryHelper()
@@ -2487,13 +2514,13 @@ SH_OSCachesysv::DestroySysVMemoryHelper()
 
 	action = SH_OSCachesysv::SysVCacheFileTypeHelper(cacheVMVersion, genVersion);
 
-	switch(action){
+	switch (action) {
 		case J9SH_SYSV_REGULAR_CONTROL_FILE:
 			rc = j9shmem_destroy(_cacheDirName, _groupPerm, &_shmhandle);
 			break;
 		case J9SH_SYSV_OLDER_EMPTY_CONTROL_FILE:
 			rc = j9shmem_destroyDeprecated(_cacheDirName, _groupPerm, &_shmhandle, J9SH_SYSV_OLDER_EMPTY_CONTROL_FILE);
-			break; 
+			break;
 		case J9SH_SYSV_OLDER_CONTROL_FILE:
 			rc = j9shmem_destroyDeprecated(_cacheDirName, _groupPerm, &_shmhandle, J9SH_SYSV_OLDER_CONTROL_FILE);
 			break;
@@ -2533,7 +2560,6 @@ done:
 
 }
 
-
 UDATA
 SH_OSCachesysv::SysVCacheFileTypeHelper(U_64 currentVersion, UDATA genVersion)
 {
@@ -2544,13 +2570,13 @@ SH_OSCachesysv::SysVCacheFileTypeHelper(U_64 currentVersion, UDATA genVersion)
 	 * C250 VM is used by Java 6 WRT and SRT
 	 * C260 VM is used by Java 7, possibly Java 6
 	 */
-	U_64 C230VMversion   = getCacheVersionToU64(2, 30);
-	U_64 C240VMversion   = getCacheVersionToU64(2, 40);
-	U_64 C250VMversion   = getCacheVersionToU64(2, 50);
-	U_64 C260VMversion   = getCacheVersionToU64(2, 60);
+	U_64 C230VMversion = getCacheVersionToU64(2, 30);
+	U_64 C240VMversion = getCacheVersionToU64(2, 40);
+	U_64 C250VMversion = getCacheVersionToU64(2, 50);
+	U_64 C260VMversion = getCacheVersionToU64(2, 60);
 
 	if (currentVersion >= C260VMversion) {
-		switch(genVersion) {
+		switch (genVersion) {
 			case 1:
 			case 2:
 			case 3:
@@ -2565,7 +2591,7 @@ SH_OSCachesysv::SysVCacheFileTypeHelper(U_64 currentVersion, UDATA genVersion)
 		}
 
 	} else if (currentVersion >= C250VMversion) {
-		switch(genVersion) {
+		switch (genVersion) {
 			case 1:
 			case 2:
 			case 3:
@@ -2577,7 +2603,7 @@ SH_OSCachesysv::SysVCacheFileTypeHelper(U_64 currentVersion, UDATA genVersion)
 		}
 
 	} else if (currentVersion >= C240VMversion) {
-		switch(genVersion) {
+		switch (genVersion) {
 			case 1:
 			case 2:
 			case 3:
@@ -2600,7 +2626,6 @@ SH_OSCachesysv::SysVCacheFileTypeHelper(U_64 currentVersion, UDATA genVersion)
 		Trc_SHR_Assert_ShouldNeverHappen();
 	}
 
-
 	Trc_SHR_OSC_Sysv_SysVCacheFileTypeHelper_Event(currentVersion, rc);
 	return rc;
 }
@@ -2610,7 +2635,7 @@ SH_OSCachesysv::SysVCacheFileTypeHelper(U_64 currentVersion, UDATA genVersion)
  *
  * @param [in] cacheDirName directory containing cache control file
  * @param [in] filename "semaphore" or "memory" depending on type of control file
- * @param [out]	isNotReadable true if the file cannot be read, false otherwise
+ * @param [out] isNotReadable true if the file cannot be read, false otherwise
  * @param [out] isReadOnly true if the file is read-only, false otherwise
  *
  * @return -1 if it fails to get file stats, 0 otherwise.
@@ -2658,7 +2683,7 @@ SH_OSCachesysv::getControlFilePerm(char *cacheDirName, char *filename, bool *isN
 
 #endif
 
-void * 
+void *
 SH_OSCachesysv::getAttachedMemory()
 {
 	/* This method should only be called between calls to attach and detach
@@ -2672,18 +2697,18 @@ SH_OSCachesysv::getAttachedMemory()
  * @param[in] vm The current J9JavaVM
  * @param[in] cacheName The name of the cache
  * @param[in] numLocks The number of locks to be initialized
- * @param[in] i Pointer to an initialiser to be used to initialise the data area of the new cache
+ * @param[in] i Pointer to an initializer to be used to initialize the data area of the new cache
  * @param[in, out] cacheExist True if the cache to be restored already exits, false otherwise
  *
  * @return 0 on success and -1 on failure
  */
 IDATA
-SH_OSCachesysv::restoreFromSnapshot(J9JavaVM* vm, const char* cacheName, UDATA numLocks, SH_OSCache::SH_OSCacheInitialiser* i, bool* cacheExist)
+SH_OSCachesysv::restoreFromSnapshot(J9JavaVM* vm, const char* cacheName, UDATA numLocks, SH_OSCache::SH_OSCacheInitializer* i, bool* cacheExist)
 {
 	PORT_ACCESS_FROM_JAVAVM(vm);
 	IDATA rc = 0;
-	char cacheDirName[J9SH_MAXPATH];		/* J9SH_MAXPATH defined to be EsMaxPath which is 1024 */
-	char nameWithVGen[CACHE_ROOT_MAXLEN];	/* CACHE_ROOT_MAXLEN defined to be 88 */
+	char cacheDirName[J9SH_MAXPATH];        /* J9SH_MAXPATH defined to be EsMaxPath which is 1024 */
+	char nameWithVGen[CACHE_ROOT_MAXLEN];   /* CACHE_ROOT_MAXLEN defined to be 88 */
 	char pathFileName[J9SH_MAXPATH];
 	J9PortShcVersion versionData;
 	IDATA fd = 0;
@@ -2695,14 +2720,14 @@ SH_OSCachesysv::restoreFromSnapshot(J9JavaVM* vm, const char* cacheName, UDATA n
 	setCurrentCacheVersion(vm, J2SE_VERSION(vm), &versionData);
 	versionData.cacheType = J9PORT_SHR_CACHE_TYPE_SNAPSHOT;
 
-	if (-1 == SH_OSCache::getCacheDir(PORTLIB, ctrlDirName, cacheDirName, J9SH_MAXPATH, J9PORT_SHR_CACHE_TYPE_SNAPSHOT)) {
+	if (-1 == SH_OSCache::getCacheDir(vm, ctrlDirName, cacheDirName, J9SH_MAXPATH, J9PORT_SHR_CACHE_TYPE_SNAPSHOT)) {
 		Trc_SHR_OSC_Sysv_restoreFromSnapshot_getCacheDirFailed();
-		OSC_ERR_TRACE(J9NLS_SHRC_GETSNAPSHOTDIR_FAILED);
+		/* NLS message has been printed out inside SH_OSCache::getCacheDir() if verbose flag is not 0 */
 		rc = -1;
 		goto done;
 	}
 
-	SH_OSCache::getCacheVersionAndGen(PORTLIB, vm, nameWithVGen, CACHE_ROOT_MAXLEN, cacheName, &versionData, OSCACHE_CURRENT_CACHE_GEN, false);
+	SH_OSCache::getCacheVersionAndGen(PORTLIB, vm, nameWithVGen, CACHE_ROOT_MAXLEN, cacheName, &versionData, OSCACHE_CURRENT_CACHE_GEN, false, _layer);
 	/* No check for the return value of getCachePathName() as it always returns 0 */
 	SH_OSCache::getCachePathName(PORTLIB, cacheDirName, pathFileName, J9SH_MAXPATH, nameWithVGen);
 
@@ -2781,7 +2806,7 @@ SH_OSCachesysv::restoreFromSnapshot(J9JavaVM* vm, const char* cacheName, UDATA n
 
 			piconfig->sharedClassCacheSize = (UDATA)fileSize;
 			versionData.cacheType = J9PORT_SHR_CACHE_TYPE_NONPERSISTENT;
-			SH_OSCache::getCacheVersionAndGen(PORTLIB, vm, nameWithVGen, CACHE_ROOT_MAXLEN, cacheName, &versionData, OSCACHE_CURRENT_CACHE_GEN, true);
+			SH_OSCache::getCacheVersionAndGen(PORTLIB, vm, nameWithVGen, CACHE_ROOT_MAXLEN, cacheName, &versionData, OSCACHE_CURRENT_CACHE_GEN, true, _layer);
 			if (1 == SH_OSCache::statCache(PORTLIB, cacheDirName, nameWithVGen, false)) {
 #if !defined(WIN32)
 				J9PortShmemStatistic statbuf;
@@ -2820,7 +2845,7 @@ SH_OSCachesysv::restoreFromSnapshot(J9JavaVM* vm, const char* cacheName, UDATA n
 				bool cacheHasIntegrity = false;
 				I_32 semid = 0;
 				U_16 theVMCntr = 0;
-				OSCachesysv_header_version_current*  osCacheSysvHeader = NULL;
+				OSCachesysv_header_version_current* osCacheSysvHeader = NULL;
 				J9SharedCacheHeader* theca = (J9SharedCacheHeader *)attach(currentThread, &versionData);
 				IDATA nbytes = (IDATA)fileSize;
 				IDATA fileRc = 0;
@@ -2909,11 +2934,11 @@ done:
 /**
  * This method checks whether the group access of the semaphore is successfully set when a new cache is created with "groupAccess" suboption
  *
- * @param[in] lastErrorInfo	Pointer to store last portable error code and/or message.
+ * @param[in] lastErrorInfo Pointer to store last portable error code and/or message.
  *
  * @return -1 Failed to get the stats of the semaphore.
- * 			0 Group access is not set.
- * 			1 Group access is set.
+ *          0 Group access is not set.
+ *          1 Group access is set.
  */
 I_32
 SH_OSCachesysv::verifySemaphoreGroupAccess(LastErrorInfo *lastErrorInfo)
@@ -2942,11 +2967,11 @@ SH_OSCachesysv::verifySemaphoreGroupAccess(LastErrorInfo *lastErrorInfo)
 /**
  * This method checks whether the group access of the shared memory is successfully set when a new cache is created with "groupAccess" suboption
  *
- * @param[in] lastErrorInfo	Pointer to store last portable error code and/or message.
+ * @param[in] lastErrorInfo Pointer to store last portable error code and/or message.
  *
  * @return -1 Failed to get the stats of the shared memory.
- * 			0 Group access is not set.
- * 			1 Group access is set.
+ *          0 Group access is not set.
+ *          1 Group access is set.
  */
 I_32
 SH_OSCachesysv::verifySharedMemoryGroupAccess(LastErrorInfo *lastErrorInfo)

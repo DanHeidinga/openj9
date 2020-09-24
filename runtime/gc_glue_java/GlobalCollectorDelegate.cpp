@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2017, 2017 IBM Corp. and others
+ * Copyright (c) 2017, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -51,6 +51,9 @@
 #include "ObjectModel.hpp"
 #include "ParallelGlobalGC.hpp"
 #include "ParallelHeapWalker.hpp"
+#if defined(OMR_ENV_DATA64) && defined(OMR_GC_FULL_POINTERS)
+#include "ReadBarrierVerifier.hpp"
+#endif /* defined(OMR_ENV_DATA64) && defined(OMR_GC_FULL_POINTERS) */
 #include "ReferenceChainWalkerMarkMap.hpp"
 #include "ReferenceObjectList.hpp"
 #include "ScavengerJavaStats.hpp"
@@ -67,8 +70,8 @@ static void
 fixObjectIfClassDying(OMR_VMThread *omrVMThread, MM_HeapRegionDescriptor *region, omrobjectptr_t object, void *userData)
 {
 	/* Check to see if the object's class is being unloaded. If so, it can't be left as dark matter so abandon it */
-	uintptr_t classFlags = J9CLASS_FLAGS(J9GC_J9OBJECT_CLAZZ(object));
-	if (0 != (classFlags & J9_JAVA_CLASS_DYING)) {
+	uintptr_t classFlags = J9CLASS_FLAGS(J9GC_J9OBJECT_CLAZZ_CMP(object, OMRVMTHREAD_COMPRESS_OBJECT_REFERENCES(omrVMThread)));
+	if (0 != (classFlags & J9AccClassDying)) {
 		MM_MemorySubSpace *memorySubSpace = region->getSubSpace();
 		uintptr_t deadObjectByteSize = MM_GCExtensions::getExtensions(omrVMThread)->objectModel.getConsumedSizeInBytesWithHeader(object);
 		memorySubSpace->abandonHeapChunk(object, ((U_8*)object) + deadObjectByteSize);
@@ -97,7 +100,16 @@ MM_GlobalCollectorDelegate::initialize(MM_EnvironmentBase *env, MM_GlobalCollect
 
 	/* Balanced and realtime polices will instantiate their own access barrier */
 	if (_extensions->isStandardGC()) {
-		_extensions->accessBarrier = MM_StandardAccessBarrier::newInstance(env);
+
+#if defined(OMR_ENV_DATA64) && defined(OMR_GC_FULL_POINTERS)
+		if (1 == _extensions->fvtest_enableReadBarrierVerification) {
+			_extensions->accessBarrier = MM_ReadBarrierVerifier::newInstance(env);
+		} else
+#endif /* defined(OMR_ENV_DATA64) && defined(OMR_GC_FULL_POINTERS) */
+		{
+			_extensions->accessBarrier = MM_StandardAccessBarrier::newInstance(env);
+		}
+
 		if (NULL == _extensions->accessBarrier) {
 			return false;
 		}
@@ -116,7 +128,7 @@ MM_GlobalCollectorDelegate::tearDown(MM_EnvironmentBase *env)
 }
 
 void
-MM_GlobalCollectorDelegate::masterThreadGarbageCollectStarted(MM_EnvironmentBase *env)
+MM_GlobalCollectorDelegate::mainThreadGarbageCollectStarted(MM_EnvironmentBase *env)
 {
 	/* Clear the java specific mark stats */
 	_extensions->markJavaStats.clear();
@@ -166,7 +178,7 @@ MM_GlobalCollectorDelegate::masterThreadGarbageCollectStarted(MM_EnvironmentBase
 }
 
 void
-MM_GlobalCollectorDelegate::masterThreadGarbageCollectFinished(MM_EnvironmentBase *env, bool compactedThisCycle)
+MM_GlobalCollectorDelegate::mainThreadGarbageCollectFinished(MM_EnvironmentBase *env, bool compactedThisCycle)
 {
 	/* Check that all reference object lists are empty:
 	 * lists must be processed at Mark and nothing should be flushed after
@@ -271,10 +283,10 @@ MM_GlobalCollectorDelegate::postMarkProcessing(MM_EnvironmentBase *env)
 #if defined(J9VM_GC_FINALIZATION)
 	if (_finalizationRequired) {
 		/* Signal the finalizer */
-		omrthread_monitor_enter(_javaVM->finalizeMasterMonitor);
-		_javaVM->finalizeMasterFlags |= J9_FINALIZE_FLAGS_MASTER_WAKE_UP;
-		omrthread_monitor_notify_all(_javaVM->finalizeMasterMonitor);
-		omrthread_monitor_exit(_javaVM->finalizeMasterMonitor);
+		omrthread_monitor_enter(_javaVM->finalizeMainMonitor);
+		_javaVM->finalizeMainFlags |= J9_FINALIZE_FLAGS_MAIN_WAKE_UP;
+		omrthread_monitor_notify_all(_javaVM->finalizeMainMonitor);
+		omrthread_monitor_exit(_javaVM->finalizeMainMonitor);
 	}
 #endif /* J9VM_GC_FINALIZATION */
 }
@@ -298,6 +310,20 @@ MM_GlobalCollectorDelegate::prepareHeapForWalk(MM_EnvironmentBase *env)
 	}
 #endif /* J9VM_GC_DYNAMIC_CLASS_UNLOADING */
 }
+
+#if defined(OMR_ENV_DATA64) && defined(OMR_GC_FULL_POINTERS)
+void
+MM_GlobalCollectorDelegate::poisonSlots(MM_EnvironmentBase *env)
+{
+	((MM_ReadBarrierVerifier *)_extensions->accessBarrier)->poisonSlots(env);
+}
+
+void
+MM_GlobalCollectorDelegate::healSlots(MM_EnvironmentBase *env)
+{
+	((MM_ReadBarrierVerifier *)_extensions->accessBarrier)->healSlots(env);
+}
+#endif /* defined(OMR_ENV_DATA64) && defined(OMR_GC_FULL_POINTERS) */
 
 bool
 MM_GlobalCollectorDelegate::heapAddRange(MM_EnvironmentBase *env, MM_MemorySubSpace *subspace, UDATA size, void *lowAddress, void *highAddress)
@@ -420,7 +446,7 @@ MM_GlobalCollectorDelegate::unloadDeadClassLoaders(MM_EnvironmentBase *env)
 	/* The list of classLoaders to be unloaded by cleanUpClassLoadersEnd is rooted in unloadLink */
 
 	/* set the vmState whilst we're unloading classes */
-	UDATA vmState = env->pushVMstate(J9VMSTATE_GC_UNLOADING_DEAD_CLASSLOADERS);
+	UDATA vmState = env->pushVMstate(OMRVMSTATE_GC_CLEANING_METADATA);
 
 	/* Count the classes we're unloading and perform class-specific clean up work for each unloading class.
 	 * If we're unloading any classes, perform common class-unloading clean up.

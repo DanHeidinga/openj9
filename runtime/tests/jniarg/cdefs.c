@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1998, 2017 IBM Corp. and others
+ * Copyright (c) 1998, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -51,6 +51,8 @@ const jfloat test_jfloat[] = { 11.1f, 12.2f, 13.3f, 14.4f, 15.5f, 16.6f, 17.7f, 
 
 const jdouble test_jdouble[] = { 11.1, 12.2, 13.3, 14.4, 15.5, 16.6, 17.7, 18.8, 19.9, 20.10, 21.11, 22.12, 23.13, 24.14, 25.15, 26.16, };
 
+const jboolean test_jboolean[] = { JNI_TRUE, JNI_FALSE };
+
 int argFailures = 0;
 int retValFailures = 0;
 int jniTests = 0;
@@ -71,6 +73,12 @@ J9JavaVM *getJ9JavaVM(JNIEnv * env)
 }
 
 
+void cFailure_jboolean(J9PortLibrary *portLib, char *functionName, int index, jboolean arg, jboolean expected)
+{
+	PORT_ACCESS_FROM_PORT(portLib);
+	j9tty_printf(portLib, "Argument error:  %s::arg%i got: %08X expected: %08X\n", functionName, index, arg, expected);
+	argFailures++;
+}
 void cFailure_jbyte(J9PortLibrary *portLib, char *functionName, int index, jbyte arg, jbyte expected)
 {
 	PORT_ACCESS_FROM_PORT(portLib);
@@ -131,8 +139,9 @@ void JNICALL Java_JniArgTests_logRetValError( JNIEnv *p_env, jobject p_this, jst
 	retValFailures ++;
 }
 
-void JNICALL Java_JniArgTests_summary( JNIEnv *p_env, jobject p_this )
+jint JNICALL Java_JniArgTests_summary( JNIEnv *p_env, jobject p_this )
 {
+	jint rc = 0;
 	J9JavaVM *javaVM = getJ9JavaVM(p_env);
 	PORT_ACCESS_FROM_JAVAVM(javaVM);
 
@@ -145,5 +154,11 @@ void JNICALL Java_JniArgTests_summary( JNIEnv *p_env, jobject p_this )
 	} else {
 		j9tty_printf( PORTLIB, "JNI ARG Tests PASSED\n" );
 	}
+
+	if ((argFailures + retValFailures) > 0) {
+		rc = 1;
+	}
+
+	return rc;
 }
 

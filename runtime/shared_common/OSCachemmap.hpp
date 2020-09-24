@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2017 IBM Corp. and others
+ * Copyright (c) 2001, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -39,10 +39,12 @@
 class SH_OSCachemmap : public SH_OSCacheFile
 {
 public:
-	static IDATA getCacheStats(J9JavaVM* vm, const char* cacheDirName, const char* filePath, SH_OSCache_Info* returnVal, UDATA reason);
+	static IDATA getCacheStats(J9JavaVM* vm, const char* ctrlDirName, UDATA groupPerm, const char *cacheNameWithVGen, SH_OSCache_Info *cacheInfo, UDATA reason, J9Pool** lowerLayerList);
+	
+	static IDATA getNonTopLayerCacheInfo(J9JavaVM* vm, const char* ctrlDirName, UDATA groupPerm, const char *cacheNameWithVGen, SH_OSCache_Info *cacheInfo, UDATA reason, SH_OSCachemmap* oscache);
 	  
 	SH_OSCachemmap(J9PortLibrary* portlib, J9JavaVM* vm, const char* cacheDirName, const char* cacheName, J9SharedClassPreinitConfig* piconfig, IDATA numLocks,
-			UDATA createFlag, UDATA verboseFlags, U_64 runtimeFlags, I_32 openMode, J9PortShcVersion* versionData, SH_OSCacheInitialiser* initialiser);
+			UDATA createFlag, UDATA verboseFlags, U_64 runtimeFlags, I_32 openMode, J9PortShcVersion* versionData, SH_OSCacheInitializer* initializer);
 	/*This constructor should only be used by this class or its parent*/
 	SH_OSCachemmap() {};
 
@@ -56,13 +58,15 @@ public:
 	void *operator new(size_t sizeArg, void *memoryPtrArg) { return memoryPtrArg; };
 
 	virtual bool startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPerm, const char* cacheName, J9SharedClassPreinitConfig* piconfig, IDATA numLocks,
-			UDATA createFlag, UDATA verboseFlags, U_64 runtimeFlags, I_32 openMode, UDATA storageKeyTesting, J9PortShcVersion* versionData, SH_OSCacheInitialiser* initialiser, UDATA reason);
+			UDATA createFlag, UDATA verboseFlags, U_64 runtimeFlags, I_32 openMode, UDATA storageKeyTesting, J9PortShcVersion* versionData, SH_OSCacheInitializer* initializer, UDATA reason);
 
 	virtual IDATA destroy(bool suppressVerbose, bool isReset = false);
 
 	virtual void cleanup();
 	
 	virtual void* attach(J9VMThread *currentThread, J9PortShcVersion* expectedVersionData);
+
+	virtual IDATA detach(void);
 	
 #if defined (J9SHR_MSYNC_SUPPORT)
 	virtual IDATA syncUpdates(void* start, UDATA length, U_32 flags);
@@ -72,12 +76,13 @@ public:
 	virtual IDATA getReadWriteLockID(void);
 	virtual IDATA acquireWriteLock(UDATA lockID);
 	virtual IDATA releaseWriteLock(UDATA lockID);
+	virtual U_64 getCreateTime(void);
   	
 	virtual void runExitCode();
 	
 	virtual IDATA getLockCapabilities();
 	
-	virtual void initialize(J9PortLibrary* portLibrary, char* memForConstructor, UDATA generation);
+	virtual void initialize(J9PortLibrary* portLibrary, char* memForConstructor, UDATA generation, I_8 layer);
 	
 	virtual IDATA setRegionPermissions(J9PortLibrary* portLibrary, void *address, UDATA length, UDATA flags);
 	
@@ -113,8 +118,7 @@ private:
 	I_32 updateLastDetachedTime();
 	I_32 createCacheHeader(OSCachemmap_header_version_current *cacheHeader, J9PortShcVersion* versionData);
 	bool setCacheLength(U_32 cacheSize, LastErrorInfo *lastErrorInfo);
-	I_32 initialiseDataHeader(SH_OSCacheInitialiser *initialiser);
-	void detach();
+	I_32 initializeDataHeader(SH_OSCacheInitializer *initializer);
 	
 	bool deleteCacheFile(LastErrorInfo *lastErrorInfo);
 	

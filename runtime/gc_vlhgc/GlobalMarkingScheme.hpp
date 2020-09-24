@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -48,13 +48,13 @@
 class MM_CardCleaner;
 class MM_Collector;
 class MM_CycleState;
-class MM_Dispatcher;
 class MM_GlobalGCStats;
 class MM_GlobalMarkingScheme;
 class MM_GlobalMarkingSchemeRootMarker;
 class MM_GlobalMarkingSchemeRootClearer;
 class MM_InterRegionRememberedSet;
 class MM_MarkMap;
+class MM_ParallelDispatcher;
 class MM_ReferenceStats;
 class MM_RootScanner;
 class MM_SublistPool;
@@ -83,18 +83,18 @@ private:
 	MM_CycleState *_cycleState; /**< Current cycle state information */
 	
 public:
-	virtual UDATA getVMStateID() { return J9VMSTATE_GC_MARK; };
+	virtual UDATA getVMStateID() { return OMRVMSTATE_GC_MARK; };
 	
 	virtual void run(MM_EnvironmentBase *env);
 	virtual void setup(MM_EnvironmentBase *env);
 	virtual void cleanup(MM_EnvironmentBase *env);
 	
-	virtual void masterSetup(MM_EnvironmentBase *env);
-	virtual void masterCleanup(MM_EnvironmentBase *env);
+	virtual void mainSetup(MM_EnvironmentBase *env);
+	virtual void mainCleanup(MM_EnvironmentBase *env);
 
 #if defined(J9MODRON_TGC_PARALLEL_STATISTICS)
 	virtual void synchronizeGCThreads(MM_EnvironmentBase *env, const char *id);
-	virtual bool synchronizeGCThreadsAndReleaseMaster(MM_EnvironmentBase *env, const char *id);
+	virtual bool synchronizeGCThreadsAndReleaseMain(MM_EnvironmentBase *env, const char *id);
 	virtual bool synchronizeGCThreadsAndReleaseSingleThread(MM_EnvironmentBase *env, const char *id);
 #endif /* J9MODRON_TGC_PARALLEL_STATISTICS */
 
@@ -109,7 +109,7 @@ public:
 	 * Create a ParallelMarkTask object.
 	 */
 	MM_ParallelGlobalMarkTask(MM_EnvironmentBase *env,
-			MM_Dispatcher *dispatcher, 
+			MM_ParallelDispatcher *dispatcher, 
 			MM_GlobalMarkingScheme *markingScheme, 
 			MarkAction action,
 			I_64 timeThreshold,
@@ -143,7 +143,7 @@ protected:
 public:
 	virtual UDATA getVMStateID() 
 	{ 
-		return J9VMSTATE_GC_CONCURRENT_MARK_TRACE;
+		return OMRVMSTATE_GC_CONCURRENT_MARK_TRACE;
 	}
 
 	UDATA getBytesScanned()
@@ -162,7 +162,7 @@ public:
 	 * Create a MM_ConcurrentGlobalMarkTask object.
 	 */
 	MM_ConcurrentGlobalMarkTask(MM_EnvironmentBase *env,
-			MM_Dispatcher *dispatcher, 
+			MM_ParallelDispatcher *dispatcher, 
 			MM_GlobalMarkingScheme *markingScheme, 
 			MarkAction action,
 			UDATA bytesToScan,
@@ -280,7 +280,7 @@ private:
 	 * Handling of Work Packets overflow case
 	 * Active STW Card Based Overflow Handler only.
 	 * For other types of STW Overflow Handlers always return false
-	 * @param env[in] The master GC thread
+	 * @param env[in] The main GC thread
 	 * @return true if overflow flag is set
 	 */
 	bool handleOverflow(MM_EnvironmentVLHGC *env);
@@ -430,8 +430,8 @@ public:
 	static MM_GlobalMarkingScheme *newInstance(MM_EnvironmentVLHGC *env); 
 	virtual void kill(MM_EnvironmentVLHGC *env);
 	
-	void masterSetupForGC(MM_EnvironmentVLHGC *env);
-	void masterCleanupAfterGC(MM_EnvironmentVLHGC *env);
+	void mainSetupForGC(MM_EnvironmentVLHGC *env);
+	void mainCleanupAfterGC(MM_EnvironmentVLHGC *env);
 	void workerSetupForGC(MM_EnvironmentVLHGC *env);
 
 	/**

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2017 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -19,7 +19,6 @@
  *
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
-
 
 #include "j2sever.h"
 #include "j9.h"
@@ -68,7 +67,7 @@ static UDATA
 isConstructor(J9Method *ramMethod)
 {
 	J9ROMMethod *romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(ramMethod);
-	return (0 == (romMethod->modifiers & J9_JAVA_STATIC)) && ('<' == J9UTF8_DATA(J9ROMMETHOD_GET_NAME(methodClass->romClass, romMethod))[0]);
+	return (0 == (romMethod->modifiers & J9AccStatic)) && ('<' == J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod))[0]);
 }
 
 /*
@@ -120,7 +119,8 @@ getClassAnnotationData(struct J9VMThread *vmThread, struct J9Class *declaringCla
 }
 
 jbyteArray
-getClassTypeAnnotationsAsByteArray(JNIEnv *env, jclass jlClass) {
+getClassTypeAnnotationsAsByteArray(JNIEnv *env, jclass jlClass)
+{
     jobject result = NULL;
     j9object_t clazz = NULL;
     J9VMThread *vmThread = (J9VMThread *) env;
@@ -137,7 +137,7 @@ getClassTypeAnnotationsAsByteArray(JNIEnv *env, jclass jlClass) {
     		}
     	}
     }
-    releaseVMAccess(vmThread);
+    exitVMToJNI(vmThread);
     return result;
 }
 
@@ -153,7 +153,8 @@ getFieldAnnotationData(struct J9VMThread *vmThread, struct J9Class *declaringCla
 }
 
 jbyteArray
-getFieldTypeAnnotationsAsByteArray(JNIEnv *env, jobject jlrField) {
+getFieldTypeAnnotationsAsByteArray(JNIEnv *env, jobject jlrField)
+{
     jobject result = NULL;
     j9object_t fieldObject = NULL;
     J9VMThread *vmThread = (J9VMThread *) env;
@@ -170,7 +171,7 @@ getFieldTypeAnnotationsAsByteArray(JNIEnv *env, jobject jlrField) {
     		}
     	}
     }
-    releaseVMAccess(vmThread);
+    exitVMToJNI(vmThread);
     return result;
 }
 
@@ -277,7 +278,7 @@ getMethodParametersAsArray(JNIEnv *env, jobject jlrExecutable)
 		jlrParameterClass = findClassAndCreateGlobalRef(env, "java/lang/reflect/Parameter");
 		if (NULL == jlrParameterClass) {
 			/* No trace point is needed. Exception trace point is thrown in findClassAndCreateGlobalRef */
-			goto error;
+			goto finished;
 		}
 		JCL_CACHE_SET(env, CLS_java_lang_reflect_Parameter, jlrParameterClass);
 	}
@@ -288,7 +289,7 @@ getMethodParametersAsArray(JNIEnv *env, jobject jlrExecutable)
 		initMethodID = (*env)->GetMethodID(env, jlrParameterClass, "<init>", "(Ljava/lang/String;ILjava/lang/reflect/Executable;I)V");
 		if (NULL == initMethodID) {
 			Trc_JCL_getMethodParametersAsArray_Failed_To_getMethodID_For_Parameter_init(env);
-			goto error;
+			goto finished;
 		}
 		JCL_CACHE_SET(env, MID_java_lang_reflect_Parameter_init, initMethodID);
 	}
@@ -296,23 +297,27 @@ getMethodParametersAsArray(JNIEnv *env, jobject jlrExecutable)
 
 	vmFuncs->internalEnterVMFromJNI(vmThread);
 	executableID = (J9JNIMethodID *)reflectMethodToID(vmThread, jlrExecutable);
-	vmFuncs->internalReleaseVMAccess(vmThread);
+	vmFuncs->internalExitVMToJNI(vmThread);
 
 	Trc_JCL_getMethodParametersAsArray_Event3(env, executableID);
 
 	if (NULL != executableID) {
 		PORT_ACCESS_FROM_VMC(vmThread);
 		J9Method *ramMethod = executableID->method;
-		J9ROMMethod * romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(ramMethod);
+		J9ROMMethod * romMethod = getOriginalROMMethod(ramMethod);
 		U_8 numberOfParameters = computeArgCount(romMethod);
 		J9MethodParametersData * parametersData = getMethodParametersFromROMMethod(romMethod);
 		U_8 index = 0;
 		char buffer[256];
 		J9MethodParameter * parameters = NULL;
 		BOOLEAN parameterListOkay = TRUE;
-		U_8 methodParametersLimit = computeArgCount(romMethod);
 		U_32 extMods = getExtendedModifiersDataFromROMMethod(romMethod);
 
+		if (NULL == parametersData) {
+			/* NULL return value from this method eventually JVM_GetMethodParameters triggers j.l.r.Executable.synthesizeAllParams() */
+			goto finished;
+		}
+		
 		if (J9_ARE_ANY_BITS_SET(extMods, CFR_METHOD_EXT_INVALID_CP_ENTRY)) {
 			parameterListOkay = FALSE;
 		}
@@ -323,15 +328,15 @@ getMethodParametersAsArray(JNIEnv *env, jobject jlrExecutable)
 		parametersArray = (*env)->NewObjectArray(env, numberOfParameters, jlrParameterClass, NULL);
 		if (NULL == parametersArray) {
 			Trc_JCL_getMethodParametersAsArray_Failed_To_Create_ParametersArray(env, numberOfParameters);
-			goto error;
+			goto finished;
 		}
 		Trc_JCL_getMethodParametersAsArray_Event5(env, parametersArray);
-		if ((NULL != parametersData) && (methodParametersLimit != parametersData->parameterCount)) {
+		if ((NULL != parametersData) && (numberOfParameters != parametersData->parameterCount)) {
 			/* PR 97987 force an error if mismatch between parameters attribute and actual argument count */
 			Trc_JCL_getMethodParametersAsArray_WrongParameterCount(env, parametersData->parameterCount);
 			parameterListOkay = FALSE;
 		}
-		for (index = 0; index < methodParametersLimit; index++) {
+		for (index = 0; index < numberOfParameters; index++) {
 		
 			U_16 flags = (NULL != parameters) ? parameters[index].flags : 0;
 			jstring nameStr = NULL;
@@ -349,9 +354,9 @@ getMethodParametersAsArray(JNIEnv *env, jobject jlrExecutable)
 							if (NULL == nameCharArray) {
 								vmFuncs->internalEnterVMFromJNI(vmThread);
 								vmFuncs->setNativeOutOfMemoryError(vmThread, 0, 0);
-								vmFuncs->internalReleaseVMAccess(vmThread);
+								vmFuncs->internalExitVMToJNI(vmThread);
 								Trc_JCL_getMethodParametersAsArray_Failed_To_Allocate_Memory_For_NameCharArray(env, utf8Length + 1);
-								goto error;
+								goto finished;
 							}
 						}
 						memcpy(nameCharArray, J9UTF8_DATA(nameUTF), utf8Length);
@@ -364,7 +369,7 @@ getMethodParametersAsArray(JNIEnv *env, jobject jlrExecutable)
 						}
 						if ((*env)->ExceptionCheck(env)) {
 							Trc_JCL_getMethodParametersAsArray_Failed_To_Create_NewStringUTF8(env, nameCharArray);
-							goto error;
+							goto finished;
 						}
 					} /* else anonymous parameter */
 				}
@@ -377,7 +382,7 @@ getMethodParametersAsArray(JNIEnv *env, jobject jlrExecutable)
 
 			if ((*env)->ExceptionCheck(env)) {
 				Trc_JCL_getMethodParametersAsArray_Failed_To_Create_java_lang_reflect_Parameter_Object(env, nameStr, flags, index);
-				goto error;
+				goto finished;
 			}
 			(*env)->SetObjectArrayElement(env, parametersArray, index, parameterObject);
 			(*env)->DeleteLocalRef(env, nameStr);
@@ -385,7 +390,7 @@ getMethodParametersAsArray(JNIEnv *env, jobject jlrExecutable)
 		}
 	}
 
-error:
+finished:
 	Trc_JCL_getMethodParametersAsArray_Exit(env, parametersArray);
 	return parametersArray;
 }
@@ -448,6 +453,7 @@ classForSignature(struct J9VMThread *vmThread, U_8 **sigDataPtr, struct J9ClassL
 
 	/* Non-array case */
 	switch (c) {
+	case 'Q':
 	case 'L': {
 		/* object case */
 		U_8 *tempData = sigData;
@@ -531,7 +537,7 @@ static j9object_t
 parameterTypesForMethod(struct J9VMThread *vmThread, struct J9Method *ramMethod, struct J9Class **returnType)
 {
 	j9object_t params = NULL;
-	J9UTF8 *sigUTF = J9ROMMETHOD_GET_SIGNATURE(methodClass->romClass, J9_ROM_METHOD_FROM_RAM_METHOD(ramMethod));
+	J9UTF8 *sigUTF = J9ROMMETHOD_SIGNATURE(J9_ROM_METHOD_FROM_RAM_METHOD(ramMethod));
 	J9ClassLoader* classLoader = J9_CLASS_FROM_METHOD(ramMethod)->classLoader;
 	U_8 *sigData = J9UTF8_DATA(sigUTF);
 	U_32 argCount = getArgCountFromSignature(sigUTF);
@@ -667,7 +673,7 @@ fillInReflectMethod(j9object_t methodObject, struct J9Class *declaringClass, jme
 	J9VMJAVALANGREFLECTMETHOD_SET_PARAMETERTYPES(vmThread, methodObject, parameterTypes);
 	J9VMJAVALANGREFLECTMETHOD_SET_RETURNTYPE(vmThread, methodObject, J9VM_J9CLASS_TO_HEAPCLASS(returnType));
 
-	nameUTF = J9ROMMETHOD_GET_NAME(methodClass->romClass, romMethod);
+	nameUTF = J9ROMMETHOD_NAME(romMethod);
 	nameString = gcFunctions->j9gc_createJavaLangString(vmThread, J9UTF8_DATA(nameUTF), (U_32) J9UTF8_LENGTH(nameUTF), J9_STR_INTERN);
 	if (NULL == nameString) {
 		DROP_OBJECT_IN_SPECIAL_FRAME(vmThread); /* methodObject */
@@ -824,6 +830,17 @@ createField(struct J9VMThread *vmThread, jfieldID fieldID)
 	J9VMJAVALANGREFLECTFIELD_SET_DECLARINGCLASS(vmThread, fieldObject, J9VM_J9CLASS_TO_HEAPCLASS(j9FieldID->declaringClass));
 #if defined(USE_SUN_REFLECT)
 	J9VMJAVALANGREFLECTFIELD_SET_MODIFIERS(vmThread, fieldObject, j9FieldID->field->modifiers & CFR_FIELD_ACCESS_MASK);
+#if JAVA_SPEC_VERSION >= 15
+	/* trust that static final fields and final record or hidden class fields will not be modified. */
+	if (J9_ARE_ALL_BITS_SET(j9FieldID->field->modifiers, J9AccFinal)) {
+		if (J9_ARE_ALL_BITS_SET(j9FieldID->field->modifiers, J9AccStatic)
+			|| J9ROMCLASS_IS_RECORD(j9FieldID->declaringClass->romClass)
+			|| J9ROMCLASS_IS_HIDDEN(j9FieldID->declaringClass->romClass)
+		) {
+			J9VMJAVALANGREFLECTFIELD_SET_TRUSTEDFINAL(vmThread, fieldObject, JNI_TRUE);
+		}
+	}
+#endif /* JAVA_SPEC_VERSION >= 15 */
 #endif
 
 	return fieldObject;
@@ -1030,7 +1047,7 @@ idToReflectField(J9VMThread* vmThread, jfieldID fieldID)
 			}
 		}
 	}
-	releaseVMAccess(vmThread);
+	exitVMToJNI(vmThread);
 	return result;
 }
 
@@ -1057,7 +1074,7 @@ idToReflectMethod(J9VMThread* vmThread, jmethodID methodID)
 			}
 		}
 	}
-	releaseVMAccess(vmThread);
+	exitVMToJNI(vmThread);
 	return result;
 }
 
@@ -1158,7 +1175,7 @@ preloadReflectWrapperClasses(J9JavaVM *javaVM)
 		(void) javaVM->internalVMFunctions->internalFindKnownClass(javaVM->mainThread, i, J9_FINDKNOWNCLASS_FLAG_INITIALIZE);
 	}
 	(void) javaVM->internalVMFunctions->internalFindKnownClass(javaVM->mainThread, J9VMCONSTANTPOOL_JAVALANGREFLECTINVOCATIONTARGETEXCEPTION, J9_FINDKNOWNCLASS_FLAG_INITIALIZE);
-	releaseVMAccess(javaVM->mainThread);
+	exitVMToJNI(javaVM->mainThread);
 }
 
 void
@@ -1195,13 +1212,13 @@ Java_java_lang_reflect_Array_multiNewArrayImpl(JNIEnv *env, jclass unusedClass, 
 	if (NULL != componentTypeClassObject) {
 		J9Class *componentTypeClass = J9VM_J9CLASS_FROM_HEAPCLASS(vmThread, componentTypeClassObject);
 
-		/* create an array class with one greater arity than desired */
-		UDATA count = dimensions + 1;
+		/* create an array class with the desired arity */
+		UDATA count = dimensions;
 		BOOLEAN exceptionIsPending = FALSE;
 
 		if (J9ROMCLASS_IS_ARRAY(componentTypeClass->romClass) && ((((J9ArrayClass *)componentTypeClass)->arity + dimensions) > J9_ARRAY_DIMENSION_LIMIT)) {
 			/* The spec says to throw IllegalArgumentException if the number of dimensions is greater than J9_ARRAY_DIMENSION_LIMIT */
-			releaseVMAccess(vmThread);
+			exitVMToJNI(vmThread);
 			throwNewIllegalArgumentException(env, NULL);
 			goto exit;
 		}
@@ -1231,7 +1248,7 @@ Java_java_lang_reflect_Array_multiNewArrayImpl(JNIEnv *env, jclass unusedClass, 
 			}
 		}
 	}
-	releaseVMAccess(vmThread);
+	exitVMToJNI(vmThread);
 exit:
 	return result;
 }
@@ -1333,7 +1350,7 @@ getDeclaredFieldHelper(JNIEnv *env, jobject declaringClass, jstring fieldName)
 			vmFuncs->setNativeOutOfMemoryError(vmThread, 0, 0);
 		}
 	}
-	vmFuncs->internalReleaseVMAccess(vmThread);
+	vmFuncs->internalExitVMToJNI(vmThread);
 	return result;
 }
 
@@ -1448,7 +1465,7 @@ heapoutofmemory:
 	goto done;
 
 done:
-	vmFuncs->internalReleaseVMAccess(vmThread);
+	vmFuncs->internalExitVMToJNI(vmThread);
 	return result;
 }
 
@@ -1562,7 +1579,7 @@ heapoutofmemory:
 	goto done;
 
 done:
-	vmFuncs->internalReleaseVMAccess(vmThread);
+	vmFuncs->internalExitVMToJNI(vmThread);
 	return result;
 }
 
@@ -1691,7 +1708,7 @@ retry:
 		walkFieldHierarchyDo(clazz, &state);
 
 		if (0 != data.restartRequired) {
-			/* Class redefinition resulted in an inconsitent state.
+			/* Class redefinition resulted in an inconsistent state.
 			 * Restart the operation
 			 */
 			if (NULL != result) {
@@ -1712,6 +1729,302 @@ heapoutofmemory:
 	goto done;
 
 done:
-	vmFuncs->internalReleaseVMAccess(vmThread);
+	vmFuncs->internalExitVMToJNI(vmThread);
+	return result;
+}
+
+/* Determine whether currentMethod is the accessor method for a record component with name componentName.
+ * an accessor method will have the same name as the component and take zero parameters.
+ */
+static U_8
+isRecordComponentAccessorMethodMatch(J9Method *currentMethod, const char* componentName, U_16 componentNameLength, const char* componentSignature, U_16 componentSignatureLength)
+{
+	J9ROMMethod *romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(currentMethod);
+
+	J9UTF8 *methodNameUtf8 = J9ROMMETHOD_NAME(romMethod);
+	const U_8 *methodName = J9UTF8_DATA(methodNameUtf8);
+	U_16 methodNameLength = J9UTF8_LENGTH(methodNameUtf8);
+
+	J9UTF8 *methodSignatureUtf8 = J9ROMMETHOD_SIGNATURE(romMethod);
+	const U_8 *methodSignature = J9UTF8_DATA(methodSignatureUtf8);
+	U_16 methodSignatureLength = J9UTF8_LENGTH(methodSignatureUtf8);
+
+	/* for a match methodSignature should be "()" + componentSignature */
+	if ((methodNameLength == componentNameLength)
+		&& (methodSignatureLength == (componentSignatureLength + 2))
+		&& (0 == memcmp(methodName, componentName, componentNameLength))
+		&& (0 == memcmp(methodSignature + 2, componentSignature, componentSignatureLength))
+	) {
+		return TRUE;
+	}
+	return FALSE;
+}
+
+/* Find the accessor method for a record component with name componantName. 
+ * componentIndex slot for current record component will be used to optimize search
+ */
+static J9Method*
+findRecordComponentAccessorMethod(J9VMThread* currentThread, J9Class* clazz, J9ROMRecordComponentShape* recordComponent, U_32 componentIndex, U_32 recordComponentCount)
+{
+	J9Method *currentMethod = clazz->ramMethods;
+	U_32 romMethodCount = clazz->romClass->romMethodCount;
+	J9Method *resultMethod = NULL;
+
+	const char* componentName = (const char*)J9UTF8_DATA(J9ROMRECORDCOMPONENTSHAPE_NAME(recordComponent));
+	U_16 componentNameLength = J9UTF8_LENGTH(J9ROMRECORDCOMPONENTSHAPE_NAME(recordComponent));
+	const char* componentSignature = (const char*)J9UTF8_DATA(J9ROMRECORDCOMPONENTSHAPE_SIGNATURE(recordComponent));
+	U_16 componentSignatureLength = J9UTF8_LENGTH(J9ROMRECORDCOMPONENTSHAPE_SIGNATURE(recordComponent));
+
+	/* javac typically generates each of the record components in order as the final recordComponentCount methods in the record class. 
+	* Probe the ramMethods array for a match at this point first before iterating through the entire method list. */
+	U_32 testSlot = romMethodCount - recordComponentCount + componentIndex;
+	if ((testSlot < romMethodCount) && isRecordComponentAccessorMethodMatch(currentMethod + testSlot, componentName, componentNameLength, componentSignature, componentSignatureLength)) {
+		resultMethod = currentMethod + testSlot;
+	} else {
+		for (; romMethodCount > 0; romMethodCount--) {
+			if (isRecordComponentAccessorMethodMatch(currentMethod, componentName, componentNameLength, componentSignature, componentSignatureLength)) {
+				resultMethod = currentMethod;
+				break;
+			}
+			currentMethod += 1;
+		}
+	}
+
+	return resultMethod;
+}
+
+/* Creates an array of RecordComponents for the given class and sets the following fields:
+ * - Class<?> clazz 
+ * - String name
+ * - Class<?> type
+ * - Method accessor
+ * - String signature
+ * - byte[] annotations
+ * - byte[] typeAnnotations
+ * - RecordComponent root (currently always null)
+ */
+jarray
+getRecordComponentsHelper(JNIEnv *env, jobject cls)
+{
+	J9VMThread *vmThread = (J9VMThread *)env;
+	J9JavaVM *vm = vmThread->javaVM;
+	J9InternalVMFunctions *vmFuncs = vm->internalVMFunctions;
+	J9MemoryManagerFunctions *mmFuncs = vm->memoryManagerFunctions;
+	jarray result = NULL;
+	J9Class *recordComponentClass = NULL;
+	J9Class *recordComponentArrayClass = NULL;
+	U_32 recordComponentCount = 0;
+	j9array_t recordComponentArrayObject = NULL;
+	J9Class *clazz = NULL;
+	J9ROMClass *romClass = NULL;
+
+	vmFuncs->internalEnterVMFromJNI(vmThread);
+
+	clazz = J9VM_J9CLASS_FROM_JCLASS(vmThread, (jclass)cls);
+	romClass = clazz->romClass;
+
+	recordComponentClass = J9VMJAVALANGREFLECTRECORDCOMPONENT(vm);
+	if (NULL != vmThread->currentException) {
+		goto done;
+	}
+
+	recordComponentArrayClass = fetchArrayClass(vmThread, recordComponentClass);
+	if (NULL != vmThread->currentException) {
+		goto done;
+	}
+
+	recordComponentCount = getNumberOfRecordComponents(romClass);
+
+	recordComponentArrayObject = (j9array_t) mmFuncs->J9AllocateIndexableObject(vmThread, recordComponentArrayClass,
+			recordComponentCount, J9_GC_ALLOCATE_OBJECT_NON_INSTRUMENTABLE);
+	if (NULL == recordComponentArrayObject) {
+		goto heapoutofmemory;
+	}
+
+	result = vmFuncs->j9jni_createLocalRef(env, (j9object_t)recordComponentArrayObject);
+	if (NULL == result) {
+		goto nativeoutofmemory;
+	}
+
+	if (recordComponentCount > 0) {
+		J9ROMRecordComponentShape* recordComponent = recordComponentStartDo(romClass);
+		U_32 rcIndex = 0;
+		for (; rcIndex < recordComponentCount; rcIndex++) {
+			j9object_t recordComponentObject = NULL;
+			J9UTF8* nameUTF = NULL;
+			j9object_t nameString = NULL;
+			U_8 *typeData = NULL;
+			J9Method* accessorMethod = NULL;
+			J9Class *typeClass = NULL;
+
+			recordComponentObject = mmFuncs->J9AllocateObject(vmThread, recordComponentClass, J9_GC_ALLOCATE_OBJECT_NON_INSTRUMENTABLE);
+			if (NULL == recordComponentObject) {
+				goto heapoutofmemory;
+			}
+
+			/** set RecordComponent fields **/
+
+			PUSH_OBJECT_IN_SPECIAL_FRAME(vmThread, recordComponentObject);
+
+			/* String name */
+			nameUTF = J9ROMRECORDCOMPONENTSHAPE_NAME(recordComponent);
+			nameString = mmFuncs->j9gc_createJavaLangString(vmThread, J9UTF8_DATA(nameUTF), (U_32) J9UTF8_LENGTH(nameUTF), J9_STR_INTERN);
+			if (NULL == nameString) {
+			 	DROP_OBJECT_IN_SPECIAL_FRAME(vmThread); /* recordComponentObject */
+			 	goto heapoutofmemory;
+			}
+			recordComponentObject = PEEK_OBJECT_IN_SPECIAL_FRAME(vmThread, 0);
+			J9VMJAVALANGREFLECTRECORDCOMPONENT_SET_NAME(vmThread, recordComponentObject, nameString);
+
+			/* Class<?> type */
+			typeData = J9UTF8_DATA(J9ROMRECORDCOMPONENTSHAPE_SIGNATURE(recordComponent));
+			typeClass = classForSignature(vmThread, &typeData, clazz->classLoader);
+			if (NULL == typeClass) {
+				DROP_OBJECT_IN_SPECIAL_FRAME(vmThread); /* recordComponentObject */
+				goto heapoutofmemory;
+			}
+			recordComponentObject = PEEK_OBJECT_IN_SPECIAL_FRAME(vmThread, 0);
+			J9VMJAVALANGREFLECTRECORDCOMPONENT_SET_TYPE(vmThread, recordComponentObject, J9VM_J9CLASS_TO_HEAPCLASS(typeClass));
+
+			/* Method accessor - this is the components getter method which will have the same name as the component itself. */
+			accessorMethod = findRecordComponentAccessorMethod(vmThread, clazz, recordComponent, rcIndex, recordComponentCount);
+			if (NULL != accessorMethod) {
+				j9object_t accessorObject = createMethodObject(accessorMethod, clazz, NULL, vmThread);
+				if (NULL == accessorObject) {
+					DROP_OBJECT_IN_SPECIAL_FRAME(vmThread); /* recordComponentObject */
+					goto heapoutofmemory;
+				}
+				recordComponentObject = PEEK_OBJECT_IN_SPECIAL_FRAME(vmThread, 0);
+				J9VMJAVALANGREFLECTRECORDCOMPONENT_SET_ACCESSOR(vmThread, recordComponentObject, accessorObject);
+			}
+
+			/* String signature */
+			if (recordComponentHasSignature(recordComponent)) {
+				J9UTF8* signatureUTF = getRecordComponentGenericSignature(recordComponent);
+				j9object_t signatureString = mmFuncs->j9gc_createJavaLangString(vmThread, J9UTF8_DATA(signatureUTF), (U_32) J9UTF8_LENGTH(signatureUTF), J9_STR_INTERN);
+				if (NULL == signatureString) {
+					DROP_OBJECT_IN_SPECIAL_FRAME(vmThread); /* recordComponentObject */
+					goto heapoutofmemory;
+				}
+				recordComponentObject = PEEK_OBJECT_IN_SPECIAL_FRAME(vmThread, 0);
+				J9VMJAVALANGREFLECTRECORDCOMPONENT_SET_SIGNATURE(vmThread, recordComponentObject, signatureString);
+			}
+
+			/* byte[] annotations */
+			if (recordComponentHasAnnotations(recordComponent)) {
+				U_32* annotationData = getRecordComponentAnnotationData(recordComponent);
+				j9object_t byteArray = getAnnotationDataAsByteArray(vmThread, annotationData);
+				if (NULL != vmThread->currentException) {
+					DROP_OBJECT_IN_SPECIAL_FRAME(vmThread); /* recordComponentObject */
+					goto done;
+				}
+				recordComponentObject = PEEK_OBJECT_IN_SPECIAL_FRAME(vmThread, 0);
+				J9VMJAVALANGREFLECTRECORDCOMPONENT_SET_ANNOTATIONS(vmThread, recordComponentObject, byteArray);
+			}
+
+			/* byte[] typeAnnotations */
+			if (recordComponentHasTypeAnnotations(recordComponent)) {
+				U_32* typeAnnotationData = getRecordComponentTypeAnnotationData(recordComponent);
+				j9object_t byteArray = getAnnotationDataAsByteArray(vmThread, typeAnnotationData);
+				if (NULL != vmThread->currentException) {
+					DROP_OBJECT_IN_SPECIAL_FRAME(vmThread); /* recordComponentObject */
+					goto done;
+				}
+				recordComponentObject = PEEK_OBJECT_IN_SPECIAL_FRAME(vmThread, 0);
+				J9VMJAVALANGREFLECTRECORDCOMPONENT_SET_TYPEANNOTATIONS(vmThread, recordComponentObject, byteArray);
+			}
+
+			/* end of setting parameters where class loading may occur */
+			recordComponentObject = POP_OBJECT_IN_SPECIAL_FRAME(vmThread);
+
+			/* Class<?> clazz */
+			J9VMJAVALANGREFLECTRECORDCOMPONENT_SET_CLAZZ(vmThread, recordComponentObject, J9VM_J9CLASS_TO_HEAPCLASS(clazz));
+
+			/* refetch array object because vmaccess could have been released */
+			recordComponentArrayObject = (j9array_t)J9_JNI_UNWRAP_REFERENCE(result);
+
+			/* store record component object into final array */
+			J9JAVAARRAYOFOBJECT_STORE(vmThread, recordComponentArrayObject, rcIndex, recordComponentObject);
+
+			recordComponent = recordComponentNextDo(recordComponent);
+		}
+	}
+	goto done;
+
+nativeoutofmemory:
+	vmFuncs->setNativeOutOfMemoryError(vmThread, 0, 0);
+	goto done;
+
+heapoutofmemory:
+	vmFuncs->setHeapOutOfMemoryError(vmThread);
+	goto done;
+
+done:
+	vmFuncs->internalExitVMToJNI(vmThread);
+	return result;
+}
+
+/* Create an array of string names for class's PermittedSubclasses */
+jarray
+permittedSubclassesHelper(JNIEnv *env, jobject cls)
+{
+	J9VMThread *vmThread = (J9VMThread *)env;
+	J9JavaVM *vm = vmThread->javaVM;
+	J9InternalVMFunctions *vmFuncs = vm->internalVMFunctions;
+	J9MemoryManagerFunctions *mmFuncs = vm->memoryManagerFunctions;
+	J9Class *clazz = NULL;
+	J9ROMClass *romClass = NULL;
+	jarray result = NULL;
+	J9Class *stringClass = NULL;
+	J9Class *stringArrayClass = NULL;
+	U_32 *permittedSubclassesCountPtr = 0;
+	j9array_t stringArrayObject = NULL;
+	U_32 index = 0;
+
+	vmFuncs->internalEnterVMFromJNI(vmThread);
+
+	clazz = J9VM_J9CLASS_FROM_JCLASS(vmThread, (jclass)cls);
+	romClass = clazz->romClass;
+
+	/* allocate String array for results */
+	stringClass = J9VMJAVALANGSTRING(vm);
+	if (NULL != vmThread->currentException) {
+		goto done;
+	}
+	stringArrayClass = fetchArrayClass(vmThread, stringClass);
+	if (NULL != vmThread->currentException) {
+		goto done;
+	}
+
+	permittedSubclassesCountPtr = getNumberOfPermittedSubclassesPtr(romClass);
+
+	stringArrayObject = (j9array_t) mmFuncs->J9AllocateIndexableObject(vmThread, stringArrayClass,
+				*permittedSubclassesCountPtr, J9_GC_ALLOCATE_OBJECT_NON_INSTRUMENTABLE);
+	if (NULL == stringArrayObject) {
+		goto heapoutofmemory;
+	}
+
+	result = vmFuncs->j9jni_createLocalRef(env, (j9object_t)stringArrayObject);
+
+	for (; index < *permittedSubclassesCountPtr; index++) {
+		J9UTF8* nameUTF = NULL;
+		j9object_t nameString = NULL;
+
+		nameUTF = permittedSubclassesNameAtIndex(permittedSubclassesCountPtr, index);
+		/* Translates string to a dot seperated name which is needed for ClassDesc.of in Java code. */
+		nameString = mmFuncs->j9gc_createJavaLangString(vmThread, J9UTF8_DATA(nameUTF), (U_32) J9UTF8_LENGTH(nameUTF), J9_STR_INTERN | J9_STR_XLAT);
+		if (NULL == nameString) {
+			goto heapoutofmemory;
+		}
+
+		J9JAVAARRAYOFOBJECT_STORE(vmThread, stringArrayObject, index, nameString);
+	}
+	goto done;
+
+heapoutofmemory:
+	vmFuncs->setHeapOutOfMemoryError(vmThread);
+	goto done;
+done:
+	vmFuncs->internalExitVMToJNI(vmThread);
 	return result;
 }

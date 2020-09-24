@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -29,7 +29,6 @@
 #include "CollectorLanguageInterfaceImpl.hpp"
 #endif /* defined(J9VM_GC_FINALIZATION) */
 #include "ConfigurationDelegate.hpp"
-#include "Dispatcher.hpp"
 #include "EnvironmentBase.hpp"
 #include "FinalizableObjectBuffer.hpp"
 #include "FinalizableReferenceBuffer.hpp"
@@ -42,6 +41,7 @@
 #include "MarkingSchemeRootClearer.hpp"
 #include "ModronAssertions.h"
 #include "OwnableSynchronizerObjectBuffer.hpp"
+#include "ParallelDispatcher.hpp"
 #include "ReferenceObjectBuffer.hpp"
 #include "ReferenceStats.hpp"
 #include "RootScanner.hpp"
@@ -248,7 +248,7 @@ MM_MarkingSchemeRootClearer::scanUnfinalizedObjectsComplete(MM_EnvironmentBase *
 		/* ensure that all unfinalized processing is complete before we start marking additional objects */
 		env->_currentTask->synchronizeGCThreads(env, UNIQUE_ID);
 		/* TODO: consider relaxing completeMarking into completeScan (which will skip over 'complete class marking' step).
-		 * This is to avoid potentianlly unnecessery sync point in class marking step. The class marking step that we do after
+		 * This is to avoid potentially unnecessary sync point in class marking step. The class marking step that we do after
 		 * phantom processing might be sufficient.
 		 */
 		_markingScheme->completeMarking(env);
@@ -307,8 +307,11 @@ void
 MM_MarkingSchemeRootClearer::doMonitorReference(J9ObjectMonitor *objectMonitor, GC_HashTableIterator *monitorReferenceIterator)
 {
 	J9ThreadAbstractMonitor * monitor = (J9ThreadAbstractMonitor*)objectMonitor->monitor;
+	_env->getGCEnvironment()->_markJavaStats._monitorReferenceCandidates += 1;
+
 	if(!_markingScheme->isMarked((omrobjectptr_t )monitor->userData)) {
 		monitorReferenceIterator->removeSlot();
+		_env->getGCEnvironment()->_markJavaStats._monitorReferenceCleared += 1;
 		/* We must call objectMonitorDestroy (as opposed to omrthread_monitor_destroy) when the
 		 * monitor is not internal to the GC */
 		static_cast<J9JavaVM*>(_omrVM->_language_vm)->internalVMFunctions->objectMonitorDestroy(static_cast<J9JavaVM*>(_omrVM->_language_vm), (J9VMThread *)_env->getLanguageVMThread(), (omrthread_monitor_t)monitor);

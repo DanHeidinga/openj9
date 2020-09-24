@@ -1,4 +1,4 @@
-// Copyright (c) 2006, 2017 IBM Corp. and others
+// Copyright (c) 2006, 2020 IBM Corp. and others
 //
 // This program and the accompanying materials are made available under
 // the terms of the Eclipse Public License 2.0 which accompanies this
@@ -183,9 +183,9 @@ TraceExit=Trc_SC_LatestUserDefinedLoader_Exit Overhead=1 Level=3 Template="JVM_L
 TraceEntry=Trc_SC_Listen_Entry NoEnv Overhead=1 Level=1 Template="JVM_Listen(descriptor=%d, count=%d)"
 TraceExit=Trc_SC_Listen_Exit NoEnv Overhead=1 Level=1 Template="JVM_Listen -- return %d"
 
-TraceEntry=Trc_SC_LoadLibrary_Entry NoEnv Overhead=1 Level=1 Template="JVM_LoadLibrary(name=%s)"
+TraceEntry=Trc_SC_LoadLibrary_Entry NoEnv Overhead=1 Level=2 Template="JVM_LoadLibrary(name=%s)"
 TraceExit-Exception=Trc_SC_LoadLibrary_Error Obsolete NoEnv Overhead=1 Level=1 Template="JVM_LoadLibrary -- error. Return %d"
-TraceExit=Trc_SC_LoadLibrary_Exit NoEnv Overhead=1 Level=1 Template="JVM_LoadLibrary -- return %d"
+TraceExit=Trc_SC_LoadLibrary_Exit NoEnv Overhead=1 Level=2 Template="JVM_LoadLibrary -- return %d"
 
 TraceEntry=Trc_SC_Lseek_Entry NoEnv Overhead=1 Level=3 Template="JVM_Lseek(descriptor=%d, bytesToSeek=%lld, origin=%d)"
 TraceExit-Exception=Trc_SC_Lseek_bad_descriptor NoEnv Overhead=1 Level=1 Template="invalid descriptor"
@@ -334,3 +334,17 @@ TraceExit=Trc_SC_GCNoCompact_Exit Overhead=1 Level=1 Template="JVM_GCNoCompact()
 TraceEntry=Trc_SC_LoadSystemLibrary_Entry NoEnv Overhead=1 Level=1 Template="JVM_LoadSystemLibrary(name=%s)"
 TraceExit=Trc_SC_LoadSystemLibrary_Exit NoEnv Overhead=1 Level=1 Template="JVM_LoadSystemLibrary -- return 0x%zx"
 TraceEvent=Trc_SC_LoadSystemLibrary_LoadFailed NoEnv Overhead=1 Level=1 Template="JVM_LoadSystemLibrary(name=%s) failed to load"
+
+TraceEntry=Trc_SC_RegisterSignal_Entry Overhead=1 Level=1 Template="JVM_RegisterSignal(signal=%d, handler=%p)"
+TraceExit=Trc_SC_RegisterSignal_Exit Overhead=1 Level=1 Template="JVM_RegisterSignal -- return old OS handler = %p"
+TraceException=Trc_SC_RegisterSignal_FailedToRegisterHandler Overhead=1 Level=1 Template="Failed to register handler: OS signal value = %d, new signal handler = %p, old signal handler = %p"
+
+TraceEntry=Trc_SC_GetExtendedNPEMessage_Entry Overhead=1 Level=3 Template="JVM_GetExtendedNPEMessage - throwableObj(0x%p)"
+TraceEntry=Trc_SC_GetExtendedNPEMessage_Entry2 Overhead=1 Level=1 Template="JVM_GetExtendedNPEMessage - throwableObj(0x%p)"
+TraceEvent=Trc_SC_GetExtendedNPEMessage_Null_NPE_MSG Overhead=1 Level=1 Template="JVM_GetExtendedNPEMessage - returns a NULL NPE message : romClass (0x%p) && romMethod (0x%p) bytecodeOffset (%d)"
+TraceExit=Trc_SC_GetExtendedNPEMessage_Exit Overhead=1 Level=3 Template="JVM_GetExtendedNPEMessage - returns msgObjectRef(0x%p)"
+
+TraceEntry=Trc_SC_UnloadLibrary_Entry NoEnv Overhead=1 Level=2 Template="JVM_UnloadLibrary(handle=%p)"
+TraceEvent=Trc_SC_LoadLibrary_BootStrap NoEnv Overhead=1 Level=3 Template="JVM_LoadLibrary(name=%s) Bootstrap library"
+TraceEvent=Trc_SC_LoadLibrary_OpenShared NoEnv Overhead=1 Level=3 Template="JVM_LoadLibrary(name=%s) j9sl_open_shared_library"
+TraceEvent=Trc_SC_LoadLibrary_OpenShared_Decorate NoEnv Overhead=1 Level=3 Template="JVM_LoadLibrary(name=%s) j9sl_open_shared_library J9PORT_SLOPEN_DECORATE"

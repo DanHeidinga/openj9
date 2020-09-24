@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 2017, 2017 IBM Corp. and others
+ * Copyright (c) 2017, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -42,7 +41,6 @@
 #include "ObjectAccessBarrier.hpp"
 #include "ObjectAllocationInterface.hpp"
 #include "StringTable.hpp"
-
 
 #include "OwnableSynchronizerObjectList.hpp"
 #include "ReferenceObjectList.hpp"
@@ -88,17 +86,19 @@ public:
 		if (extensions->alwaysCallWriteBarrier) {
 			writeBarrierType = gc_modron_wrtbar_always;
 		}
+
 		Assert_MM_true(gc_modron_wrtbar_illegal != writeBarrierType);
 		javaVM->gcWriteBarrierType = writeBarrierType;
 
 		if (extensions->alwaysCallReadBarrier) {
+			/* AlwaysCallReadBarrier takes precedence over other read barrier types */
 			javaVM->gcReadBarrierType = gc_modron_readbar_always;
+		} else if (extensions->isScavengerEnabled() && extensions->isConcurrentScavengerEnabled()) {
+			javaVM->gcReadBarrierType = gc_modron_readbar_range_check;
+		} else if (extensions->isVLHGC() && extensions->isConcurrentCopyForwardEnabled()) {
+			javaVM->gcReadBarrierType = gc_modron_readbar_region_check;
 		} else {
-			if (extensions->isConcurrentScavengerEnabled()) {
-				javaVM->gcReadBarrierType = gc_modron_readbar_evacuate;
-			} else {
-				javaVM->gcReadBarrierType = gc_modron_readbar_none;
-			}
+			javaVM->gcReadBarrierType = gc_modron_readbar_none;
 		}
 
 		/* set allocation type for J9 VM */
@@ -193,12 +193,12 @@ public:
 				extensions->unfinalizedObjectLists = &regionExtension->_unfinalizedObjectLists[list];
 
 				new(&regionExtension->_ownableSynchronizerObjectLists[list]) MM_OwnableSynchronizerObjectList();
-				regionExtension->_ownableSynchronizerObjectLists[list].setNextList(extensions->ownableSynchronizerObjectLists);
+				regionExtension->_ownableSynchronizerObjectLists[list].setNextList(extensions->getOwnableSynchronizerObjectLists());
 				regionExtension->_ownableSynchronizerObjectLists[list].setPreviousList(NULL);
-				if (NULL != extensions->ownableSynchronizerObjectLists) {
-					extensions->ownableSynchronizerObjectLists->setPreviousList(&regionExtension->_ownableSynchronizerObjectLists[list]);
+				if (NULL != extensions->getOwnableSynchronizerObjectLists()) {
+					extensions->getOwnableSynchronizerObjectLists()->setPreviousList(&regionExtension->_ownableSynchronizerObjectLists[list]);
 				}
-				extensions->ownableSynchronizerObjectLists = &regionExtension->_ownableSynchronizerObjectLists[list];
+				extensions->setOwnableSynchronizerObjectLists(&regionExtension->_ownableSynchronizerObjectLists[list]);
 
 				new(&regionExtension->_referenceObjectLists[list]) MM_ReferenceObjectList();
 			}
@@ -231,6 +231,7 @@ public:
 
 		switch (_gcPolicy) {
 		case gc_policy_optthruput:
+		case gc_policy_nogc:
 		case gc_policy_optavgpause:
 		case gc_policy_gencon:
 			hashSaltCount = 1;

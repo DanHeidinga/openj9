@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -33,6 +32,7 @@
 #include "j9cfg.h"
 #include "modron.h"
 #include "ModronAssertions.h"
+#include "GCExtensionsBase.hpp"
 
 #include "Bits.hpp"
 #include "ObjectModel.hpp"
@@ -46,6 +46,9 @@ class GC_MixedObjectIterator
 private:
 protected:
 	GC_SlotObject _slotObject;	/**< Create own SlotObject class to provide output */
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+	bool const _compressObjectReferences;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 
 	J9Object *_objectPtr;		/**< save address of object this class initiated with */
 	fj9object_t *_scanPtr;		/**< current scan pointer */
@@ -78,19 +81,40 @@ protected:
 
 public:
 	/**
+	 * Return back true if object references are compressed
+	 * @return true, if object references are compressed
+	 */
+	MMINLINE bool compressObjectReferences() {
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+#if defined(OMR_GC_FULL_POINTERS)
+#if defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES)
+		return (bool)OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES;
+#else /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+		return _compressObjectReferences;
+#endif /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+#else /* defined(OMR_GC_FULL_POINTERS) */
+		return true;
+#endif /* defined(OMR_GC_FULL_POINTERS) */
+#else /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return false;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+	}
+
+	/**
 	 * Initialize the internal walk description for the given object.
 	 * @param objectPtr[in] Mixed object to be scanned
 	 */
 	MMINLINE void 
-	initialize(J9Object *objectPtr)
+	initialize(OMR_VM *omrVM, J9Object *objectPtr)
 	{
+		MM_GCExtensionsBase *extensions = MM_GCExtensionsBase::getExtensions(omrVM);
 		_objectPtr = objectPtr;
-		J9Class *clazzPtr = J9GC_J9OBJECT_CLAZZ(objectPtr);
+		J9Class *clazzPtr = J9GC_J9OBJECT_CLAZZ(objectPtr, extensions);
 		initializeDescriptionBits(clazzPtr);
 
 		/* Set current and end scan pointers */
-		_scanPtr = (fj9object_t *)(objectPtr + 1);
-		_endPtr = (fj9object_t *)((U_8*)_scanPtr +clazzPtr->totalInstanceSize);
+		_scanPtr = extensions->mixedObjectModel.getHeadlessObject(objectPtr);
+		_endPtr = (fj9object_t *)((U_8*)_scanPtr + extensions->mixedObjectModel.getSizeInBytesWithoutHeader(objectPtr));
 	}
 
 	/**
@@ -99,14 +123,15 @@ public:
 	 * @param fj9object_t*[in] Address within an object to scan
 	 */
 	MMINLINE void 
-	initialize(J9Class *clazzPtr, fj9object_t *addr)
+	initialize(OMR_VM *omrVM, J9Class *clazzPtr, fj9object_t *addr)
 	{
+		MM_GCExtensionsBase *extensions = MM_GCExtensionsBase::getExtensions(omrVM);
 		_objectPtr = NULL;
 		initializeDescriptionBits(clazzPtr);
 
 		/* Set current and end scan pointers */
-		_scanPtr = (fj9object_t *)(addr);
-		_endPtr = (fj9object_t *)((U_8*)_scanPtr +clazzPtr->totalInstanceSize);
+		_scanPtr = addr;
+		_endPtr = (fj9object_t *)((U_8*)_scanPtr + extensions->mixedObjectModel.getSizeInBytesWithoutHeader(clazzPtr));
 	}
 
 
@@ -116,11 +141,12 @@ public:
 	 */
 	MMINLINE GC_SlotObject *nextSlot()
 	{
+		bool const compressed = compressObjectReferences();
 		while (_scanPtr < _endPtr) {
 			/* Record the slot information */
 			if (_description & 1) {
 				_slotObject.writeAddressToSlot(_scanPtr);
-				_scanPtr += 1;
+				_scanPtr = GC_SlotObject::addToSlotAddress(_scanPtr, 1, compressed);
 
 				/* Advance the description pointer information */
 				if (--_descriptionIndex) {
@@ -132,7 +158,7 @@ public:
 				}
 				return &_slotObject;
 			} else {
-				_scanPtr += 1;
+				_scanPtr = GC_SlotObject::addToSlotAddress(_scanPtr, 1, compressed);
 
 				/* Advance the description pointer information */
 				if (--_descriptionIndex) {
@@ -189,7 +215,7 @@ public:
 	MMINLINE void advanceToSlot(fj9object_t *slotPtr)
 	{
 		Assert_MM_true(slotPtr >= _scanPtr);
-		UDATA bitsToTravel = slotPtr - _scanPtr;
+		UDATA bitsToTravel = GC_SlotObject::subtractSlotAddresses(slotPtr, _scanPtr, compressObjectReferences());
 		if (NULL != _descriptionPtr) {
 			Assert_MM_true(J9BITS_BITS_IN_SLOT >= _descriptionIndex);
 			/* _descriptionIndex uses backward math so put it in forward-facing bit counts */
@@ -222,6 +248,9 @@ public:
 	 */
 	GC_MixedObjectIterator (OMR_VM *omrVM)
 		: _slotObject(GC_SlotObject(omrVM, NULL))
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+		, _compressObjectReferences(OMRVM_COMPRESS_OBJECT_REFERENCES(omrVM))
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 		, _objectPtr(NULL)
 		, _scanPtr(NULL)
 		, _endPtr(NULL)
@@ -236,6 +265,9 @@ public:
 	 */
 	GC_MixedObjectIterator (OMR_VM *omrVM, J9Object *objectPtr)
 		: _slotObject(GC_SlotObject(omrVM, NULL))
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+		, _compressObjectReferences(OMRVM_COMPRESS_OBJECT_REFERENCES(omrVM))
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 		, _objectPtr(NULL)
 		, _scanPtr(NULL)
 		, _endPtr(NULL)
@@ -243,7 +275,7 @@ public:
 		, _description(0)
 		, _descriptionIndex(0)
 	  {
-		initialize(objectPtr);
+		initialize(omrVM, objectPtr);
 	  }
 };
 

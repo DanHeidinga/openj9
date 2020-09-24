@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -42,8 +42,8 @@
 #include "atoe.h"
 #endif
 
-#define CFDUMP_CLASSFILE_EXTESION ".class"
-#define CFDUMP_CLASSFILE_EXTESION_WITHOUT_DOT "class"
+#define CFDUMP_CLASSFILE_EXTENSION ".class"
+#define CFDUMP_CLASSFILE_EXTENSION_WITHOUT_DOT "class"
 
 /* Return values. */
 #define RET_SUCCESS                                0
@@ -192,7 +192,13 @@ typedef struct
 	char *actionString;
 } CFDumpOptions;
 
-#define j9tty_output_char(c) tty_output_char(privatePortLibrary, (c))
+#define j9tty_output_char(c) tty_output_char(PORTLIB, (c))
+
+#if defined(WIN32) || defined(OS2)
+#define PATH_SEP_CHAR '\\'
+#else /* defined(WIN32) || defined(OS2) */
+#define PATH_SEP_CHAR '/'
+#endif /* defined(WIN32) || defined(OS2) */
 
 static J9TranslationBufferSet *translationBuffers;
 static J9BytecodeVerificationData *verifyBuffers;
@@ -260,7 +266,7 @@ convertToClassFilename(const char **files, char ***classFiles, I_32 *fileCount) 
 	UDATA size = 0;
 	I_32 i = 0;
 	I_32 result = RET_SUCCESS;
-	UDATA classExtLen = sizeof(CFDUMP_CLASSFILE_EXTESION) - 1;
+	UDATA classExtLen = sizeof(CFDUMP_CLASSFILE_EXTENSION) - 1;
 
 	PORT_ACCESS_FROM_PORT(portLib);
 
@@ -295,7 +301,7 @@ convertToClassFilename(const char **files, char ***classFiles, I_32 *fileCount) 
 		UDATA length = strlen(file);
 		UDATA j = 0;
 
-		if ((length > classExtLen) && !strncmp(&file[length - classExtLen], CFDUMP_CLASSFILE_EXTESION, classExtLen)) {
+		if ((length > classExtLen) && !strncmp(&file[length - classExtLen], CFDUMP_CLASSFILE_EXTENSION, classExtLen)) {
 			length -= classExtLen;
 		}
 		for (j = 0; j < length; j++) {
@@ -305,10 +311,10 @@ convertToClassFilename(const char **files, char ***classFiles, I_32 *fileCount) 
 				currentFile[j] = file[j];
 			}
 		}
-		strcpy(&currentFile[length], CFDUMP_CLASSFILE_EXTESION);
+		strcpy(&currentFile[length], CFDUMP_CLASSFILE_EXTENSION);
 		currentFile[length + classExtLen] = '\0';
 		convertedFiles[i] = currentFile;
-		currentFile += length + classExtLen + 1;		/* ".class\0" */
+		currentFile += length + classExtLen + 1; /* ".class" */
 	}
 
 _end:
@@ -377,10 +383,10 @@ convertToJImageLocations(J9JImage *jimage, char **files, JImageMatchInfo ** outp
 
 		/* Check if input ends with '.class' */
 		if (
-			(length > sizeof(CFDUMP_CLASSFILE_EXTESION)) &&
-			(0 == strcmp(file + length - sizeof(CFDUMP_CLASSFILE_EXTESION) + 1, CFDUMP_CLASSFILE_EXTESION))) {
+			(length > sizeof(CFDUMP_CLASSFILE_EXTENSION)) &&
+			(0 == strcmp(file + length - sizeof(CFDUMP_CLASSFILE_EXTENSION) + 1, CFDUMP_CLASSFILE_EXTENSION))) {
 			/* ignore the .class extension */
-			file[length - sizeof(CFDUMP_CLASSFILE_EXTESION)+1] = '\0';
+			file[length - sizeof(CFDUMP_CLASSFILE_EXTENSION)+1] = '\0';
 		}
 		/* Split into package & class */
 		lastDot = strrchr(file, '.');
@@ -525,10 +531,10 @@ static void dumpAttribute(J9CfrClassFile* classfile, J9CfrAttribute* attrib, U_3
 	U_16 index, index2;
 	J9CfrAttributeCode* code;
 	J9CfrAttributeInnerClasses* classes;
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+#if JAVA_SPEC_VERSION >= 11
 	J9CfrAttributeNestMembers* nestMembers;
 	U_16 nestMemberCount;
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 	J9CfrAttributeExceptions* exceptions;
 	U_32 i;
 	U_32 j;
@@ -661,7 +667,7 @@ static void dumpAttribute(J9CfrClassFile* classfile, J9CfrAttribute* attrib, U_3
 			}
 			break;
 
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+#if JAVA_SPEC_VERSION >= 11
 		case CFR_ATTRIBUTE_NestMembers: {
 			nestMembers = (J9CfrAttributeNestMembers*)attrib;
 			nestMemberCount = nestMembers->numberOfClasses;
@@ -680,10 +686,9 @@ static void dumpAttribute(J9CfrClassFile* classfile, J9CfrAttribute* attrib, U_3
 			j9tty_printf( PORTLIB, "%i -> %s\n", index, classfile->constantPool[classfile->constantPool[index].slot1].bytes);
 			break;
 		}
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 
 		case CFR_ATTRIBUTE_LineNumberTable:
-			(J9CfrAttributeLineNumberTable*)attrib;
 			for(i = 0; i < ((J9CfrAttributeLineNumberTable*)attrib)->lineNumberTableLength; i++)
 			{
 				for(j = 0; j < tabLevel + 1; j++) j9tty_printf( PORTLIB, "  ");
@@ -692,7 +697,6 @@ static void dumpAttribute(J9CfrClassFile* classfile, J9CfrAttribute* attrib, U_3
 			break;
 
 		case CFR_ATTRIBUTE_LocalVariableTable:
-			(J9CfrAttributeLocalVariableTable*)attrib;
 			for(i = 0; i < ((J9CfrAttributeLocalVariableTable*)attrib)->localVariableTableLength; i++)
 			{
 				index = ((J9CfrAttributeLocalVariableTable*)attrib)->localVariableTable[i].nameIndex;
@@ -712,7 +716,6 @@ static void dumpAttribute(J9CfrClassFile* classfile, J9CfrAttribute* attrib, U_3
 			break;
 
 		case CFR_ATTRIBUTE_LocalVariableTypeTable:
-			(J9CfrAttributeLocalVariableTypeTable*)attrib;
 			for(i = 0; i < ((J9CfrAttributeLocalVariableTypeTable*)attrib)->localVariableTypeTableLength; i++)
 			{
 				index = ((J9CfrAttributeLocalVariableTypeTable*)attrib)->localVariableTypeTable[i].nameIndex;
@@ -888,6 +891,32 @@ static void dumpAttribute(J9CfrClassFile* classfile, J9CfrAttribute* attrib, U_3
 			dumpStackMap((J9CfrAttributeStackMap *)attrib, classfile, tabLevel + 2);
 			break;
 
+		case CFR_ATTRIBUTE_Record:
+			for(i = 0; i < ((J9CfrAttributeRecord*)attrib)->numberOfRecordComponents; i++) {
+				J9CfrRecordComponent* recordComponent = &(((J9CfrAttributeRecord*)attrib)->recordComponents[i]);
+
+				for(j = 0; j < tabLevel + 1; j++) j9tty_printf( PORTLIB, "  ");
+				j9tty_printf( PORTLIB, "Record Component Name: %i -> %s\n", recordComponent->nameIndex, classfile->constantPool[recordComponent->nameIndex].bytes);
+				for(j = 0; j < tabLevel + 1; j++) j9tty_printf( PORTLIB, "  ");
+				j9tty_printf( PORTLIB, "Record Component Signature: %i -> %s\n", recordComponent->descriptorIndex, classfile->constantPool[recordComponent->descriptorIndex].bytes);
+
+				for(j = 0; j < tabLevel + 1; j++) j9tty_printf( PORTLIB, "  ");
+				j9tty_printf( PORTLIB, "Attributes (%i):\n", recordComponent->attributesCount);
+				for(j = 0; j < recordComponent->attributesCount; j++)
+					dumpAttribute(classfile, recordComponent->attributes[j], tabLevel + 2);
+			}
+			break;
+
+		case CFR_ATTRIBUTE_PermittedSubclasses:
+			for(i = 0; i < ((J9CfrAttributePermittedSubclasses*)attrib)->numberOfClasses; i++) {
+				U_16 classIndex = ((J9CfrAttributePermittedSubclasses*)attrib)->classes[i];
+				U_16 nameIndex = classfile->constantPool[classIndex].slot1;
+
+				for(j = 0; j < tabLevel + 1; j++) j9tty_printf( PORTLIB, "  ");
+				j9tty_printf( PORTLIB, "PermittedSubclass class index, name: %i, %i -> %s\n", classIndex, nameIndex, classfile->constantPool[nameIndex].bytes);
+			}
+			break;
+
 		case CFR_ATTRIBUTE_StrippedLineNumberTable:
 		case CFR_ATTRIBUTE_StrippedLocalVariableTable:
 		case CFR_ATTRIBUTE_StrippedLocalVariableTypeTable:
@@ -911,15 +940,21 @@ static void printClassFile(J9CfrClassFile* classfile)
 {
 	U_16 index;
 	U_8* string;
-	I_32 i, j;
+	I_32 i, j, k;
 
 	PORT_ACCESS_FROM_PORT(portLib);
 
 	if(classfile->accessFlags & CFR_ACC_PUBLIC) j9tty_printf( PORTLIB, "public ");
 	if(classfile->accessFlags & CFR_ACC_PRIVATE) j9tty_printf( PORTLIB, "protected ");
 	if(classfile->accessFlags & CFR_ACC_PROTECTED) j9tty_printf( PORTLIB, "private ");
+	/* JEP 360: note: non-sealed will not be indicated for subclasses. There's no way of knowing until classes are linked. */
+	if(classfile->j9Flags & CFR_J9FLAG_IS_SEALED) j9tty_printf( PORTLIB, "sealed ");
 	if(classfile->accessFlags & CFR_ACC_INTERFACE)
 		j9tty_printf( PORTLIB, "interface ");
+	else if (classfile->j9Flags & CFR_J9FLAG_IS_RECORD)
+	{
+		j9tty_printf( PORTLIB, "record ");
+	}
 	else
 	{
 		if(classfile->accessFlags & CFR_ACC_ABSTRACT) j9tty_printf( PORTLIB, "abstract ");
@@ -935,24 +970,22 @@ static void printClassFile(J9CfrClassFile* classfile)
 		i++;
 	}
 
-	j9tty_printf( PORTLIB, " ");
 	if(classfile->superClass != 0)
 	{
 		index = classfile->constantPool[classfile->superClass].slot1;
 		string = classfile->constantPool[index].bytes;
-		j9tty_printf( PORTLIB, "extends ");
+		j9tty_printf( PORTLIB, " extends ");
 		i = 0;
 		while(string[i])
 		{
 			j9tty_printf( PORTLIB, "%c", (string[i] == '/')?'.':string[i]);
 			i++;
 		}
-		j9tty_printf( PORTLIB, " ");
 	}
 
 	if(classfile->interfacesCount > 0)
 	{
-		j9tty_printf( PORTLIB, "implements ");
+		j9tty_printf( PORTLIB, " implements ");
 		for(i = 0; i < classfile->interfacesCount - 1; i++)
 		{
 			index = classfile->constantPool[classfile->interfaces[i]].slot1;
@@ -974,6 +1007,34 @@ static void printClassFile(J9CfrClassFile* classfile)
 			j++;
 		}
 	}
+
+	/* JEP 360: sealed class permits list */
+	if(classfile->j9Flags & CFR_J9FLAG_IS_SEALED) {
+		/* find PermittedSubclasses attribute */
+		for (i = 0; i < classfile->attributesCount; i++) {
+			if (CFR_ATTRIBUTE_PermittedSubclasses == classfile->attributes[i]->tag) {
+				/* found attribute, print permitted subclasses */
+				j9tty_printf( PORTLIB, " permits ");
+
+				for (j = 0; j < ((J9CfrAttributePermittedSubclasses*)classfile->attributes[i])->numberOfClasses; j++) {
+					/* class index */
+					index = ((J9CfrAttributePermittedSubclasses*)classfile->attributes[i])->classes[j];
+					/* class name index */
+					index = classfile->constantPool[index].slot1;
+					string = classfile->constantPool[index].bytes;
+
+					k = 0;
+					while('\0' != string[k]) {
+						j9tty_printf( PORTLIB, "%c", (string[k] == '/') ? '.' : string[k]);
+						k++;
+					}
+					if ((j + 1) != ((J9CfrAttributePermittedSubclasses*)classfile->attributes[i])->numberOfClasses) j9tty_printf( PORTLIB, ", ");
+				}
+				break;
+			}
+		}
+	}
+
 
 	j9tty_printf( PORTLIB, "\n{\n");
 
@@ -1440,12 +1501,22 @@ static void printDisassembledMethod(J9CfrClassFile* classfile, J9CfrMethod* meth
 			NEXT_U8_ENDIAN(bigEndian, bc, bcIndex);
 			if(wide)
 			{
-				j9tty_printf( PORTLIB, "%s ", sunJavaBCNames[bc]);
+				j9tty_printf( PORTLIB, "%s", sunJavaBCNames[bc]);
 			}
 			else
 			{
-				j9tty_printf( PORTLIB, "%5i %s ", pc, sunJavaBCNames[bc]);
+				j9tty_printf( PORTLIB, "%5i %s", pc, sunJavaBCNames[bc]);
 			}
+
+			if(0 == strcmp(sunJavaBCNames[bc], "JBunimplemented"))
+			{
+				j9tty_printf( PORTLIB, "_%d ", bc);
+			}
+			else
+			{
+				j9tty_printf( PORTLIB, " ", bc);
+			}
+
 			start = pc;
 			pc++;
 			switch(bc)
@@ -1663,6 +1734,9 @@ static void printDisassembledMethod(J9CfrClassFile* classfile, J9CfrMethod* meth
 				case CFR_BC_putstatic:
 				case CFR_BC_getfield:
 				case CFR_BC_putfield:
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+				case CFR_BC_withfield:
+#endif /* J9VM_OPT_VALHALLA_VALUE_TYPES */
 					fieldFlag = TRUE;
 
 				case CFR_BC_invokevirtual:
@@ -1724,6 +1798,9 @@ static void printDisassembledMethod(J9CfrClassFile* classfile, J9CfrMethod* meth
 				case CFR_BC_anewarray:
 				case CFR_BC_checkcast:
 				case CFR_BC_instanceof:
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+				case CFR_BC_defaultvalue:
+#endif /* J9VM_OPT_VALHALLA_VALUE_TYPES */
 					NEXT_U16_ENDIAN(bigEndian, index, bcIndex);
 					info = classfile->constantPool[index];
 					j9tty_printf( PORTLIB, "%i ", index);
@@ -2308,6 +2385,8 @@ static U_32 buildFlags(void)
 	 * check in j9bcutil_readClassFileBytes.
 	 */
 	flags |= BCT_JavaMaxMajorVersionShifted;
+	flags |= BCT_ValueTypesEnabled;
+	flags |= BCT_AnyPreviewVersion;
 
 	if(options.options & OPTION_stripDebugAttributes) flags |= CFR_StripDebugAttributes;
 	if(options.options & OPTION_stripDebugLines) flags |= BCT_StripDebugLines;
@@ -2384,52 +2463,43 @@ static I_32 processClassFile(J9CfrClassFile* classfile, U_32 dataLength, char* r
 }
 
 
-static I_32 processAllFiles(char** files, U_32 flags)
+static I_32
+processAllFiles(char **files, U_32 flags)
 {
-	char* currentFile;
-	char* dirCopy;
-	char sep;
-	I_32 i;
-	IDATA length;
+	I_32 i = 0;
 
 	PORT_ACCESS_FROM_PORT(portLib);
 
-	i = 0;
-	while(currentFile = files[i++])
-	{
-		if(j9file_attr(currentFile) == EsIsDir)
-		{
-#if defined(WIN32) || defined(OS2)
-			sep = '\\';
-#else
-			sep = '/';
-#endif
-			length = strlen(currentFile);
-			if(currentFile[length - 1] == sep)
-			{
+	for (i = 0; ; ++i) {
+		char *currentFile = files[i];
+		if (NULL == currentFile) {
+			break;
+		}
+		if (j9file_attr(currentFile) != EsIsDir) {
+			processSingleFile(currentFile, flags);
+		} else {
+			IDATA length = strlen(currentFile);
+			if ((length > 0) && (PATH_SEP_CHAR == currentFile[length - 1])) {
 				processDirectory(currentFile, (BOOLEAN) ((options.options & OPTION_recursive) != 0), flags);
-			}
-			else
-			{
-				dirCopy = j9mem_allocate_memory(length + 2, J9MEM_CATEGORY_CLASSES);
-				if(dirCopy == NULL) return RET_ALLOCATE_FAILED;
-				strncpy(dirCopy, currentFile, length);
-				dirCopy[length] = sep;
+			} else {
+				char *dirCopy = j9mem_allocate_memory(length + 2, J9MEM_CATEGORY_CLASSES);
+				if (NULL == dirCopy) {
+					return RET_ALLOCATE_FAILED;
+				}
+				memcpy(dirCopy, currentFile, length);
+				dirCopy[length] = PATH_SEP_CHAR;
 				dirCopy[length + 1] = '\0';
 				processDirectory(dirCopy, (BOOLEAN) ((options.options & OPTION_recursive) != 0), flags);
 				j9mem_free_memory(dirCopy);
 			}
-		}
-		else
-		{
-			processSingleFile(currentFile, flags);
 		}
 	}
 	return 0;
 }
 
 
-static I_32 processAllInZIP(char* zipFilename, U_32 flags)
+static I_32
+processAllInZIP(char* zipFilename, U_32 flags)
 {
 	J9ROMClass* romClass = NULL;
 	J9CfrClassFile* classfile = NULL;
@@ -2443,7 +2513,7 @@ static I_32 processAllInZIP(char* zipFilename, U_32 flags)
 	PORT_ACCESS_FROM_PORT(portLib);
 
 	/* Open the zip file (in non-cached mode) */
-	result = zip_openZipFile(PORTLIB, (char*)zipFilename, &zipFile, NULL, J9ZIP_OPEN_NO_FLAGS);
+	result = zip_openZipFile(PORTLIB, zipFilename, &zipFile, NULL, J9ZIP_OPEN_NO_FLAGS);
 	if(result)
 	{
 		j9tty_printf(PORTLIB, "Could not open or read %s\n", zipFilename);
@@ -2803,7 +2873,7 @@ processAllInJImage(J9JImage *jimage, char *jimageFileName, U_32 flags)
 
 		/* Don't bother with files that don't have a ".class" extension. */
 		if ((NULL == j9jimageLocation.extensionString)
-			|| (strncmp(j9jimageLocation.extensionString, CFDUMP_CLASSFILE_EXTESION_WITHOUT_DOT, sizeof(CFDUMP_CLASSFILE_EXTESION_WITHOUT_DOT)))
+			|| (strncmp(j9jimageLocation.extensionString, CFDUMP_CLASSFILE_EXTENSION_WITHOUT_DOT, sizeof(CFDUMP_CLASSFILE_EXTENSION_WITHOUT_DOT)))
 		) {
 			continue;
 		}
@@ -2878,7 +2948,7 @@ processFilesInJImage(J9JImage *jimage, char *jimageFileName, char **resources, U
 		if (ACTION_writeJImageResource == options.action) {
 			resourceName = resources[i];
 		} else {
-			result = j9bcutil_getJImageResourceName(PORTLIB, jimage,  matchInfo[i].module, matchInfo[i].parentString, matchInfo[i].baseString, CFDUMP_CLASSFILE_EXTESION_WITHOUT_DOT, &resourceName);
+			result = j9bcutil_getJImageResourceName(PORTLIB, jimage,  matchInfo[i].module, matchInfo[i].parentString, matchInfo[i].baseString, CFDUMP_CLASSFILE_EXTENSION_WITHOUT_DOT, &resourceName);
 			if (result != J9JIMAGE_NO_ERROR ){
 				j9tty_printf(PORTLIB, "Insufficient memory to complete operation\n");
 				goto cleanExit;
@@ -3255,9 +3325,9 @@ static void sun_formatBytecode(J9CfrClassFile* classfile, J9CfrMethod* method, B
 						string = classfile->constantPool[cpIndex].bytes;
 						j = 0;
 						index = 0;
-						while(ch2 = string[j++]) if(ch2 == '/') index = j;
+						while('\0' != (ch2 = string[j++])) if(ch2 == '/') index = j;
 						j = index;
-						while(ch2 = string[j++]) j9tty_output_char(ch2);
+						while('\0' != (ch2 = string[j++])) j9tty_output_char(ch2);
 						break;
 
 					case 'C':
@@ -3265,7 +3335,7 @@ static void sun_formatBytecode(J9CfrClassFile* classfile, J9CfrMethod* method, B
 						cpIndex = classfile->constantPool[classfile->thisClass].slot1;
 						string = classfile->constantPool[cpIndex].bytes;
 						j = 0;
-						while(ch2 = string[j++])
+						while('\0' != (ch2 = string[j++]))
 						{
 							if(ch2 == '/') j9tty_output_char('.');
 							else j9tty_output_char(ch2);
@@ -3282,7 +3352,7 @@ static void sun_formatBytecode(J9CfrClassFile* classfile, J9CfrMethod* method, B
 						/* method signature */
 						string = classfile->constantPool[method->descriptorIndex].bytes;
 						j = 0;
-						while(ch2 = string[j++])
+						while('\0' != (ch2 = string[j++]))
 						{
 							if(ch2 == '/') j9tty_output_char('.');
 							else j9tty_output_char(ch2);
@@ -3546,7 +3616,7 @@ cpAscii:
 											case CFR_CONSTANT_Class:
 												string = classfile->constantPool[info->slot1].bytes;
 												j = 0;
-												while(ch2 = string[j++])
+												while('\0' != (ch2 = string[j++]))
 												{
 													if(ch2 == '/') j9tty_output_char('.');
 													else j9tty_output_char(ch2);
@@ -3559,7 +3629,7 @@ cpAscii:
 												cpIndex = classfile->constantPool[info->slot1].slot1;
 												string = classfile->constantPool[cpIndex].bytes;
 												j = 0;
-												while(ch2 = string[j++])
+												while('\0' != (ch2 = string[j++]))
 												{
 													if(ch2 == '/') j9tty_output_char('.');
 													else j9tty_output_char(ch2);
@@ -3570,7 +3640,7 @@ cpAscii:
 												cpIndex = classfile->constantPool[info->slot2].slot2;
 												string = classfile->constantPool[cpIndex].bytes;
 												j = 0;
-												while(ch2 = string[j++])
+												while('\0' != (ch2 = string[j++]))
 												{
 													if(ch2 == '/') j9tty_output_char('.');
 													else j9tty_output_char(ch2);
@@ -4128,7 +4198,7 @@ static void sun_formatClass(J9CfrClassFile* classfile, char *formatString, IDATA
 						string = classfile->constantPool[cpIndex].bytes;
 						j = 0;
 						index = 0;
-						while(ch2 = string[j++]) if(ch2 == '/') index = j - 1;
+						while('\0' != (ch2 = string[j++])) if(ch2 == '/') index = j - 1;
 						j = 0;
 						while(j < index)
 						{
@@ -4144,9 +4214,9 @@ static void sun_formatClass(J9CfrClassFile* classfile, char *formatString, IDATA
 						string = classfile->constantPool[cpIndex].bytes;
 						j = 0;
 						index = 0;
-						while(ch2 = string[j++]) if(ch2 == '/') index = j;
+						while('\0' != (ch2 = string[j++])) if(ch2 == '/') index = j;
 						j = index;
-						while(ch2 = string[j++]) j9tty_output_char(ch2);
+						while('\0' != (ch2 = string[j++])) j9tty_output_char(ch2);
 						break;
 
 					case 'C':
@@ -4154,7 +4224,7 @@ static void sun_formatClass(J9CfrClassFile* classfile, char *formatString, IDATA
 						cpIndex = classfile->constantPool[classfile->thisClass].slot1;
 						string = classfile->constantPool[cpIndex].bytes;
 						j = 0;
-						while(ch2 = string[j++])
+						while('\0' != (ch2 = string[j++]))
 						{
 							if(ch2 == '/') j9tty_output_char('.');
 							else j9tty_output_char(ch2);
@@ -4168,7 +4238,7 @@ static void sun_formatClass(J9CfrClassFile* classfile, char *formatString, IDATA
 							cpIndex = classfile->constantPool[classfile->superClass].slot1;
 							string = classfile->constantPool[cpIndex].bytes;
 							j = 0;
-							while(ch2 = string[j++])
+							while('\0' != (ch2 = string[j++]))
 							{
 								if(ch2 == '/') j9tty_output_char('.');
 								else j9tty_output_char(ch2);
@@ -4184,7 +4254,7 @@ static void sun_formatClass(J9CfrClassFile* classfile, char *formatString, IDATA
 							cpIndex = classfile->constantPool[cpIndex].slot1;
 							string = classfile->constantPool[cpIndex].bytes;
 							k = 0;
-							while(ch2 = string[k++])
+							while('\0' != (ch2 = string[k++]))
 							{
 								if(ch2 == '/') j9tty_output_char('.');
 								else j9tty_output_char(ch2);
@@ -4312,9 +4382,9 @@ static void sun_formatField(J9CfrClassFile* classfile, J9CfrField* field, char *
 						string = classfile->constantPool[cpIndex].bytes;
 						j = 0;
 						index = 0;
-						while(ch2 = string[j++]) if(ch2 == '/') index = j;
+						while('\0' != (ch2 = string[j++])) if(ch2 == '/') index = j;
 						j = index;
-						while(ch2 = string[j++]) j9tty_output_char(ch2);
+						while('\0' != (ch2 = string[j++])) j9tty_output_char(ch2);
 						break;
 
 					case 'C':
@@ -4322,7 +4392,7 @@ static void sun_formatField(J9CfrClassFile* classfile, J9CfrField* field, char *
 						cpIndex = classfile->constantPool[classfile->thisClass].slot1;
 						string = classfile->constantPool[cpIndex].bytes;
 						j = 0;
-						while(ch2 = string[j++])
+						while('\0' != (ch2 = string[j++]))
 						{
 							if(ch2 == '/') j9tty_output_char('.');
 							else j9tty_output_char(ch2);
@@ -4339,7 +4409,7 @@ static void sun_formatField(J9CfrClassFile* classfile, J9CfrField* field, char *
 						/* type signature */
 						string = classfile->constantPool[field->descriptorIndex].bytes;
 						j = 0;
-						while(ch2 = string[j++])
+						while('\0' != (ch2 = string[j++]))
 						{
 							if(ch2 == '/') j9tty_output_char('.');
 							else j9tty_output_char(ch2);
@@ -4558,9 +4628,9 @@ static void sun_formatMethod(J9CfrClassFile* classfile, J9CfrMethod* method, cha
 						string = classfile->constantPool[cpIndex].bytes;
 						j = 0;
 						index = 0;
-						while(ch2 = string[j++]) if(ch2 == '/') index = j;
+						while('\0' != (ch2 = string[j++])) if(ch2 == '/') index = j;
 						j = index;
-						while(ch2 = string[j++]) j9tty_output_char(ch2);
+						while('\0' != (ch2 = string[j++])) j9tty_output_char(ch2);
 						break;
 
 					case 'C':
@@ -4568,7 +4638,7 @@ static void sun_formatMethod(J9CfrClassFile* classfile, J9CfrMethod* method, cha
 						cpIndex = classfile->constantPool[classfile->thisClass].slot1;
 						string = classfile->constantPool[cpIndex].bytes;
 						j = 0;
-						while(ch2 = string[j++])
+						while('\0' != (ch2 = string[j++]))
 						{
 							if(ch2 == '/') j9tty_output_char('.');
 							else j9tty_output_char(ch2);
@@ -4585,7 +4655,7 @@ static void sun_formatMethod(J9CfrClassFile* classfile, J9CfrMethod* method, cha
 						/* method signature */
 						string = classfile->constantPool[method->descriptorIndex].bytes;
 						j = 0;
-						while(ch2 = string[j++])
+						while('\0' != (ch2 = string[j++]))
 						{
 							if(ch2 == '/') j9tty_output_char('.');
 							else j9tty_output_char(ch2);
@@ -4728,7 +4798,7 @@ static void sun_formatMethod(J9CfrClassFile* classfile, J9CfrMethod* method, cha
 							index = classfile->constantPool[exceptions->exceptionIndexTable[j]].slot1;
 							string = classfile->constantPool[index].bytes;
 							k = 0;
-							while(ch2 = string[k++])
+							while('\0' != (ch2 = string[k++]))
 							{
 								if(ch2 == '/') j9tty_output_char('.');
 								else j9tty_output_char(ch2);
@@ -5364,15 +5434,15 @@ static void j9_formatMethod(J9ROMClass* romClass, J9ROMMethod* method, char *for
 
 					case 'n':
 						/* method name */
-						utfLength = J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(romClass, method));
-						string = ((U_8*) J9ROMMETHOD_GET_NAME(romClass, method)) + 2;
+						utfLength = J9UTF8_LENGTH(J9ROMMETHOD_NAME(method));
+						string = ((U_8*) J9ROMMETHOD_NAME(method)) + 2;
 						for(j = 0; j < utfLength; j++) j9tty_output_char(string[j]);
 						break;
 
 					case 's':
 						/* type signature */
-						utfLength = J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(romClass, method));
-						string = ((U_8*) J9ROMMETHOD_GET_SIGNATURE(romClass, method)) + 2;
+						utfLength = J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(method));
+						string = ((U_8*) J9ROMMETHOD_SIGNATURE(method)) + 2;
 						for(j = 0; j < utfLength; j++)
 						{
 							ch2 = string[j];
@@ -5383,8 +5453,8 @@ static void j9_formatMethod(J9ROMClass* romClass, J9ROMMethod* method, char *for
 
 					case 'r':
 						/* qualified return type name */
-						utfLength = J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(romClass, method));
-						string = ((U_8*) J9ROMMETHOD_GET_SIGNATURE(romClass, method)) + 2;
+						utfLength = J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(method));
+						string = ((U_8*) J9ROMMETHOD_SIGNATURE(method)) + 2;
 						j = 0;
 						arity = 0;
 						while(string[j++] != ')');
@@ -5448,8 +5518,8 @@ static void j9_formatMethod(J9ROMClass* romClass, J9ROMMethod* method, char *for
 
 					case 'p':
 						/* qualified parameter type names */
-						utfLength = J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(romClass, method));
-						string = ((U_8*) J9ROMMETHOD_GET_SIGNATURE(romClass, method)) + 2;
+						utfLength = J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(method));
+						string = ((U_8*) J9ROMMETHOD_SIGNATURE(method)) + 2;
 						j = 1;
 						while(string[j] != ')')
 						{
@@ -5703,15 +5773,15 @@ static void j9_formatBytecode(J9ROMClass* romClass, J9ROMMethod* method, U_8* bc
 
 					case 'n':
 						/* method name */
-						utfLength = J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(romClass, method));
-						string = ((U_8*) J9ROMMETHOD_GET_NAME(romClass, method)) + 2;
+						utfLength = J9UTF8_LENGTH(J9ROMMETHOD_NAME(method));
+						string = ((U_8*) J9ROMMETHOD_NAME(method)) + 2;
 						for(j = 0; j < utfLength; j++) j9tty_output_char(string[j]);
 						break;
 
 					case 's':
 						/* type signature */
-						utfLength = J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(romClass, method));
-						string = ((U_8*) J9ROMMETHOD_GET_SIGNATURE(romClass, method)) + 2;
+						utfLength = J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(method));
+						string = ((U_8*) J9ROMMETHOD_SIGNATURE(method)) + 2;
 						for(j = 0; j < utfLength; j++)
 						{
 							ch2 = string[j];
@@ -6578,6 +6648,9 @@ static void j9_formatBytecodes(J9ROMClass* romClass, J9ROMMethod* method, U_8* b
 				case JBputstatic:
 				case JBgetfield:
 				case JBputfield:
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+				case JBwithfield:
+#endif /* J9VM_OPT_VALHALLA_VALUE_TYPES */
 					j9_formatBytecode(romClass, method, bytecodes, bcIndex, bc, 3, CFR_DECODE_J9_FIELDREF, formatString, stringLength, flags);
 					pc += 2;
 					bcIndex += 3;
@@ -6600,6 +6673,9 @@ static void j9_formatBytecodes(J9ROMClass* romClass, J9ROMMethod* method, U_8* b
 				case JBanewarray:
 				case JBcheckcast:
 				case JBinstanceof:
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+				case JBdefaultvalue:
+#endif /* J9VM_OPT_VALHALLA_VALUE_TYPES */
 					j9_formatBytecode(romClass, method, bytecodes, bcIndex, bc, 3, CFR_DECODE_J9_CLASSREF, formatString, stringLength, flags);
 					pc += 2;
 					bcIndex += 3;
@@ -6635,54 +6711,58 @@ static void j9_formatBytecodes(J9ROMClass* romClass, J9ROMMethod* method, U_8* b
 }
 
 
-
-static I_32 processDirectory(char* dir, BOOLEAN recursive, U_32 flags)
+static I_32
+processDirectory(char *dir, BOOLEAN recursive, U_32 flags)
 {
-	char *pathBuffer;
-	char *resultBuffer;
-	UDATA handle;
-	IDATA result, length, length2;
+	char *pathBuffer = NULL;
+	char *resultBuffer = NULL;
+	UDATA handle = 0;
+	IDATA result = 0;
+	IDATA length = 0;
 
 	PORT_ACCESS_FROM_PORT(portLib);
 
 	pathBuffer = j9mem_allocate_memory(EsMaxPath, J9MEM_CATEGORY_CLASSES);
-	if(pathBuffer == NULL) return RET_ALLOCATE_FAILED;
+	if (NULL == pathBuffer) {
+		return RET_ALLOCATE_FAILED;
+	}
+
 	resultBuffer = j9mem_allocate_memory(EsMaxPath, J9MEM_CATEGORY_CLASSES);
-	if(resultBuffer == NULL)
-	{
+	if (NULL == resultBuffer) {
 		j9mem_free_memory(pathBuffer);
 		return RET_ALLOCATE_FAILED;
 	}
+
 	length = strlen(dir);
-	strncpy(resultBuffer, dir, length);
+	if (length >= EsMaxPath) {
+		j9tty_printf(PORTLIB, "Could not open directory %s (path too long)\n", dir);
+		goto cleanup;
+	}
+	memcpy(resultBuffer, dir, length + 1);
 
 	handle = j9file_findfirst(dir, pathBuffer);
-	if(handle == (UDATA)-1)
-	{
+	if (~(UDATA)0 == handle) {
 		j9tty_printf(PORTLIB, "Could not open directory %s\n", dir);
 		goto cleanup;
 	}
+
 	result = handle;
-	while(result != -1)
-	{
-		if(!(pathBuffer[0] == '.' && (pathBuffer[1] == '\0' || (pathBuffer[1] == '.' && pathBuffer[2] == '\0'))))
-		{
+	while (-1 != result) {
+		/* ignore "." and ".." */
+		if ((0 != strcmp(pathBuffer, ".")) && (0 != strcmp(pathBuffer, ".."))) {
+			IDATA length2 = length + strlen(pathBuffer);
+			if (length2 + 1 >= EsMaxPath) {
+				j9tty_printf(PORTLIB, "Could not open %s%s (path too long)\n", dir, pathBuffer);
+				break;
+			}
 			strcpy(resultBuffer + length, pathBuffer);
-			length2 = strlen(resultBuffer);
-			if(recursive && (j9file_attr(resultBuffer) == EsIsDir))
-			{
-#if defined(WIN32) || defined(OS2)
-				resultBuffer[length2] = '\\';
-#else
-				resultBuffer[length2] = '/';
-#endif
+
+			if (recursive && (j9file_attr(resultBuffer) == EsIsDir)) {
+				resultBuffer[length2] = PATH_SEP_CHAR;
 				resultBuffer[length2 + 1] = '\0';
 				processDirectory(resultBuffer, TRUE, flags);
-			}
-			else
-			{
-				if((length2 > 6) && !strcmp(resultBuffer + length2 - 6, ".class"))
-				{
+			} else {
+				if ((length2 > 6) && (0 == strcmp(resultBuffer + length2 - 6, ".class"))) {
 					processSingleFile(resultBuffer, flags);
 				}
 			}

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-Copyright (c) 2010, 2018 IBM Corp. and others
+Copyright (c) 2010, 2020 IBM Corp. and others
 
 This program and the accompanying materials are made available under
 the terms of the Eclipse Public License 2.0 which accompanies this
@@ -55,8 +55,14 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 			<flag name="TR_TARGET_X86">
 				<include-if condition="spec.flags.module_jit_ia32"/>
 			</flag>
+			<flag name="TR_TARGET_ARM64">
+				<include-if condition="spec.flags.module_jit_aarch64"/>
+			</flag>
 			<flag name="TR_TARGET_POWER">
 				<include-if condition="spec.flags.module_jit_ppc"/>
+			</flag>
+			<flag name="TR_TARGET_RISCV">
+				<include-if condition="spec.flags.module_jit_riscv"/>
 			</flag>
 			<flag name="TR_TARGET_S390">
 				<include-if condition="spec.flags.module_jit_s390"/>
@@ -80,12 +86,11 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 			<include path="j9shrcommon"/>
 			<include path="jclcommon"/>
 			<include path="../jcl" type="relativepath"/>
-			<include path="harmony_include"/>
 			<include path="bcverify"/>
-			<include path="../compiler/trj9/runtime" type="relativepath">
+			<include path="../compiler/runtime" type="relativepath">
 				<include-if condition="spec.flags.J9VM_INTERP_NATIVE_SUPPORT"/>
 			</include>
-			<include path="../compiler/trj9" type="relativepath">
+			<include path="../compiler" type="relativepath">
 				<include-if condition="spec.flags.J9VM_INTERP_NATIVE_SUPPORT"/>
 			</include>
 			<include path="$(OMR_DIR)/compiler" type="relativepath">
@@ -116,7 +121,6 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 		<objects>
 			<object name="algorithm_versions"/>
 			<object name="ddrcppsupportblob"/>
-			<object name="hyportddrblob"/>
 			<object name="jitddrblob"/>
 			<object name="jitflagsddr"/>
 			<object name="omrddrblob"/>
@@ -149,8 +153,14 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 			<flag name="TR_TARGET_X86">
 				<include-if condition="spec.flags.module_jit_ia32"/>
 			</flag>
+			<flag name="TR_TARGET_ARM64">
+				<include-if condition="spec.flags.module_jit_aarch64"/>
+			</flag>
 			<flag name="TR_TARGET_POWER">
 				<include-if condition="spec.flags.module_jit_ppc"/>
+			</flag>
+			<flag name="TR_TARGET_RISCV">
+				<include-if condition="spec.flags.module_jit_riscv"/>
 			</flag>
 			<flag name="TR_TARGET_S390">
 				<include-if condition="spec.flags.module_jit_s390"/>
@@ -204,6 +214,14 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 
 			<vpath pattern="%" path="$(OMR_DIR)/port/linuxamd64" augmentIncludes="true" type="relativepath">
 				<include-if condition="spec.linux_x86-64.*"/>
+			</vpath>
+
+			<vpath pattern="%" path="$(OMR_DIR)/port/linuxaarch64" augmentIncludes="true" type="relativepath">
+				<include-if condition="spec.linux_aarch64.*"/>
+			</vpath>
+
+			<vpath pattern="%" path="$(OMR_DIR)/port/linuxriscv64" augmentIncludes="true" type="relativepath">
+				<include-if condition="spec.linux_riscv64.*"/>
 			</vpath>
 
 			<vpath pattern="%" path="$(OMR_DIR)/port/linuxs39064" augmentIncludes="true" type="relativepath">
@@ -263,9 +281,7 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 		<include-if condition="spec.flags.module_ddr"/>
 		<exclude-if condition="spec.flags.opt_useOmrDdr"/>
 		<options>
-			<option name="isCPlusPlus">
-				<exclude-if condition="spec.linux_ppc.*"/>
-			</option>
+			<option name="isCPlusPlus"/>
 			<option name="doesNotRequireCMAIN"/>
 		</options>
 		<phase>core j2se</phase>
@@ -279,6 +295,7 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 		<makefilestubs>
 			<makefilestub data="UMA_EXE_POSTFIX_FLAGS+=-static">
 				<include-if condition="spec.linux_arm.*"/>
+				<include-if condition="spec.linux_aarch64.* and spec.flags.env_crossbuild" />
 			</makefilestub>
 			<makefilestub data="UMA_TREAT_WARNINGS_AS_ERRORS=1"/>
 			<makefilestub data="include ddr_cpp_headers.mk"/>
@@ -296,9 +313,11 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 
 			<library name="j9thrstatic" type="external">
 				<include-if condition="spec.linux_arm.*"/>
+				<include-if condition="spec.linux_aarch64.* and spec.flags.env_crossbuild" />
 			</library>
 			<library name="j9thr">
 				<exclude-if condition="spec.linux_arm.*"/>
+				<exclude-if condition="spec.linux_aarch64.* and spec.flags.env_crossbuild" />
 			</library>
 			<library name="j9portautoblob"/>
 			<library name="j9ddr_cppewautoblob"/>
@@ -309,6 +328,9 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 			<library name="j9utilcore"/>
 			<library name="j9ddrautoblob"/>
 			<library name="j9gcautoblob"/>
+			<library name="omrsig">
+				<include-if condition="spec.flags.J9VM_PORT_OMRSIG_SUPPORT"/>
+			</library>
 
 			<!-- The following libs are needed to statically link the port library. -->
 			<library name="omrglue" type="external"/>
@@ -337,7 +359,6 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 	<artifact type="target" name="run_j9ddrgen">
 		<include-if condition="spec.flags.module_ddr"/>
 		<exclude-if condition="spec.flags.opt_useOmrDdr"/>
-		<exclude-if condition="spec.linux_ztpf.*"/>
 		<phase>core j2se</phase>
 		<dependencies>
 			<dependency name="j9ddrgen"/>
@@ -345,15 +366,31 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 		<commands>
 			<command line="cd $(UMA_PATH_TO_ROOT) &amp;&amp; ./j9ddrgen" type="all">
 				<exclude-if condition="spec.linux_arm.*"/>
+				<exclude-if condition="spec.linux_aarch64.* and spec.flags.env_crossbuild"/>
+				<exclude-if condition="spec.linux_ztpf.*"/>
 			</command>
 			<command line="cd $(UMA_PATH_TO_ROOT) &amp;&amp; qemu-arm -r '9' ./j9ddrgen" type="all">
 				<include-if condition="spec.linux_arm.*"/>
+			</command>
+			<command line="cd $(UMA_PATH_TO_ROOT) &amp;&amp; qemu-aarch64 -r '9' ./j9ddrgen" type="all">
+				<include-if condition="spec.linux_aarch64.* and spec.flags.env_crossbuild"/>
+			</command>
+			<command line="sleep 20;cd $(UMA_PATH_TO_ROOT); if [ -x ../build_j9ddrgen.sh ] &amp;&amp; [ ! -e ../j9ddrgen.completed ] ; then ../build_j9ddrgen.sh ; fi" type="all">
+				<include-if condition="spec.linux_ztpf.*"/>
 			</command>
 		</commands>
 	</artifact>
 
 	<artifact type="shared" name="j9ddr_misc">
 		<include-if condition="spec.flags.module_ddr and spec.flags.opt_useOmrDdr"/>
+		<phase>core</phase>
+		<!--
+		At least one symbol must be exported, but because this shared library
+		is only used by ddrgen it doesn't matter which name is exported.
+		-->
+		<exports>
+			<export name="getAlgorithmVersionStructTable" />
+		</exports>
 		<includes>
 			<include path="j9include"/>
 			<include path="j9oti"/>
@@ -376,17 +413,30 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 			</include>
 			<include path="j9gcvlhgc"/>
 			<include path="$(OMR_DIR)/include_core" type="relativepath"/>
+			<include path="$(OMR_DIR)/compiler" type="relativepath">
+				<include-if condition="spec.flags.J9VM_INTERP_NATIVE_SUPPORT"/>
+			</include>
+			<include path="bcutil" type="rootpath"/>
+			<include path="j9shr_include"/>
 		</includes>
 		<makefilestubs>
 			<makefilestub data="CFLAGS += -femit-class-debug-always">
 				<include-if condition="spec.linux_390.*"/>
-				<include-if condition="spec.linux_ppc.*_gcc"/>
+				<include-if condition="spec.linux_aarch64.*"/>
+				<include-if condition="spec.linux_ppc.*_le"/>
+				<include-if condition="spec.linux_riscv64.*"/>
 				<include-if condition="spec.linux_x86.*"/>
 			</makefilestub>
 			<makefilestub data="CXXFLAGS += -femit-class-debug-always">
 				<include-if condition="spec.linux_390.*"/>
-				<include-if condition="spec.linux_ppc.*_gcc"/>
+				<include-if condition="spec.linux_aarch64.*"/>
+				<include-if condition="spec.linux_ppc.*_le"/>
+				<include-if condition="spec.linux_riscv64.*"/>
 				<include-if condition="spec.linux_x86.*"/>
+			</makefilestub>
+			<makefilestub data="UMA_DO_NOT_OPTIMIZE_CCODE = 1"/>
+			<makefilestub data="UMA_DLL_LINK_FLAGS += -bexpall">
+				<include-if condition="spec.aix_ppc.*"/>
 			</makefilestub>
 		</makefilestubs>
 		<objects>
@@ -394,37 +444,9 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 			<object name="gcddr"/>
 			<object name="jitflagsddr"/>
 			<object name="omrddr"/>
+			<object name="types"/>
 			<object name="vmddr"/>
 		</objects>
-	</artifact>
-
-	<artifact type="target" name="omrddrgen">
-		<include-if condition="spec.flags.module_ddr and spec.flags.opt_useOmrDdr"/>
-		<dependencies>
-			<dependency name="generate_j9vm"/>
-			<dependency name="generate_redirector"/>
-			<dependency name="j9ddr_misc"/>
-			<dependency name="j9gc"/>
-			<dependency name="j9jvmti"/>
-			<dependency name="j9prt"/>
-			<dependency name="j9shr"/>
-			<dependency name="j9thr"/>
-			<dependency name="j9trc"/>
-			<dependency name="j9vm"/>
-			<!--
-			We actually only need one of the following, but
-			the version we're building doesn't appear to be
-			available to UMA, so we'll require them all.
-			-->
-			<dependency name="jclse7b_"/>
-			<dependency name="jclse9_"/>
-			<dependency name="jclse10_"/>
-			<dependency name="jclse11_"/>
-		</dependencies>
-		<commands>
-			<command line="$(MAKE) -C ddr -f run_omrddrgen.mk" type="all"/>
-			<command line="$(MAKE) -C ddr -f run_omrddrgen.mk clean" type="clean"/>
-		</commands>
 	</artifact>
 
 </module>

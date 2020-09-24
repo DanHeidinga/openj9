@@ -1,7 +1,7 @@
-/*[INCLUDE-IF Sidecar18-SE-OpenJ9]*/
+/*[INCLUDE-IF Sidecar18-SE-OpenJ9 & !OPENJDK_METHODHANDLES]*/
 
 /*******************************************************************************
- * Copyright (c) 2017, 2018 IBM Corp. and others
+ * Copyright (c) 2017, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -24,6 +24,10 @@
 
 package java.lang.invoke;
 
+/*[IF Java11]*/
+import java.lang.reflect.Method;
+/*[ENDIF] Java11 */
+
 /*
  * Stub class to compile OpenJDK j.l.i.MethodHandleImpl
  */
@@ -34,6 +38,27 @@ final class MemberName {
 		public static Factory INSTANCE = null;
 	}
 	/*[ENDIF]*/
+	
+	/*[IF Java11]*/
+	private MethodHandle mh;
+
+	public MemberName() {
+	}
+
+	public MemberName(MethodHandle methodHandle) {
+		mh = methodHandle;
+	}
+
+	private Method method;
+
+	public MemberName(Method method) {
+		this.method = method;
+	}
+
+	public boolean isStatic() {
+		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
+	}
+	/*[ENDIF] Java11 */
 
 	public boolean isVarargs() {
 		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
@@ -59,21 +84,37 @@ final class MemberName {
 		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
 	}
 	
-	/*[IF Java10]*/
+	/*[IF Java11]*/
 	public MethodType getMethodType() {
-		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
+		if (method != null) {
+			return MethodType.methodType(method.getReturnType(), method.getParameterTypes());
+		}
+		throw new UnsupportedOperationException("MemberName.method is null.");
 	}
-	
+
 	String getMethodDescriptor() {
 		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
 	}
+
 	public Class<?> getDeclaringClass() {
-		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
+		if (method != null) {
+			return method.getDeclaringClass();
+		}
+		throw new UnsupportedOperationException("MemberName.method is null.");
 	}
-	/*[IF Java11]*/
+
 	public boolean isFinal() {
+		if (mh instanceof FieldHandle) {
+			return ((FieldHandle)mh).isFinal();
+		}
+		/*[MSG "K0675", "Unexpected MethodHandle instance: {0} with {1}"]*/
+		throw new InternalError(com.ibm.oti.util.Msg.getString("K0675", mh, mh.getClass())); //$NON-NLS-1$
+	}
+	/*[ENDIF] Java11 */
+	
+	/*[IF Java15]*/
+	public byte getReferenceKind() {
 		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
 	}
-	/*[ENDIF]*/
-	/*[ENDIF]*/
+	/*[ENDIF] Java15 */
 }

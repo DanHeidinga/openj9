@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -32,7 +32,7 @@
 #endif
 #endif
 
-/* _GNU_SOURCE forces GLIBC_2.0 sscanf/vsscanf/fscanf for RHEL5 compatability */
+/* _GNU_SOURCE forces GLIBC_2.0 sscanf/vsscanf/fscanf for RHEL5 compatibility */
 #if defined(LINUX) && !defined(J9ZTPF)
 #define _GNU_SOURCE
 #endif /* defined(__GNUC__) */
@@ -69,7 +69,7 @@ typedef enum J9RASdumpMatchResult
 static UDATA rasDumpSuspendKey = 0;
 static UDATA rasDumpFirstThread = 0;
 
-/* Postpone GC and thread event hooks until later phases of VM initialisation */
+/* Postpone GC and thread event hooks until later phases of VM initialization. */
 UDATA rasDumpPostponeHooks = \
 	J9RAS_DUMP_ON_CLASS_UNLOAD | \
 	J9RAS_DUMP_ON_GLOBAL_GC | \
@@ -126,7 +126,7 @@ struct ExceptionStackFrame
 };
 
 static UDATA
-countExceptionStackFrame(J9VMThread *vmThread, void *userData, J9ROMClass *romClass, J9ROMMethod *romMethod, J9UTF8 *fileName, UDATA lineNumber, J9ClassLoader* classLoader)
+countExceptionStackFrame(J9VMThread *vmThread, void *userData, UDATA bytecodeOffset, J9ROMClass *romClass, J9ROMMethod *romMethod, J9UTF8 *fileName, UDATA lineNumber, J9ClassLoader* classLoader, J9Class* ramClass)
 {
 	struct ExceptionStackFrame *frame = (struct ExceptionStackFrame *) userData;
 
@@ -210,20 +210,23 @@ static J9RASdumpMatchResult
 matchesObjectAllocationFilter(J9RASdumpEventData *eventData, char *filter)
 {
 	char *message = eventData->detailData;
-	char* msgPtr;
-	UDATA msgValue;
+	char *msgPtr = NULL;
+	UDATA msgValue = 0;
 	char msgText[20];
-	char* fltPtr;
-	UDATA fltValueMin, fltValueMax;
+	char *fltPtr = NULL;
+	UDATA fltValueMin = 0;
+	UDATA fltValueMax = 0;
 	char fltText[20];
-	
+
 	if (!filter) {
 		/* Must have a filter for matching object allocation */
 		return J9RAS_DUMP_NO_MATCH;
 	}
-	
-	strncpy(msgText, message, sizeof(msgText));
-	strncpy(fltText, filter, sizeof(fltText));
+
+	strncpy(msgText, message, sizeof(msgText) - 1);
+	msgText[sizeof(msgText) - 1] = '\0';
+	strncpy(fltText, filter, sizeof(fltText) - 1);
+	fltText[sizeof(fltText) - 1] = '\0';
 
 	/* Convert the message to a number */
 	msgPtr = msgText;
@@ -250,15 +253,17 @@ static J9RASdumpMatchResult
 matchesSlowExclusiveEnterFilter(J9RASdumpEventData *eventData, char *filter)
 {
 	char *message = eventData->detailData;
-	char* msgPtr;
-	IDATA msgValue;
+	char *msgPtr = NULL;
+	IDATA msgValue = 0;
 	char msgText[20];
-	char* fltPtr;
-	IDATA fltValue;
+	char *fltPtr = NULL;
+	IDATA fltValue = 0;
 	char fltText[20];
 
-	strncpy(msgText, message, sizeof(msgText));
-	strncpy(fltText, filter, sizeof(fltText));
+	strncpy(msgText, message, sizeof(msgText) - 1);
+	msgText[sizeof(msgText) - 1] = '\0';
+	strncpy(fltText, filter, sizeof(fltText) - 1);
+	fltText[sizeof(fltText) - 1] = '\0';
 
 	/* convert the message value to a number */
 	msgPtr = msgText;
@@ -390,7 +395,7 @@ matchesExceptionFilter(J9VMThread *vmThread, J9RASdumpEventData *eventData, UDAT
 		if (throwSite.romClass && throwSite.romMethod) {
 			J9UTF8 *exceptionClassName = J9ROMCLASS_CLASSNAME(J9OBJECT_CLAZZ(vmThread, exception)->romClass);
 			J9UTF8 *throwClassName  = J9ROMCLASS_CLASSNAME(throwSite.romClass);
-			J9UTF8 *throwMethodName = J9ROMMETHOD_GET_NAME(throwSite.romClass, throwSite.romMethod);
+			J9UTF8 *throwMethodName = J9ROMMETHOD_NAME(throwSite.romMethod);
 			
 			if (throwClassName && throwMethodName) {
 				if (stackOffsetFilter) {
@@ -447,16 +452,10 @@ matchesExceptionFilter(J9VMThread *vmThread, J9RASdumpEventData *eventData, UDAT
 			char stackBuffer[256];
 			j9object_t emessage = J9VMJAVALANGTHROWABLE_DETAILMESSAGE(vmThread, *eventData->exceptionRef);
 
-			buf = stackBuffer;
-			if (emessage) {
-				/* length is in jchars. 3x is enough for worst case UTF8 encoding */
-				buflen = J9VMJAVALANGSTRING_LENGTH(vmThread, emessage) * 3;
-				if (buflen > sizeof(stackBuffer)) {
-					buf = (char *)j9mem_allocate_memory(buflen, OMRMEM_CATEGORY_VM);
-				}
+			if (NULL != emessage) {
+				buf = vmThread->javaVM->internalVMFunctions->copyStringToUTF8WithMemAlloc(vmThread, emessage, J9_STR_NULL_TERMINATE_RESULT, "", 0, stackBuffer, 256, &buflen);
 
-				if (buf != NULL) {
-					buflen = vmThread->javaVM->internalVMFunctions->copyStringToUTF8Helper(vmThread, emessage, FALSE, J9_STR_NONE, (U_8*)buf, buflen);
+				if (NULL != buf) {
 					if (wildcardMatch(matchFlag, needleString, needleLength, buf, buflen)) {
 						retCode = J9RAS_DUMP_MATCH;
 					} else {
@@ -465,7 +464,7 @@ matchesExceptionFilter(J9VMThread *vmThread, J9RASdumpEventData *eventData, UDAT
 				}
 			}
 
-			if (buf != NULL && buf != stackBuffer) {
+			if (buf != stackBuffer) {
 				j9mem_free_memory(buf);
 			}
 		}
@@ -548,6 +547,7 @@ prepareForDump(struct J9JavaVM *vm, struct J9RASdumpAgent *agent, struct J9RASdu
 	RasGlobalStorage * j9ras = (RasGlobalStorage *)vm->j9rasGlobalStorage;
 	UtInterface * uteInterface = (UtInterface *)(j9ras ? j9ras->utIntf : NULL);
 	BOOLEAN exclusiveHeld = J9_XACCESS_NONE != vm->exclusiveAccessState;
+	BOOLEAN acquireVMAccessAfterWait = FALSE;
 
 	/* Is trace running? */
 	if( uteInterface && uteInterface->server ) {
@@ -556,7 +556,53 @@ prepareForDump(struct J9JavaVM *vm, struct J9RASdumpAgent *agent, struct J9RASdu
 		newState |= J9RAS_DUMP_TRACE_DISABLED;
 	}
 
-	if ((context->eventFlags & (J9RAS_DUMP_ON_GP_FAULT | J9RAS_DUMP_ON_ABORT_SIGNAL | J9RAS_DUMP_ON_TRACE_ASSERT)) == 0) {
+	/* Release vm access until this thread has the dumpKey and is ready to run. This will allow other threads to obtain exclusiveVMAccess in the meantime. */
+	if ((NULL != vmThread) && !vmThread->inNative) {
+		if (J9_ARE_ANY_BITS_SET(vmThread->publicFlags, J9_PUBLIC_FLAGS_VM_ACCESS)) {
+			vm->internalVMFunctions->internalReleaseVMAccess(vmThread);
+			acquireVMAccessAfterWait = TRUE;
+		}
+	}
+
+	/*
+	 * The following actions are considered safe to call during a crash situation...
+	 */
+
+	/* For fatal events, the first failing thread sets the global rasDumpFirstThread. It then gets higher priority on the
+	 * serial dump lock, see below. This allows the first failing thread to complete its dumps and exit the VM, reducing
+	 * the number of dumps written and out-time if multiple threads crash.
+	 */
+	if (J9_ARE_ANY_BITS_SET(context->eventFlags, J9RAS_DUMP_ON_GP_FAULT | J9RAS_DUMP_ON_ABORT_SIGNAL | J9RAS_DUMP_ON_TRACE_ASSERT)) {
+		compareAndSwapUDATA(&rasDumpFirstThread, 0, dumpKey);
+	}
+
+	if (rasDumpSuspendKey == dumpKey) {
+		/* We already have the lock */
+	} else {
+		UDATA newKey = 0;
+
+		/* Grab the dump lock? */
+		if (J9_ARE_ANY_BITS_SET(agent->requestMask, J9RAS_DUMP_DO_SUSPEND_OTHER_DUMPS)) {
+			newState |= J9RAS_DUMP_GOT_LOCK;
+			newKey = dumpKey;
+		}
+
+		/* Always wait for the lock, but only grab it when requested */
+		while (0 != compareAndSwapUDATA(&rasDumpSuspendKey, 0, newKey)) {
+			if (rasDumpFirstThread == dumpKey) {
+				/* First failing thread gets a simple priority boost over other threads waiting for lock */
+				omrthread_sleep(20);
+			} else {
+				omrthread_sleep(200);
+			}
+		}
+	}
+
+	if (acquireVMAccessAfterWait) {
+		vm->internalVMFunctions->internalAcquireVMAccess(vmThread);
+	}
+
+	if (J9_ARE_NO_BITS_SET(context->eventFlags, J9RAS_DUMP_ON_GP_FAULT | J9RAS_DUMP_ON_ABORT_SIGNAL | J9RAS_DUMP_ON_TRACE_ASSERT)) {
 		/*
 		 * The following actions may deadlock, so don't use them
 		 * if this is a crash situation or a trace assertion.
@@ -592,6 +638,12 @@ prepareForDump(struct J9JavaVM *vm, struct J9RASdumpAgent *agent, struct J9RASdu
 			(state & J9RAS_DUMP_GOT_EXCLUSIVE_VM_ACCESS) == 0 ) {
 
 				if (vmThread) {
+#if defined(J9VM_INTERP_ATOMIC_FREE_JNI)
+					if (vmThread->inNative) {
+						vm->internalVMFunctions->internalEnterVMFromJNI(vmThread);
+						newState |= J9RAS_DUMP_GOT_JNI_VM_ACCESS;
+					} else
+#endif /* J9VM_INTERP_ATOMIC_FREE_JNI */
 					if ((vmThread->publicFlags & J9_PUBLIC_FLAGS_VM_ACCESS) == 0) {
 						vm->internalVMFunctions->internalAcquireVMAccess(vmThread);
 						newState |= J9RAS_DUMP_GOT_VM_ACCESS;
@@ -649,40 +701,6 @@ prepareForDump(struct J9JavaVM *vm, struct J9RASdumpAgent *agent, struct J9RASdu
 		newState |= J9RAS_DUMP_THREADS_HALTED;
 	}
 
-	/*
-	 * The following actions are considered safe to call during a crash situation...
-	 */
-
-	/* For fatal events, the first failing thread sets the global rasDumpFirstThread. It then gets higher priority on the
-	 * serial dump lock, see below. This allows the first failing thread to complete its dumps and exit the VM, reducing
-	 * the number of dumps written and out-time if multiple threads crash.
-	 */
-	if (0 != (context->eventFlags & (J9RAS_DUMP_ON_GP_FAULT | J9RAS_DUMP_ON_ABORT_SIGNAL | J9RAS_DUMP_ON_TRACE_ASSERT))) {
-		compareAndSwapUDATA(&rasDumpFirstThread, 0, dumpKey);
-	}
-
-	if (rasDumpSuspendKey == dumpKey) {
-		/* We already have the lock */
-	} else {
-		UDATA newKey = 0;
-
-		/* Grab the dump lock? */
-		if (agent->requestMask & J9RAS_DUMP_DO_SUSPEND_OTHER_DUMPS) {
-			newState |= J9RAS_DUMP_GOT_LOCK;
-			newKey = dumpKey;
-		}
-
-		/* Always wait for the lock, but only grab it when requested */
-		while (compareAndSwapUDATA(&rasDumpSuspendKey, 0, newKey) != 0) {
-			if (rasDumpFirstThread == dumpKey) {
-				/* First failing thread gets a simple priority boost over other threads waiting for lock */
-				omrthread_sleep(20);
-			} else {
-				omrthread_sleep(200);
-			}
-		}
-	}
-
 	return newState;
 }
 #endif /* J9VM_RAS_DUMP_AGENTS */
@@ -701,13 +719,6 @@ unwindAfterDump(struct J9JavaVM *vm, struct J9RASdumpContext *context, UDATA sta
 	 * Must be in reverse order to the requested actions
 	 */
 
-	if (state & J9RAS_DUMP_GOT_LOCK) {
-
-		/* Should work unless omrthread_self returns a different value than before, which is unlikely */
-		compareAndSwapUDATA(&rasDumpSuspendKey, dumpKey, 0);
-		newState &= ~J9RAS_DUMP_GOT_LOCK;
-	}
-
 	if (state & J9RAS_DUMP_THREADS_HALTED) {
 
 		/**** NOT YET IMPLEMENTED (removed from -Xdump:request) ****/
@@ -719,6 +730,12 @@ unwindAfterDump(struct J9JavaVM *vm, struct J9RASdumpContext *context, UDATA sta
 
 		if (vmThread) {
 			vm->internalVMFunctions->releaseExclusiveVMAccess(vmThread);
+#if defined(J9VM_INTERP_ATOMIC_FREE_JNI)
+			if (state & J9RAS_DUMP_GOT_JNI_VM_ACCESS) {
+				vm->internalVMFunctions->internalExitVMToJNI(vmThread);
+				newState &= ~J9RAS_DUMP_GOT_JNI_VM_ACCESS;
+			} else
+#endif /* J9VM_INTERP_ATOMIC_FREE_JNI */
 			if (state & J9RAS_DUMP_GOT_VM_ACCESS) {
 				vm->internalVMFunctions->internalReleaseVMAccess(vmThread);
 				newState &= ~J9RAS_DUMP_GOT_VM_ACCESS;
@@ -736,6 +753,12 @@ unwindAfterDump(struct J9JavaVM *vm, struct J9RASdumpContext *context, UDATA sta
 		(*((JavaVM *)vm))->DetachCurrentThread((JavaVM *)vm);
 		context->onThread = NULL;
 		newState &= ~J9RAS_DUMP_ATTACHED_THREAD;
+	}
+
+	if (state & J9RAS_DUMP_GOT_LOCK) {
+		/* Should work unless omrthread_self returns a different value than before, which is unlikely */
+		compareAndSwapUDATA(&rasDumpSuspendKey, dumpKey, 0);
+		newState &= ~J9RAS_DUMP_GOT_LOCK;
 	}
 
 	if( state & J9RAS_DUMP_TRACE_DISABLED) {
@@ -1154,11 +1177,11 @@ rasDumpEnableHooks(J9JavaVM *vm, UDATA eventFlags)
 
 /**
  * rasDumpFlushHooks() - enable hooks for events that were postponed from the initial dump agent 
- * initialisation. There are now two phases: GC event hooks are enabled at TRACE_ENGINE_INITIALIZED,
+ * initialization. There are now two phases: GC event hooks are enabled at TRACE_ENGINE_INITIALIZED,
  * and thread event hooks are enabled at VM_INITIALIZATION_COMPLETE. See CMVC 199853 and CMVC 200360.
  * 
  * @param[in] vm - pointer to J9JavaVM structure
- * @param[in] stage - VM initialisation stage
+ * @param[in] stage - VM initialization stage
  * @return void
  */
 void 

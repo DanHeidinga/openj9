@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 2017, 2017 IBM Corp. and others
+ * Copyright (c) 2017, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -68,6 +68,7 @@ class MM_EnvironmentDelegate
 	/* Data members */
 private:
 	MM_EnvironmentBase *_env;
+	J9VMThread *_vmThread;
 	GC_Environment _gcEnv;
 protected:
 public:
@@ -94,7 +95,7 @@ public:
 
 	void flushNonAllocationCaches();
 
-	void setGCMasterThread(bool isMasterThread);
+	void setGCMainThread(bool isMainThread);
 
 	/**
 	 * This will be called for every allocated object.  Note this is not necessarily done when the object is allocated.  You are however
@@ -108,21 +109,26 @@ public:
 	 * structures such as the heap. Requests for VM access will be blocked if any other thread is
 	 * requesting or has obtained exclusive VM access until exclusive VM access is released.
 	 *
-	 * This implementation is not pre-emptive. Threads that have obtained shared VM access must
+	 * This implementation is not preemptive. Threads that have obtained shared VM access must
 	 * check frequently whether any other thread is requesting exclusive VM access and release
 	 * shared VM access as quickly as possible in that event.
 	 */
 	void acquireVMAccess();
 
 	/**
-	 * Release shared VM acccess.
+	 * Release shared VM access.
 	 */
 	void releaseVMAccess();
+	
+	/**
+	 * Returns true if a mutator threads entered native code without releasing VM access
+	 */
+	bool inNative();	
 
 	/**
 	 * Check whether another thread is requesting exclusive VM access. This method must be
 	 * called frequently by all threads that are holding shared VM access if the VM access framework
-	 * is not pre-emptive. If this method returns true, the calling thread should release shared
+	 * is not preemptive. If this method returns true, the calling thread should release shared
 	 * VM access as quickly as possible and reacquire it if necessary.
 	 *
 	 * @return true if another thread is waiting to acquire exclusive VM access
@@ -137,13 +143,13 @@ public:
 	void acquireExclusiveVMAccess();
 
 	/**
-	 * Release exclusive VM acccess. If no other thread is waiting for exclusive VM access
+	 * Release exclusive VM access. If no other thread is waiting for exclusive VM access
 	 * this method will notify all threads waiting for shared VM access to continue and
 	 * acquire shared VM access.
 	 */
 	void releaseExclusiveVMAccess();
 
-	uintptr_t relinquishExclusiveVMAccess(bool *deferredVMAccessRelease);
+	uintptr_t relinquishExclusiveVMAccess();
 
 	void assumeExclusiveVMAccess(uintptr_t exclusiveCount);
 
@@ -151,33 +157,56 @@ public:
 
 	void reacquireCriticalHeapAccess(uintptr_t data);
 
-#if defined(OMR_GC_CONCURRENT_SCAVENGER)
 	void forceOutOfLineVMAccess();
-#endif /* OMR_GC_CONCURRENT_SCAVENGER */
 
 #if defined (OMR_GC_THREAD_LOCAL_HEAP)
 	/**
-	 * Disable inline TLH allocates by hiding the real heap allocation address from
-	 * JIT/Interpreter in realHeapAlloc and setting heapALloc == HeapTop so TLH
+	 * Disable inline TLH allocates by hiding the real heap top address from
+	 * JIT/Interpreter in realHeapTop and setting HeapTop == heapALloc so TLH
 	 * looks full.
 	 *
 	 */
 	void disableInlineTLHAllocate();
 
 	/**
-	 * Re-enable inline TLH allocate by restoring heapAlloc from realHeapAlloc
+	 * Re-enable inline TLH allocate by restoring heapTop from realHeapTop
 	 */
 	void enableInlineTLHAllocate();
 
 	/**
-	 * Determine if inline TLH allocate is enabled; its enabled if realheapAlloc is NULL.
+	 * Determine if inline TLH allocate is enabled; its enabled if realheapTop is NULL.
 	 * @return TRUE if inline TLH allocates currently enabled for this thread; FALSE otherwise
 	 */
 	bool isInlineTLHAllocateEnabled();
+
+	/**
+	 * Set TLH Sampling Top by hiding the real heap top address from
+	 * JIT/Interpreter in realHeapTop and setting HeapTop = (HeapAlloc + size) if size < (HeapTop - HeapAlloc)
+	 * so out of line allocate would happen at TLH Sampling Top.
+	 * If size >= (HeapTop - HeapAlloc) resetTLHSamplingTop()
+	 *
+	 * @param size the number of bytes to next sampling point
+	 */
+	void setTLHSamplingTop(uintptr_t size);
+
+	/**
+	 * Restore heapTop from realHeapTop if realHeapTop != NULL
+	 */
+	void resetTLHSamplingTop();
+
+	/**
+	 * Retrieve allocation size inside TLH Cache.
+	 * @return (heapAlloc - heapBase)
+	 */
+	uintptr_t getAllocatedSizeInsideTLH();
+
 #endif /* OMR_GC_THREAD_LOCAL_HEAP */
 
 	MM_EnvironmentDelegate()
+		
+	
 		: _env(NULL)
+		, _vmThread(NULL)
 	{ }
 };
 

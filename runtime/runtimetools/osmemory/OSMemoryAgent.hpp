@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2011, 2014 IBM Corp. and others
+ * Copyright (c) 2011, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -30,19 +30,22 @@
 #define MAX_JVMS_IN_HIVE 4
 
 /* structure used to return data obtained through the perf stat interface */
-typedef struct PerfStatData {
+struct PerfStatData
+{
 	u_longlong_t hpi; /* hypervisor pages in since LPAR start */
 	u_longlong_t hpit; /* hypervisor page in time since LPAR start in nanoseconds */
 	u_longlong_t pmem; /* assigned physical memory in bytes */
 };
 
-/* structure used to send data between JVMS */
-typedef struct HiveData {
+/* structure used to send data between JVMs */
+struct HiveData
+{
 	long 			jvmId; /* unique id assigned to JVM on command line */
 	u_longlong_t	currentHpi; /* hpi value for last interval */
 	u_longlong_t	assignedPhysical; /* currently assigned physical memory in bytes */
 };
-#endif
+
+#endif /* defined(AIXPPC) */
 
 class OSMemoryAgent : public RuntimeToolsIntervalAgent
 {
@@ -135,7 +138,7 @@ private:
 	u_longlong_t _hpiValues[MAX_JVMS_IN_HIVE];
 	u_longlong_t _assignedPhysical[MAX_JVMS_IN_HIVE];
 
-#endif
+#endif /* defined(AIXPPC) */
 
 	/*
 	 * Function members
@@ -173,8 +176,7 @@ protected:
 	 *
 	 */
 	void updateFromHive(void);
-
-#endif
+#endif /* defined(AIXPPC) */
 
 public:
 	/**
@@ -212,7 +214,7 @@ public:
 	 *
 	 * @param options the options passed to the agent in Agent_OnLoad
 	 *
-	 * @returns 0 on succes, and error value otherwise
+	 * @returns 0 on success, and error value otherwise
 	 */
 	virtual jint setup(char * options);
 

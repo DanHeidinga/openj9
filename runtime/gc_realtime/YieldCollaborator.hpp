@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2014 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -22,8 +22,8 @@
 #if !defined(YIELDCOLLABORATOR_HPP_)
 #define YIELDCOLLABORATOR_HPP_
 
-#include "j9.h"
-#include "j9cfg.h"
+#include "omr.h"
+#include "omrcfg.h"
 
 #include "EnvironmentBase.hpp"
 
@@ -32,9 +32,9 @@ class MM_YieldCollaborator : public MM_BaseNonVirtual {
 public:
 	
 	enum ResumeEvent {
-		fromYield = 1, /* master notifies slaves to start working */
+		fromYield = 1, /* main notifies workers to start working */
 		synchedThreads = 2,  /* one GC thread notifies other threads, it's the last one to reach blocking or yield point */
-		notifyMaster = 3, /* notify only master that all other GC threads synched or yielded */
+		notifyMain = 3, /* notify only main that all other GC threads synched or yielded */
 		newPacket = 4 /* notify a GC thread that a new packeted is created */
 	};
 	
@@ -52,16 +52,16 @@ private:
 	MM_YieldCollaborator *_prev;
 	
 	omrthread_monitor_t *_mutex;
-	volatile UDATA *_count;
-	volatile UDATA _yieldIndex;
-	volatile UDATA _yieldCount;
+	volatile uintptr_t *_count;
+	volatile uintptr_t _yieldIndex;
+	volatile uintptr_t _yieldCount;
 	ResumeEvent _resumeEvent;
 
 public:
 	
 	void setResumeEvent(ResumeEvent resumeEvent) { _resumeEvent = resumeEvent; }
 	ResumeEvent getResumeEvent() { return _resumeEvent; }	
-	UDATA getYieldCount() const { return _yieldCount; }
+	uintptr_t getYieldCount() const { return _yieldCount; }
 	
 	MM_YieldCollaborator *push(MM_YieldCollaborator *prev) {
 		_prev = prev;
@@ -73,9 +73,9 @@ public:
 		return _prev;
 	}
 	
-	/* master notifies slaves it's time to start a new GC quantum */
-	void resumeSlavesFromYield(MM_EnvironmentBase *env);
-	/* used by either slaves to yield or master to wait for slaves to yield (or reach sync barrier) */	
+	/* main notifies workers it's time to start a new GC quantum */
+	void resumeWorkersFromYield(MM_EnvironmentBase *env);
+	/* used by either workers to yield or main to wait for workers to yield (or reach sync barrier) */	
 	void yield(MM_EnvironmentBase *env);
 	
 	MM_YieldCollaborator(omrthread_monitor_t *mutex, volatile UDATA *count, CollaboratorID collaboratorID) :

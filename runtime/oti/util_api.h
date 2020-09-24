@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -42,11 +42,6 @@
 #include "omrutil.h"
 #include "omrutilbase.h"
 #include "shchelp.h"
-
-/* Ensure J9VM_JAVA9_BUILD is always defined to simplify conditions. */
-#ifndef J9VM_JAVA9_BUILD
-#define J9VM_JAVA9_BUILD 0
-#endif /* J9VM_JAVA9_BUILD */
 
 #ifdef __cplusplus
 extern "C" {
@@ -380,25 +375,6 @@ typedef struct J9WalkFieldHierarchyState {
  */
 void walkFieldHierarchyDo(J9Class *clazz, J9WalkFieldHierarchyState *state);
 
-#if defined(J9VM_OUT_OF_PROCESS)
-
-/**
-* @brief
-* @param state
-* @return J9ROMFieldShape *
-*/
-J9ROMFieldShape * debugRomFieldsNextDo(J9ROMFieldWalkState *state);
-
-
-/**
-* @brief
-* @param romClass
-* @param state
-* @return J9ROMFieldShape *
-*/
-J9ROMFieldShape * debugRomFieldsStartDo(J9ROMClass *romClass, J9ROMFieldWalkState *state);
-
-#endif /* defined(J9VM_OUT_OF_PROCESS) */
 
 /* ---------------- final.c ---------------- */
 
@@ -510,7 +486,7 @@ void helperConvertIntegerToFloat(I_32 *src, jfloat *dst);
 /**
 * @brief Helper function called by VM interpreter, using pointers 
 *        to values. Converts a long number to double precision.
-* @param[in] *src Pointer to long value to be converted to doble.
+* @param[in] *src Pointer to long value to be converted to double.
 * @param[out] *dst Pointer to the resulting double value.
 * @return Void.
 *
@@ -1267,13 +1243,12 @@ jint request_MonitorJlmDumpSize(J9JavaVM *jvm, UDATA *dump_size, jint dump_forma
 /**
 * @brief
 * @param vm 	the Java VM
-* @param vmThread	the vmThread where the monitor was found
 * @param object
 * @param pcount
 * @return J9VMThread*
 */
 J9VMThread* 
-getObjectMonitorOwner(J9JavaVM* vm, J9VMThread *vmThread, j9object_t object, UDATA* pcount);
+getObjectMonitorOwner(J9JavaVM* vm, j9object_t object, UDATA* pcount);
 
 
 /**
@@ -1300,18 +1275,126 @@ void validateLibrary(J9JavaVM *javaVM, J9NativeLibrary *library);
 /* ---------------- optinfo.c ---------------- */
 
 /**
+ * Retrieves number of permitted subclasses in this sealed class. Assumes that 
+ * ROM class parameter references a sealed class.
+ * 
+ * @param J9ROMClass sealed class
+ * @return U_32 number of permitted subclasses in optionalinfo
+ */
+U_32*
+getNumberOfPermittedSubclassesPtr(J9ROMClass *romClass);
+
+/**
+ * Find the permitted subclass name constant pool entry at index in the optional data of the ROM class parameter.
+ * This method assumes there is at least one permitted subclass in the ROM class.
+ * 
+ * @param U_32* permittedSubclassesCountPtr
+ * @param U_32 class index
+ * @return the permitted subclass name at index from ROM class
+ */
+J9UTF8*
+permittedSubclassesNameAtIndex(U_32* permittedSubclassesCountPtr, U_32 index);
+
+/**
+ * Retrieves number of record components in this record. Assumes that 
+ * ROM class parameter references a record class.
+ * 
+ * @param J9ROMClass record class
+ * @return U_32 number of record components in optionalinfo
+ */
+U_32
+getNumberOfRecordComponents(J9ROMClass *romClass);
+
+/**
+ * Reason if record component has an optional signature attribute.
+ * 
+ * @param J9ROMRecordComponentShape* record component
+ * @return true if record component has an optional signature attribute
+ */
+BOOLEAN
+recordComponentHasSignature(J9ROMRecordComponentShape* recordComponent);
+
+/**
+ * Reason if record component has an optional annotations attribute.
+ * 
+ * @param J9ROMRecordComponentShape* record component
+ * @return true if record component has an optional annotations attribute
+ */
+BOOLEAN
+recordComponentHasAnnotations(J9ROMRecordComponentShape* recordComponent);
+
+/**
+ * Reason if record component has an optional type annotations attribute.
+ * 
+ * @param J9ROMRecordComponentShape* record component
+ * @return true if record component has an optional type annotations attribute
+ */
+BOOLEAN
+recordComponentHasTypeAnnotations(J9ROMRecordComponentShape* recordComponent);
+
+/**
+ * Return the generic signature attribute from record component parameter.
+ * 
+ * @param J9ROMRecordComponentShape* record component
+ * @return J9UTF8* generic signature attribute, or null if one does
+ * not exist for this record component.
+ *
+ */
+J9UTF8*
+getRecordComponentGenericSignature(J9ROMRecordComponentShape* recordComponent);
+
+/**
+ * Return the annotation attribute data from the record component parameter.
+ * 
+ * @param J9ROMRecordComponentShape* record component
+ * @return U_32* annotation attribute data, or null is it does not exist 
+ * for this record component.
+ */
+U_32*
+getRecordComponentAnnotationData(J9ROMRecordComponentShape* recordComponent);
+
+/**
+ * Return the type annotation attribute data from the record component parameter.
+ * 
+ * @param J9ROMRecordComponentShape* record component
+ * @return U_32* type annotation attribute data, or null is it does not exist 
+ * for this record component.
+ */
+U_32*
+getRecordComponentTypeAnnotationData(J9ROMRecordComponentShape* recordComponent);
+
+/**
+ * Find first record component in the optional data of the ROM class parameter.
+ * This method assumes there is at least one record component in the ROM class.
+ * 
+ * @param J9ROMClass* record class
+ * @return first record component from ROM class
+ */
+J9ROMRecordComponentShape* 
+recordComponentStartDo(J9ROMClass *romClass);
+
+/**
+ * Find the record component. This method assumes there is
+ * at least one more record component.
+ * 
+ * @param J9ROMRecordComponentShape* last record component
+ * @return J9ROMRecordComponentShape* next record component
+ */
+J9ROMRecordComponentShape* 
+recordComponentNextDo(J9ROMRecordComponentShape* recordComponent);
+
+/**
 * @brief
 * @param *vm
 * @param *romMethod
 * @param *romClass
-* @param offset
 * @param *classLoader
 * @param relativePC
 * @param *romClass
 * @return UDATA
 */
 UDATA
-getLineNumberForROMClassFromROMMethod(J9JavaVM *vm, J9ROMMethod *romMethod, J9ROMClass *romClass, UDATA offset, J9ClassLoader *classLoader, UDATA relativePC);
+getLineNumberForROMClassFromROMMethod(J9JavaVM *vm, J9ROMMethod *romMethod, J9ROMClass *romClass, J9ClassLoader *classLoader, UDATA relativePC);
 
 /**
 * @brief
@@ -1515,17 +1598,6 @@ variableInfoNextDo(J9VariableInfoWalkState *state);
 
 /**
 * @brief
-* @param variableInfo
-* @param variableInfoCount
-* @param state
-* @param readLocation
-* @return J9VariableInfoValues *
-*/
-J9VariableInfoValues *
-debugVariableInfoStartDo(U_8 * variableInfo, U_32 variableInfoCount, J9VariableInfoWalkState* state, UDATA readLocation);
-
-/**
-* @brief
 * @param methodInfo
 * @param state
 * @return J9VariableInfoValues *
@@ -1600,17 +1672,6 @@ getOriginalROMMethod(J9Method * method);
  */
 J9ROMMethod *
 getOriginalROMMethodUnchecked(J9Method * method);
-
-/* ---------------- sleephelp.c ---------------- */
-
-/**
-* @brief
-* @param sleepTime
-* @return IDATA
-*/
-IDATA
-callThreadSleep(IDATA sleepTime);
-
 
 /* ---------------- subclass.c ---------------- */
 
@@ -1714,27 +1775,15 @@ getVMThreadRawState(J9VMThread *targetThread, j9object_t *pLockObject, omrthread
 UDATA
 getVMThreadRawStatesAll(J9VMThread *targetThread, j9object_t *pLockObject, omrthread_monitor_t *pRawLock, J9VMThread **pLockOwner, UDATA *pCount);
 
-
-/**
-* @brief
-* @param thread
-* @param pmonitor
-* @param powner
-* @param pcount
-* @return UDATA
-*/
-UDATA getVMThreadStatus_DEPRECATED(J9VMThread* thread, J9ThreadAbstractMonitor** pmonitor, J9VMThread** powner, UDATA* pcount);
-
 /**
 * @brief
 * @param vm
-* @param targetVMThread	the vmThread where the monitor was found
 * @param object
 * @param lockWord
 * @return J9ThreadAbstractMonitor *
 */
 J9ThreadAbstractMonitor *
-getInflatedObjectMonitor(J9JavaVM *vm, J9VMThread *targetVMThread, j9object_t object, j9objectmonitor_t lockWord);
+getInflatedObjectMonitor(J9JavaVM *vm, j9object_t object, j9objectmonitor_t lockWord);
 
 /* ---------------- thrname.c ---------------- */
 /**
@@ -1873,13 +1922,31 @@ getReturnTypeFromSignature(U_8 * inData, UDATA inLength, U_8 **outData);
 /* ---------------- mthutil.c ---------------- */
 
 /**
+ * @brief Retrieve the J9Method which maps to the index within the iTable for interfaceClass.
+ * @param interfaceClass The interface class to query
+ * @param index The iTable index
+ * @return J9Method* The J9Method which maps to index within interfaceClass
+  */
+J9Method *
+iTableMethodAtIndex(J9Class *interfaceClass, UDATA index);
+
+/**
+ * @brief Retrieve the iTable index of an interface method within the iTable for
+ *        its declaring class.
+ * @param method The interface method
+ * @return UDATA The iTable index (not including the fixed J9ITable header)
+ */
+UDATA
+getITableIndexWithinDeclaringClass(J9Method *method);
+
+/**
  * @brief Retrieve the index of an interface method within the iTable for an interface
  *        (not necessarily the same interface, as iTables contain methods from all
  *        extended interfaces as well as the local one).
  * @param method The interface method
  * @param targetInterface The interface in whose table to search
  *                        (NULL to use the declaring class of method)
- * @return UDATA The iTable index (not including the fixed J9ITable header), or -1 if not found
+ * @return UDATA The iTable index (not including the fixed J9ITable header)
  */
 UDATA
 getITableIndexForMethod(J9Method * method, J9Class *targetInterface);
@@ -1888,6 +1955,8 @@ getITableIndexForMethod(J9Method * method, J9Class *targetInterface);
  * Returns the first ROM method following the argument.
  * If this is called on the last ROM method in a ROM class
  * it will return an undefined value.
+ * The defining class of method must be an interface; do not use this
+ * for methods inherited from java.lang.Object.
  *
  * @param[in] romMethod - the current ROM method
  * @return - the ROM method following the current one
@@ -2027,7 +2096,7 @@ typedef struct J9JVMTIHCRJitEventData {
 	UDATA * dataCursor;      /*!< cursor into the data buffer */
 	UDATA * data;            /*!< data buffer containing the jit class redefinition event data */
 	UDATA classCount;        /*!< number of classes in the data buffer */
-	UDATA initialized;       /*!< indicates that the strucutre has been initialized and is ready for use and dealloc */
+	UDATA initialized;       /*!< indicates that the structure has been initialized and is ready for use and dealloc */
 } J9JVMTIHCRJitEventData;
 
 void
@@ -2047,9 +2116,6 @@ fixSubclassHierarchy (J9VMThread * currentThread, J9HashTable* classHashTable);
 
 void
 fixITables(J9VMThread * currentThread, J9HashTable* classHashTable);
-
-void
-fixITablesForFastHCR(J9VMThread *currentThread, J9HashTable *classHashTable);
 
 void
 fixArrayClasses(J9VMThread * currentThread, J9HashTable* classHashTable);
@@ -2072,9 +2138,6 @@ fixDirectHandles(J9VMThread * currentThread, J9HashTable * classHashTable, J9Has
 void
 copyPreservedValues (J9VMThread * currentThread, J9HashTable* classHashTable, UDATA extensionsUsed);
 
-void
-fixReturnsInUnsafeMethods(J9VMThread * currentThread, J9HashTable * classPairs);
-
 enum jvmtiError
 recreateRAMClasses (J9VMThread * currentThread, J9HashTable* classHashTable, J9HashTable * methodHashTable, UDATA extensionsUsed, BOOLEAN fastHCR);
 
@@ -2095,7 +2158,7 @@ enum jvmtiError
 verifyNewClasses (J9VMThread * currentThread, jint class_count, J9JVMTIClassPair * classPairs);
 
 jvmtiError
-fixMethodEquivalences(J9VMThread * currentThread, 
+fixMethodEquivalencesAndCallSites(J9VMThread * currentThread, 
 	J9HashTable * classPairs,
 	J9JVMTIHCRJitEventData * eventData,
 	BOOLEAN fastHCR, J9HashTable ** methodEquivalences,
@@ -2126,10 +2189,10 @@ jitClassRedefineEvent(J9VMThread * currentThread, J9JVMTIHCRJitEventData * jitEv
 void
 notifyGCOfClassReplacement(J9VMThread * currentThread, J9HashTable * classPairs, UDATA isFastHCR);
 
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+#if JAVA_SPEC_VERSION >= 11
 void
 fixNestMembers(J9VMThread * currentThread, J9HashTable * classPairs);
-#endif /* defined(J9VM_OPT_VALHALLA_NESTMATES) */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 
 #endif /* J9VM_INTERP_HOT_CODE_REPLACEMENT */
 
@@ -2208,6 +2271,26 @@ setCurrentCacheVersion(J9JavaVM *vm, UDATA j2seVersion, J9PortShcVersion* result
 U_32
 getJVMFeature(J9JavaVM *vm);
 
+/**
+ * Get the OpenJ9 SHA
+ *
+ * @return uint64_t The OpenJ9 SHA
+ */
+uint64_t
+getOpenJ9Sha();
+
+/**
+ * If the class is a lambda class get the pointer to the last '$' sign of the class name which is in the format of HostClassName$$Lambda$<IndexNumber>/0x0000000000000000.
+ * NULL otherwise.
+ *
+ * @param[in] className  pointer to the class name
+ * @param[in] classNameLength  length of the class name
+ * @return Pointer to the last '$' sign of the class name if it is a lambda class.
+ * 		   NULL otherwise.
+ */
+char*
+getLastDollarSignOfLambdaClassName(const char *className, UDATA classNameLength);
+
 /* ---------------- cphelp.c ---------------- */
 
 /**
@@ -2258,7 +2341,7 @@ getModuleJRTURL(J9VMThread *currentThread, J9ClassLoader *classLoader, J9Module 
 UDATA
 addJarToSystemClassLoaderClassPathEntries(J9JavaVM *vm, const char *filename);
 
-/* ---------------- genericSignalHander.c ---------------- */
+/* ---------------- genericSignalHandler.c ---------------- */
 
 /**
 * @brief generic signal handler that dumps the registers contents from the time of crash and aborts.
@@ -2328,7 +2411,7 @@ void props_file_do(j9props_file_t file, j9props_file_iterator iterator, void* us
  * Function to determine if the zos version is at least a given
  * release and version.  The implementation is based on uname(),
  * NOT on __osname() as the __osname() release numbers are not
- * guarenteed to increase.
+ * guaranteed to increase.
  *
  * For release and version numbers, see
  * 	http://publib.boulder.ibm.com/infocenter/zos/v1r10/index.jsp?topic=/com.ibm.zos.r10.bpxbd00/osnm.htm
@@ -2611,24 +2694,6 @@ isModuleDefined(J9VMThread * currentThread, J9Module * fromModule);
  * @param[in] currentThread the current J9VMThread
  * @param[in] fromModule the module containing the package
  * @param[in] packageName the package to be checked if it is exported to toModule
- * @param[in] toModule the module to be checked if the package is exported to it
- * @param[in] toUnnamed the flag indicating if toModule is an unnamed module
- * @param[in] errCode the status code returned
- *
- * @return true if the package is exported to toModule, false if otherwise
- */
-BOOLEAN
-#if J9VM_JAVA9_BUILD >= 156
-isPackageExportedToModule(J9VMThread * currentThread, J9Module * fromModule, const char *packageName, J9Module * toModule, BOOLEAN toUnnamed, UDATA * errCode);
-#else /* J9VM_JAVA9_BUILD >= 156 */
-isPackageExportedToModule(J9VMThread * currentThread, J9Module * fromModule, j9object_t packageName, J9Module * toModule, BOOLEAN toUnnamed, UDATA * errCode);
-#endif /* J9VM_JAVA9_BUILD >= 156 */
-/**
- * Determine if a package within fromModule is exported to toModule
- *
- * @param[in] currentThread the current J9VMThread
- * @param[in] fromModule the module containing the package
- * @param[in] packageName the package to be checked if it is exported to toModule
  * @param[in] len length of the package name to be checked
  * @param[in] toModule the module to be checked if the package is exported to it
  * @param[in] toUnnamed the flag indicating if toModule is an unnamed module
@@ -2650,11 +2715,7 @@ isPackageExportedToModuleWithName(J9VMThread *currentThread, J9Module *fromModul
  * @return the package definition
  */
 J9Package*
-#if J9VM_JAVA9_BUILD >= 156
 getPackageDefinition(J9VMThread * currentThread, J9Module * fromModule, const char *packageName, UDATA * errCode);
-#else /* J9VM_JAVA9_BUILD >= 156 */
-getPackageDefinition(J9VMThread * currentThread, J9Module * fromModule, j9object_t packageName, UDATA * errCode);
-#endif /* J9VM_JAVA9_BUILD >= 156 */
 /**
  * Get a pointer to J9Package structure associated with incoming classloader and package name
  *
@@ -2665,11 +2726,7 @@ getPackageDefinition(J9VMThread * currentThread, J9Module * fromModule, j9object
  * @return a pointer to J9Package structure associated with incoming classloader and package name
  */
 J9Package*
-#if J9VM_JAVA9_BUILD >= 156
 hashPackageTableAt(J9VMThread * currentThread, J9ClassLoader * classLoader, const char *packageName);
-#else /* J9VM_JAVA9_BUILD >= 156 */
-hashPackageTableAt(J9VMThread * currentThread, J9ClassLoader * classLoader, j9object_t packageName);
-#endif /* J9VM_JAVA9_BUILD >= 156 */
 /**
  * Add UTF package name to construct a J9Package for hashtable query
  *
@@ -2682,12 +2739,7 @@ hashPackageTableAt(J9VMThread * currentThread, J9ClassLoader * classLoader, j9ob
  * @return true if finished successfully, false if NativeOutOfMemoryError occurred
  */
 BOOLEAN
-#if J9VM_JAVA9_BUILD >= 156
 addUTFNameToPackage(J9VMThread *currentThread, J9Package *j9package, const char *packageName, U_8 *buf, UDATA bufLen);
-#else /* J9VM_JAVA9_BUILD >= 156 */
-addUTFNameToPackage(J9VMThread *currentThread, J9Package *j9package, j9object_t packageName, U_8 *buf, UDATA bufLen);
-#endif /* J9VM_JAVA9_BUILD >= 156 */
-
 
 /**
  * Find the J9Package with given package name. Caller needs to hold the

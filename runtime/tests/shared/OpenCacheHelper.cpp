@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2014 IBM Corp. and others
+ * Copyright (c) 2001, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -102,6 +102,7 @@ OpenCacheHelper::openTestCache(I_32 cacheType, I_32 cacheSize, const char *cache
 
 	sharedClassConfig->cacheDescriptorList = (J9SharedClassCacheDescriptor*)((UDATA)sharedClassConfig + sizeof(J9SharedClassConfig));
 	sharedClassConfig->cacheDescriptorList->next = sharedClassConfig->cacheDescriptorList;
+	sharedClassConfig->cacheDescriptorList->previous = sharedClassConfig->cacheDescriptorList;
 	sharedClassConfig->softMaxBytes = -1;
 	sharedClassConfig->minAOT = -1;
 	sharedClassConfig->maxAOT = -1;
@@ -110,6 +111,7 @@ OpenCacheHelper::openTestCache(I_32 cacheType, I_32 cacheSize, const char *cache
 
 	sharedClassConfig->runtimeFlags = getDefaultRuntimeFlags();
 	sharedClassConfig->runtimeFlags |= extraRunTimeFlag;
+	vm->sharedCacheAPI->runtimeFlags |= extraRunTimeFlag;
 	sharedClassConfig->runtimeFlags &= ~(unsetTheseRunTimeFlag);
 
 	sharedClassConfig->verboseFlags |= extraVerboseFlag;
@@ -135,7 +137,6 @@ OpenCacheHelper::openTestCache(I_32 cacheType, I_32 cacheSize, const char *cache
 	memset(memory, 0, cacheObjectSize);
 
 	cacheMap = SH_CacheMap::newInstance(vm, sharedClassConfig, (SH_CacheMap*)memory, cacheName, cacheType);
-
 	sharedClassConfig->runtimeFlags |= J9SHR_RUNTIMEFLAG_CACHE_INITIALIZATION_COMPLETE;
 	sharedClassConfig->sharedClassCache = (void*)cacheMap;
 	if (true == inMemoryCache) {
@@ -188,6 +189,12 @@ OpenCacheHelper::openTestCache(I_32 cacheType, I_32 cacheSize, const char *cache
 			ERRPRINTF("Invalid cache dir permission\n");
 			rc = FAIL;
 			goto done;
+		}
+	}
+	
+	if (J9_ARE_ALL_BITS_SET(sharedClassConfig->runtimeFlags, J9SHR_RUNTIMEFLAG_ENABLE_GROUP_ACCESS)) {
+		if (J9SH_DIRPERM_ABSENT == cacheDirPerm) {
+			cacheDirPerm = J9SH_DIRPERM_ABSENT_GROUPACCESS;
 		}
 	}
 	rc = cacheMap->startup(vm->mainThread, piConfig, this->cacheName, this->cacheDir, cacheDirPerm, cacheMemory, &cacheHasIntegrity);

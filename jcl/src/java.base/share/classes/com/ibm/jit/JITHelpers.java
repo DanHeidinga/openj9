@@ -3,7 +3,7 @@
 package com.ibm.jit;
 
 /*******************************************************************************
- * Copyright (c) 1998, 2018 IBM Corp. and others
+ * Copyright (c) 1998, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -24,6 +24,7 @@ package com.ibm.jit;
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
 
+import com.ibm.oti.vm.J9UnmodifiableClass;
 import java.lang.reflect.Field;
 import java.lang.reflect.Array;
 import com.ibm.oti.vm.VM;
@@ -41,13 +42,11 @@ import sun.reflect.CallerSensitive;
  * The <code>JITHelpers</code> class contains methods used by the JIT to optimize certain primitive operations.
  */
 @SuppressWarnings("javadoc")
+@J9UnmodifiableClass
 public final class JITHelpers {
 
 	private static final JITHelpers helpers;
 	private static final Unsafe unsafe;
-	// If JITHelpers class is loaded at startup, so is DecimalFormatHelper. The latter is needed
-	// to optimize DecimalFormat.format(bd.doubleValue()) optimization in jit.
-	private static final DecimalFormatHelper dummyDecFormat = new DecimalFormatHelper();
 
 	private JITHelpers() {
 	}
@@ -79,7 +78,7 @@ public final class JITHelpers {
 	private static final int POINTER_SIZE = VM.ADDRESS_SIZE;
 	private static final boolean IS_32_BIT = (POINTER_SIZE == 4);
 
-	public static final boolean IS_PLATFORM_LITTLE_ENDIAN = isPlatformLittleEndian();
+	public static final boolean IS_BIG_ENDIAN = isBigEndian();
 
 	/*
 	 * The following natives are used by the static initializer. They do not require special treatment by the JIT.
@@ -164,6 +163,100 @@ public final class JITHelpers {
 		return getJ9ClassFromClass32(clazz);
 	}
 
+
+	/*
+	 * To be recognized by the JIT and returns true if the hardware supports SIMD case conversion.
+	 */
+	public boolean supportsIntrinsicCaseConversion() {
+		return false;
+	}
+
+	/**
+	 * To be used by the JIT when performing SIMD upper case conversion with Latin 1 strings.
+	 * @param value the underlying array for the source string.
+	 * @param output a new array which will be used for the converted string.
+	 * @param length the number of bytes used to represent the string.
+	 * @return True if intrinsic conversion was successful, false if fallback conversion must be used.
+	 */
+	public boolean toUpperIntrinsicLatin1(byte[] value, byte[] output, int length) {
+		return false;
+	}
+
+	/**
+	 * To be used by the JIT when performing SIMD lower case conversion with Latin 1 strings.
+	 * @param value the underlying array for the source string.
+	 * @param output a new array which will be used for the converted string.
+	 * @param length the number of bytes used to represent the string.
+	 * @return True if intrinsic conversion was successful, false if fallback conversion must be used.
+	 */
+	public boolean toLowerIntrinsicLatin1(byte[] value, byte[] output, int length) {
+		return false;
+	}
+
+	/**
+	 * To be used by the JIT when performing SIMD upper case conversion with UTF16 strings.
+	 * @param value the underlying array for the source string.
+	 * @param output a new array which will be used for the converted string.
+	 * @param length the number of bytes used to represent the string.
+	 * @return True if intrinsic conversion was successful, false if fallback conversion must be used.
+	 */
+	public boolean toUpperIntrinsicUTF16(byte[] value, byte[] output, int length) {
+		return false;
+	}
+
+	/**
+	 * To be used by the JIT when performing SIMD lower case conversion with UTF16 strings.
+	 * @param value the underlying array for the source string.
+	 * @param output a new array which will be used for the converted string.
+	 * @param length the number of bytes used to represent the string.
+	 * @return True if intrinsic conversion was successful, false if fallback conversion must be used.
+	 */
+	public boolean toLowerIntrinsicUTF16(byte[] value, byte[] output, int length) {
+		return false;
+	}
+	/**
+	 * To be used by the JIT when performing SIMD upper case conversion with Latin 1 strings.
+	 * @param value the underlying array for the source string.
+	 * @param output a new array which will be used for the converted string.
+	 * @param length the number of bytes used to represent the string.
+	 * @return True if intrinsic conversion was successful, false if fallback conversion must be used.
+	 */
+	public boolean toUpperIntrinsicLatin1(char[] value, char[] output, int length) {
+		return false;
+	}
+
+	/**
+	 * To be used by the JIT when performing SIMD lower case conversion with Latin 1 strings.
+	 * @param value the underlying array for the source string.
+	 * @param output a new array which will be used for the converted string.
+	 * @param length the number of bytes used to represent the string.
+	 * @return True if intrinsic conversion was successful, false if fallback conversion must be used.
+	 */
+	public boolean toLowerIntrinsicLatin1(char[] value, char[] output, int length) {
+		return false;
+	}
+
+	/**
+	 * To be used by the JIT when performing SIMD upper case conversion with UTF16 strings.
+	 * @param value the underlying array for the source string.
+	 * @param output a new array which will be used for the converted string.
+	 * @param length the number of bytes used to represent the string.
+	 * @return True if intrinsic conversion was successful, false if fallback conversion must be used.
+	 */
+	public boolean toUpperIntrinsicUTF16(char[] value, char[] output, int length) {
+		return false;
+	}
+
+	/**
+	 * To be used by the JIT when performing SIMD lower case conversion with UTF16 strings.
+	 * @param value the underlying array for the source string.
+	 * @param output a new array which will be used for the converted string.
+	 * @param length the number of bytes used to represent the string.
+	 * @return True if intrinsic conversion was successful, false if fallback conversion must be used.
+	 */
+	public boolean toLowerIntrinsicUTF16(char[] value, char[] output, int length) {
+		return false;
+	}
 
 	/*
 	 * sun.misc.Unsafe.get* and put* have to generate internal control flow for correctness due to different object shapes. The JIT emitted sequences
@@ -353,8 +446,23 @@ public final class JITHelpers {
 		return (char) ((char) b & (char) 0x00ff);
 	}
 
+	/**
+	 * Determine whether {@code lhs} is at a lower address than {@code rhs}.
+	 *
+	 * Because objects can be moved by the garbage collector, the ordering of
+	 * the addresses of distinct objects is not stable over time. As such, the
+	 * result of this comparison should be used for heuristic purposes only.
+	 *
+	 * A null reference is considered less than any non-null reference.
+	 *
+	 * @param lhs The left hand side of the comparison
+	 * @param rhs The right hand side of the comparison
+	 * @return true if {@code lhs} is at a lower address, false otherwise
+	 */
+	public native boolean acmplt(Object lhs, Object rhs);
+
 	private static long storeBits(long dest, int width, long value, int vwidth, int offset) {
-		int offsetToModify = IS_PLATFORM_LITTLE_ENDIAN ? ((offset * vwidth) % width) : ((width - 1) - ((offset * vwidth) % width));
+		int offsetToModify = IS_BIG_ENDIAN ? ((width - 1) - ((offset * vwidth) % width)) : ((offset * vwidth) % width);
 
 		long vmask = (-1 >>> ((8 - vwidth) * 8));
 		long dmask = ~(vmask << (8 * offsetToModify));
@@ -363,7 +471,7 @@ public final class JITHelpers {
 	}
 
 	private static long readBits(long src, int width, int vwidth, int offset) {
-		int offsetToRead = IS_PLATFORM_LITTLE_ENDIAN ? ((offset * vwidth) % width) : ((width - 1) - ((offset * vwidth) % width));
+		int offsetToRead = IS_BIG_ENDIAN ? ((width - 1) - ((offset * vwidth) % width)) : ((offset * vwidth) % width);
 
 		long vmask = (-1 >>> ((8 - vwidth) * 8));
 		long smask = vmask << (8 * offsetToRead);
@@ -415,7 +523,7 @@ public final class JITHelpers {
 		if (clazz == byte[].class) {
 			index = index << 1;
 			byte[] array = (byte[]) obj;
-			if (IS_PLATFORM_LITTLE_ENDIAN) {
+			if (!IS_BIG_ENDIAN) {
 				array[index] = (byte) value;
 				array[index + 1] = (byte) (value >>> 8);
 			} else {
@@ -443,7 +551,7 @@ public final class JITHelpers {
 		if (clazz == byte[].class) {
 			index = index << 1;
 			byte[] array = (byte[]) obj;
-			if (IS_PLATFORM_LITTLE_ENDIAN) {
+			if (!IS_BIG_ENDIAN) {
 				return (char) ((byteToCharUnsigned(array[index + 1]) << 8) | byteToCharUnsigned(array[index]));
 			} else {
 				return (char) (byteToCharUnsigned(array[index + 1]) | (byteToCharUnsigned(array[index]) << 8));
@@ -457,6 +565,150 @@ public final class JITHelpers {
 		} else {
 			throw new RuntimeException("Unknown array type for bit manipulation");
 		}
+	}
+
+	/**
+	 * Returns the first index of the target character array within the source character array starting from the specified
+	 * offset.
+	 *
+	 * <p>This API implicitly assumes the following:
+	 * <blockquote><pre>
+	 *     - s1Value != null
+	 *     - s2Value != null
+	 *     - 0 <= s1len <= s1Value.length * 2
+	 *     - 1 <= s2len <= s2Value.length * 2
+	 *     - 0 <= start < s1len
+	 * <blockquote><pre>
+	 * 
+	 * @param s1Value the source character array to search in.
+	 * @param s1len   the length (in number of characters) of the source array.
+	 * @param s2Value the target character array to search for.
+	 * @param s2len   the length (in number of characters) of the target array.
+	 * @param start   the starting offset (in number of characters) to search from.
+	 * @return        the index (in number of characters) of the target array within the source array, or -1 if the
+	 *                target array is not found within the source array.
+	 */
+	public int intrinsicIndexOfStringLatin1(Object s1Value, int s1len, Object s2Value, int s2len, int start) {
+		char firstChar = byteToCharUnsigned(getByteFromArrayByIndex(s2Value, 0));
+
+		while (true) {
+			int i = intrinsicIndexOfLatin1(s1Value, (byte)firstChar, start, s1len);
+						
+			// Handles subCount > count || start >= count
+			if (i == -1 || s2len + i > s1len) {
+				return -1;
+			}
+
+			int o1 = i;
+			int o2 = 0;
+
+			while (++o2 < s2len && getByteFromArrayByIndex(s1Value, ++o1) == getByteFromArrayByIndex(s2Value, o2))
+				;
+
+			if (o2 == s2len) {
+				return i;
+			}
+
+			start = i + 1;
+		}
+	}
+	
+	/**
+	 * Returns the first index of the target character array within the source character array starting from the specified
+	 * offset.
+	 *
+	 * <p>This API implicitly assumes the following:
+	 * <blockquote><pre>
+	 *     - s1Value != null
+	 *     - s2Value != null
+	 *     - 0 <= s1len <= s1Value.length
+	 *     - 1 <= s2len <= s2Value.length
+	 *     - 0 <= start < s1len
+	 * <blockquote><pre>
+	 * 
+	 * @param s1Value the source character array to search in.
+	 * @param s1len   the length (in number of characters) of the source array.
+	 * @param s2Value the target character array to search for.
+	 * @param s2len   the length (in number of characters) of the target array.
+	 * @param start   the starting offset (in number of characters) to search from.
+	 * @return        the index (in number of characters) of the target array within the source array, or -1 if the
+	 *                target array is not found within the source array.
+	 */
+	public int intrinsicIndexOfStringUTF16(Object s1Value, int s1len, Object s2Value, int s2len, int start) {
+		char firstChar = getCharFromArrayByIndex(s2Value, 0);
+
+		while (true) {
+			int i = intrinsicIndexOfUTF16(s1Value, firstChar, start, s1len);
+			
+			// Handles subCount > count || start >= count
+			if (i == -1 || s2len + i > s1len) {
+				return -1;
+			}
+
+			int o1 = i;
+			int o2 = 0;
+
+			while (++o2 < s2len && getCharFromArrayByIndex(s1Value, ++o1) == getCharFromArrayByIndex(s2Value, o2))
+				;
+
+			if (o2 == s2len) {
+				return i;
+			}
+
+			start = i + 1;
+		}
+	}
+
+	/**
+	 * Returns the first index of the character within the source character array starting from the specified offset.
+	 *
+	 * <p>This API implicitly assumes the following:
+	 * <blockquote><pre>
+	 *     - array != null
+	 *     - 0 <= offset < length <= array.length * 1 (if array instanceof byte[])
+	 *     - 0 <= offset < length <= array.length * 2 (if array instanceof char[])
+	 * <blockquote><pre>
+	 * 
+	 * @param array  the source character array to search in.
+	 * @param ch     the character to search for.
+	 * @param offset the starting offset (in number of characters) to search from.
+	 * @param length the length (in number of characters) of the source array.
+	 * @return       the index (in number of characters) of \p ch within the source array, or -1 if \p ch is not found
+	 *               within the source array.
+	 */
+	public int intrinsicIndexOfLatin1(Object array, byte ch, int offset, int length) {
+		for (int i = offset; i < length; i++) {
+			if (getByteFromArrayByIndex(array, i) == ch) {
+				return i;
+			}
+		}
+		return -1;
+	}
+
+	/**
+	 * Returns the first index of the character within the source character array starting from the specified offset.
+	 *
+	 * <p>This API implicitly assumes the following:
+	 * <blockquote><pre>
+	 *     - array != null
+	 *     - 0 <= offset < length <= array.length * 1 (if array instanceof byte[])
+	 *     - 0 <= offset < length <= array.length * 2 (if array instanceof char[])
+	 * <blockquote><pre>
+	 * 
+	 * @param array  the source character array to search in.
+	 * @param ch     the character to search for.
+	 * @param offset the starting offset (in number of characters) to search from.
+	 * @param length the length (in number of characters) of the source array.
+	 * @return       the index (in number of characters) of \p ch within the source array, or -1 if \p ch is not found
+	 *               within the source array.
+	 */
+	public int intrinsicIndexOfUTF16(Object array, char ch, int offset, int length) {
+		for (int i = offset; i < length; i++) {
+			if (getCharFromArrayByIndex(array, i) == ch) {
+				return i;
+			}
+		}
+		return -1;
 	}
 
 	/*
@@ -516,11 +768,14 @@ public final class JITHelpers {
 			}
 		}
 
-		// if the object has a lockword zero it since this method
-		// is effectively the cloned objects initialization
+		/*
+		 * If the object has a lockword, it needs to be set to the correct initial value since this method
+		 * is effectively the cloned object's initialization.
+		 */
 		int lockOffset = unsafe.getInt(j9clazz + VM.J9CLASS_LOCK_OFFSET_OFFSET);
 		if (lockOffset != 0) {
-			putIntInObject(destObj, lockOffset, 0);
+			int lwValue = getInitialLockword32(j9clazz);
+			putIntInObject(destObj, lockOffset, lwValue);
 		}
 		unsafe.storeFence();
 	}
@@ -572,15 +827,18 @@ public final class JITHelpers {
 			}
 		}
 
-		// if the object has a lockword zero it since this method
-		// is effectively the cloned objects initialization
+		/*
+		 * If the object has a lockword, it needs to be set to the correct initial value since this method
+		 * is effectively the cloned object's initialization.
+		 */
 		long lockOffset = unsafe.getLong(j9clazz + VM.J9CLASS_LOCK_OFFSET_OFFSET);
 		if (lockOffset != 0) {
+			int lwValue = getInitialLockword64(j9clazz);
 			if (SLOT_SIZE == 4) {
 				// for compressed reference, the LockWord is 4 bytes
-				putIntInObject(destObj, lockOffset, 0);
+				putIntInObject(destObj, lockOffset, lwValue);
 			} else {
-				putLongInObject(destObj, lockOffset, 0);
+				putLongInObject(destObj, lockOffset, lwValue);
 			}
 		}
 		unsafe.storeFence();
@@ -653,9 +911,11 @@ public final class JITHelpers {
 					bitIndex++;
 				}
 			}
+			/* If the object has a lockword, it needs to be set to the correct initial value. */
 			long lockOffset = unsafe.getInt(j9clazz + VM.J9CLASS_LOCK_OFFSET_OFFSET);
 			if (lockOffset != 0) {
-				unsafe.putInt(clnObj, lockOffset, 0);
+				int lwValue = getInitialLockword32(j9clazz);
+				unsafe.putInt(clnObj, lockOffset, lwValue);
 			}
 		} else {
 			long j9clazz = unsafe.getLong(clnClass, JLCLASS_J9CLASS_OFFSET);
@@ -693,13 +953,15 @@ public final class JITHelpers {
 					bitIndex++;
 				}
 			}
+			/* If the object has a lockword, it needs to be set to the correct initial value. */
 			long lockOffset = unsafe.getLong(j9clazz + VM.J9CLASS_LOCK_OFFSET_OFFSET);
 			if (lockOffset != 0) {
+				int lwValue = getInitialLockword64(j9clazz);
 				if (SLOT_SIZE == 4) {
 					// for compressed reference, the LockWord is 4 bytes
-					unsafe.putInt(clnObj, lockOffset, 0);
+					unsafe.putInt(clnObj, lockOffset, lwValue);
 				} else {
-					unsafe.putLong(clnObj, lockOffset, 0);
+					unsafe.putLong(clnObj, lockOffset, lwValue);
 				}
 			}
 		}
@@ -731,13 +993,110 @@ public final class JITHelpers {
 		return initStatus;
 	}
 
+	/**
+	 * Determine initial lockword value, 32-bit version. Calls to this method will return what the lockword should start at.
+	 *
+	 * @parm j9clazz
+	 *          The J9Class of the object whose lockword is being initialized.
+	 *
+	 * @return
+	 *          The initial lockword to use.
+	 */
+	public int getInitialLockword32(int j9clazz) {
+		int flags = getClassFlagsFromJ9Class32(j9clazz);
+
+		/*
+		 * Unsafe calls are used to get the reservedCounter and cancelCounter out of the J9Class.
+		 * reservedCounter and cancelCounter are unsigned 16 bit values so a mask is used to force a zero extend.
+		 */
+		int reservedCounter = ((int)(unsafe.getShort(j9clazz + VM.J9CLASS_LOCK_RESERVATION_HISTORY_RESERVED_COUNTER_OFFSET))) & 0xFFFF;
+		int cancelCounter = ((int)(unsafe.getShort(j9clazz + VM.J9CLASS_LOCK_RESERVATION_HISTORY_CANCEL_COUNTER_OFFSET))) & 0xFFFF;
+
+		return getInitialLockword(flags, reservedCounter, cancelCounter);
+	}
 
 	/**
-	 * Determines whether the underlying platform's memory model is little-endian.
-	 * 
-	 * @return True if the underlying platform's memory model is little-endian, false otherwise.
+	 * Determine initial lockword value, 64-bit version. Calls to this method will return what the lockword should start at.
+	 *
+	 * @parm j9clazz
+	 *          The J9Class of the object whose lockword is being initialized.
+	 *
+	 * @return
+	 *          The initial lockword to use.
 	 */
-	private native static final boolean isPlatformLittleEndian();
+	public int getInitialLockword64(long j9clazz) {
+		int flags = getClassFlagsFromJ9Class64(j9clazz);
+
+		/*
+		 * Unsafe calls are used to get the reservedCounter and cancelCounter out of the J9Class.
+		 * reservedCounter and cancelCounter are unsigned 16 bit values so a mask is used to force a zero extend.
+		 */
+		int reservedCounter = ((int)(unsafe.getShort(j9clazz + VM.J9CLASS_LOCK_RESERVATION_HISTORY_RESERVED_COUNTER_OFFSET))) & 0xFFFF;
+		int cancelCounter = ((int)(unsafe.getShort(j9clazz + VM.J9CLASS_LOCK_RESERVATION_HISTORY_CANCEL_COUNTER_OFFSET))) & 0xFFFF;
+
+		return getInitialLockword(flags, reservedCounter, cancelCounter);
+	}
+
+	/**
+	 * Determine initial lockword value. Calls to this method will return what the lockword should start at.
+	 *
+	 * @parm flags
+	 *          Class flags from the J9Class.
+	 *
+	 * @parm reservedCounter
+	 *          reservedCounter from the J9Class.
+	 *
+	 * @parm cancelCounter
+	 *          cancelCounter from the J9Class.
+	 *
+	 * @return
+	 *          The initial lockword to use.
+	 */
+	public int getInitialLockword(int flags, int reservedCounter, int cancelCounter) {
+		int lwValue = 0;
+
+		if (1 == VM.GLR_ENABLE_GLOBAL_LOCK_RESERVATION) {
+			/* This path is taken when Global Lock Reservation is enabled. */
+			int reservedAbsoluteThreshold = VM.GLR_RESERVED_ABSOLUTE_THRESHOLD;
+			int minimumReservedRatio = VM.GLR_MINIMUM_RESERVED_RATIO;
+
+			int cancelAbsoluteThreshold = VM.GLR_CANCEL_ABSOLUTE_THRESHOLD;
+			int minimumLearningRatio = VM.GLR_MINIMUM_LEARNING_RATIO;
+
+			/*
+			 * Check reservedCounter and cancelCounter against different thresholds to determine what to initialize the lockword to.
+			 * First check if the ratio of resevation to cancellations is high enough to set the lockword to the New-AutoReserve state.
+			 * If so, the initial lockword value is OBJECT_HEADER_LOCK_RESERVED.
+			 * Second check if the ratio is high enough to set the lockword to the New-PreLearning state.
+			 * If so, the initial lockword value is OBJECT_HEADER_LOCK_LEARNING.
+			 * If the ratio is too low, the lockword starts in the Flat-Unlocked state and 0 is returned for the lockword value.
+			 *
+			 * Start as New-AutoReserve -> Initial lockword: OBJECT_HEADER_LOCK_RESERVED
+			 * Start as New-PreLearning -> Initial lockword: OBJECT_HEADER_LOCK_LEARNING
+			 * Start as Flat-Unlocked   -> Initial lockword: 0
+			 *
+			 * reservedCounter, cancelCounter, minimumReservedRatio and minimumLearningRatio all have a maximum value of 0xFFFF so casting to long
+			 * is required to guarantee signed overflow does not occur after multiplication.
+			 */
+			if ((reservedCounter >= reservedAbsoluteThreshold) && ((long)reservedCounter > ((long)cancelCounter * (long)minimumReservedRatio))) {
+				lwValue = VM.OBJECT_HEADER_LOCK_RESERVED;
+			} else if ((cancelCounter < cancelAbsoluteThreshold) || ((long)reservedCounter > ((long)cancelCounter * (long)minimumLearningRatio))) {
+				lwValue = VM.OBJECT_HEADER_LOCK_LEARNING;
+			}
+		} else if ((flags & VM.J9CLASS_RESERVABLE_LOCK_WORD_INIT) != 0) {
+			/* Initialize lockword to New-ReserveOnce. This path is x86 only. */
+			lwValue = VM.OBJECT_HEADER_LOCK_RESERVED;
+		}
+
+		return lwValue;
+	}
+
+	/**		
+	 * Determines whether the underlying platform's memory model is big-endian.		
+	 * 		
+	 * @return True if the underlying platform's memory model is big-endian, false otherwise.		
+	 */		
+	private native static final boolean isBigEndian();
 
 	/* Placeholder for JIT GPU optimizations - this method never actually gets run */
 	public final native void GPUHelper();

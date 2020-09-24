@@ -2,7 +2,7 @@
 package com.ibm.tools.attach.attacher;
 
 /*******************************************************************************
- * Copyright (c) 2009, 2017 IBM Corp. and others
+ * Copyright (c) 2009, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -25,18 +25,22 @@ package com.ibm.tools.attach.attacher;
 
 import java.io.File;
 import java.io.IOException;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
+import java.security.PrivilegedActionException;
+import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.List;
+
+import openj9.internal.tools.attach.target.Advertisement;
+import openj9.internal.tools.attach.target.AttachHandler;
+import openj9.internal.tools.attach.target.CommonDirectory;
+import openj9.internal.tools.attach.target.IPC;
+import openj9.internal.tools.attach.target.TargetDirectory;
 import com.sun.tools.attach.AttachNotSupportedException;
 import com.sun.tools.attach.AttachPermission;
-import com.sun.tools.attach.VirtualMachine;
 import com.sun.tools.attach.VirtualMachineDescriptor;
 import com.sun.tools.attach.spi.AttachProvider;
-import com.ibm.tools.attach.target.Advertisement;
-import com.ibm.tools.attach.target.AttachHandler;
-import com.ibm.tools.attach.target.CommonDirectory;
-import com.ibm.tools.attach.target.IPC;
-import com.ibm.tools.attach.target.TargetDirectory;
 
 /**
  * Concrete subclass of the class that lists the available target VMs
@@ -52,12 +56,13 @@ public class OpenJ9AttachProvider extends AttachProvider {
 	}
 
 	@Override
-	public VirtualMachine attachVirtualMachine(String id)
+	public OpenJ9VirtualMachine attachVirtualMachine(String id)
 			throws AttachNotSupportedException, IOException {
 
 		checkAttachSecurity();
 		try {
 			OpenJ9VirtualMachine vm = new OpenJ9VirtualMachine(this, id);
+			IPC.logMessage("Attach target id: " + id); //$NON-NLS-1$
 			vm.attachTarget();
 			return vm;
 		} catch (NullPointerException e) {
@@ -71,7 +76,7 @@ public class OpenJ9AttachProvider extends AttachProvider {
 	}
 
 	@Override
-	public VirtualMachine attachVirtualMachine (
+	public OpenJ9VirtualMachine attachVirtualMachine (
 			VirtualMachineDescriptor descriptor)
 			throws AttachNotSupportedException, IOException {
 
@@ -88,7 +93,24 @@ public class OpenJ9AttachProvider extends AttachProvider {
 
 	@Override
 	public List<VirtualMachineDescriptor> listVirtualMachines() {
+		List<VirtualMachineDescriptor> ret = null;
+		PrivilegedExceptionAction<List<VirtualMachineDescriptor>> action = () -> listVirtualMachinesImp();
+		try {
+			ret = AccessController.doPrivileged(action);
+		} catch (PrivilegedActionException e) {
+			Throwable cause = e.getCause();
+			if (cause instanceof RuntimeException) {
+				throw (RuntimeException) cause;
+			} else if (cause instanceof Error) {
+				throw (Error) cause;
+			} else {
+				throw new RuntimeException(cause);
+			}
+		}
+		return ret;
+	}
 
+	private List<VirtualMachineDescriptor> listVirtualMachinesImp() {
 		AttachHandler.waitForAttachApiInitialization(); /* ignore result: we can list targets if API is disabled */
 		/* Figure out where the IPC metadata lives and validate */
 		File commonDir = CommonDirectory.getCommonDirFileObject();
@@ -97,21 +119,21 @@ public class OpenJ9AttachProvider extends AttachProvider {
 			IPC.logMessage("listVirtualMachines() error getting common directory"); //$NON-NLS-1$
 			return null; /* indicate an error */
 		} else if (!commonDir.exists()) {
-			IPC.logMessage("listVirtualMachines() common directory is absent"); //$NON-NLS-1$
+			IPC.logMessage("listVirtualMachines() common directory is absent, expected " + commonDir.getAbsolutePath()); //$NON-NLS-1$
 			return descriptors; /*[PR 103332 - common dir will not exist if attach API is disabled */
 		} else if (!commonDir.isDirectory()) { /* Cleanup. handle case where couldn't open common dir. */
-			IPC.logMessage("listVirtualMachines() common directory is mis-configured"); //$NON-NLS-1$
+			IPC.logMessage("listVirtualMachines() common directory is mis-configured for " + commonDir.getAbsolutePath()); //$NON-NLS-1$
 			return null; /* Configuration error */
 		}
 
 		try {
-			CommonDirectory.obtainMasterLock(); /*[PR 164751 avoid scanning the directory when an attach API is launching ]*/
+			CommonDirectory.obtainControllerLock(); /*[PR 164751 avoid scanning the directory when an attach API is launching ]*/
 		} catch (IOException e) { /*[PR 164751 avoid scanning the directory when an attach API is launching ]*/
 			/* 
 			 * IOException is thrown if we already have the lock. The only other cases where we lock this file are during startup and shutdown.
 			 * The attach API startup is complete, thanks to waitForAttachApiInitialization() and threads using this method terminate before shutdown. 
 			 */ 
-			IPC.logMessage("listVirtualMachines() IOError on master lock : ", e.toString()); //$NON-NLS-1$
+			IPC.logMessage("listVirtualMachines() IOError on controller lock : ", e.toString()); //$NON-NLS-1$
 			return descriptors; /* An error has occurred. Since the attach API is not working correctly, be conservative and don't list and targets */
 		}
 		try {
@@ -131,10 +153,10 @@ public class OpenJ9AttachProvider extends AttachProvider {
 				}
 
 				boolean staleDirectory = true;
-				File advertisment = new File(f, Advertisement.getFilename());
+				File advertisement = new File(f, Advertisement.getFilename());
 				long uid = 0;
-				if (advertisment.exists()) {
-					OpenJ9VirtualMachineDescriptor descriptor = OpenJ9VirtualMachineDescriptor.fromAdvertisement(this, advertisment);
+				if (advertisement.exists()) {
+					OpenJ9VirtualMachineDescriptor descriptor = OpenJ9VirtualMachineDescriptor.fromAdvertisement(this, advertisement);
 					if (null != descriptor) {
 						long pid = descriptor.getProcessId();
 						uid = descriptor.getUid();
@@ -150,7 +172,7 @@ public class OpenJ9AttachProvider extends AttachProvider {
 						 * If getFileOwner fails, the uid will appear to be -1, and non-root users will ignore it.
 						 * CommonDirectory.deleteStaleDirectories() will handle the case of a target directory which does not have an advertisement directory.
 						 */
-						uid = CommonDirectory.getFileOwner(advertisment.getAbsolutePath());
+						uid = CommonDirectory.getFileOwner(advertisement.getAbsolutePath());
 					}
 				}
 
@@ -161,7 +183,7 @@ public class OpenJ9AttachProvider extends AttachProvider {
 				}
 			}
 		} finally {
-			CommonDirectory.releaseMasterLock(); /* guarantee that we unlock the file */
+			CommonDirectory.releaseControllerLock(); /* guarantee that we unlock the file */
 		}
 		return descriptors;
 	}

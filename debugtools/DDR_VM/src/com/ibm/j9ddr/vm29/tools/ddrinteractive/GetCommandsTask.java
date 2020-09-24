@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2010, 2017 IBM Corp. and others
+ * Copyright (c) 2010, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -27,22 +27,29 @@ import com.ibm.j9ddr.IBootstrapRunnable;
 import com.ibm.j9ddr.IVMData;
 import com.ibm.j9ddr.tools.ddrinteractive.BaseJVMCommands;
 import com.ibm.j9ddr.tools.ddrinteractive.ICommand;
+import com.ibm.j9ddr.vm29.pointer.helper.ValueTypeHelper;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.ACCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.AllClassesCommand;
-import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.ITableSizeCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.AnalyseRomClassUTF8Command;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.BuildFlagsCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.BytecodesCommand;
+import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.CPDescriptionCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.ClassForNameCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.ClassloadersSummaryCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.CompressedRefMappingCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.CoreInfoCommand;
+import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpAllClassesInModuleCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpAllClassloadersCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpAllRamClassLinearCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpAllRegionsCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpAllRomClassLinearCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpAllSegmentsCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpContendedLoadTable;
+import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpModuleCommand;
+import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpModuleDirectedExportsCommand;
+import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpModuleExportsCommand;
+import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpModuleReadsCommand;
+import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpPackageCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpRamClassLinearCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpRomClassCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpRomClassLinearCommand;
@@ -51,16 +58,21 @@ import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpSegmentsInListComman
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpSegregatedStatsCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.DumpStringTableCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.ExtendedMethodFlagInfoCommand;
+import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.FindAllModulesCommand;
+import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.FindAllReadsCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.FindMethodFromPcCommand;
+import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.FindModuleByNameCommand;
+import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.FindModulesCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.FindOverlappingSegmentsCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.FindPatternCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.FindStackValueCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.FindVMCommand;
+import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.FlatObjectCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.GCCheckCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.HashCodeCommand;
+import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.ITableSizeCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.J9ClassShapeCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.J9MemTagCommands;
-import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.J9RegCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.J9StaticsCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.J9VTablesCommand;
 import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.JitMetadataFromPcCommand;
@@ -91,21 +103,22 @@ import com.ibm.j9ddr.vm29.tools.ddrinteractive.commands.WalkJ9PoolCommand;
 
 /**
  * @author andhall
- * 
+ *
  */
-public class GetCommandsTask extends BaseJVMCommands implements IBootstrapRunnable 
+public class GetCommandsTask extends BaseJVMCommands implements IBootstrapRunnable
 {
 
 	/*
 	 * (non-Javadoc)
-	 * 
+	 *
 	 * @see com.ibm.j9ddr.IBootstrapRunnable#run(com.ibm.j9ddr.IVMData,
 	 * java.lang.Object[])
 	 */
-	public void run(IVMData vmData, Object[] userData) 
+	@Override
+	public void run(IVMData vmData, Object[] userData)
 	{
 		Object[] passbackArray = (Object[]) userData[0];
-		Object loader = (Object) passbackArray[1];
+		Object loader = passbackArray[1];
 
 		List<ICommand> toPassBack = getBaseJVMCommands();
 
@@ -159,7 +172,6 @@ public class GetCommandsTask extends BaseJVMCommands implements IBootstrapRunnab
 		toPassBack.add(new SetVMCommand());
 		toPassBack.add(new TraceConfigCommand());
 		toPassBack.add(new WalkJ9PoolCommand());
-		toPassBack.add(new J9RegCommand());
 		toPassBack.add(new CoreInfoCommand());
 		toPassBack.add(new GCCheckCommand());
 		toPassBack.add(new DumpStringTableCommand());
@@ -173,6 +185,21 @@ public class GetCommandsTask extends BaseJVMCommands implements IBootstrapRunnab
 		toPassBack.add(new DumpSegregatedStatsCommand());
 		toPassBack.add(new ObjectSizeInfo());
 		toPassBack.add(new DumpContendedLoadTable());
+		toPassBack.add(new CPDescriptionCommand());
+		toPassBack.add(new FindAllModulesCommand());
+		toPassBack.add(new FindModuleByNameCommand());
+		toPassBack.add(new DumpModuleExportsCommand());
+		toPassBack.add(new DumpModuleReadsCommand());
+		toPassBack.add(new FindAllReadsCommand());
+		toPassBack.add(new DumpModuleDirectedExportsCommand());
+		toPassBack.add(new DumpAllClassesInModuleCommand());
+		toPassBack.add(new FindModulesCommand());
+		toPassBack.add(new DumpModuleCommand());
+		toPassBack.add(new DumpPackageCommand());
+
+		if (ValueTypeHelper.getValueTypeHelper().areValueTypesSupported()) {
+			toPassBack.add(new FlatObjectCommand());
+		}
 
 		loadPlugins(toPassBack, loader);
 

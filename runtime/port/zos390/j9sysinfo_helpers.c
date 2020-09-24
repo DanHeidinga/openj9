@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2013 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -27,6 +27,7 @@
  */
 
 #include <errno.h>
+#include <string.h>
 #include <sys/__wlm.h>
 
 #include "atoe.h"
@@ -36,12 +37,9 @@
 #include "j9sysinfo_helpers.h"
 #include "ut_j9prt.h"
 
-/* Foward declarations. */
-static int32_t
-computeCpuTime(struct J9PortLibrary *portLibrary, int64_t *cpuTime);
-
-static int32_t
-getProcessorSpeed(struct J9PortLibrary *portLibrary, int64_t *cpuSpeed);
+/* Forward declarations. */
+static int32_t computeCpuTime(struct J9PortLibrary *portLibrary, int64_t *cpuTime);
+static int32_t getProcessorSpeed(struct J9PortLibrary *portLibrary, int64_t *cpuSpeed);
 
 intptr_t
 retrieveZGuestMemoryStats(struct J9PortLibrary *portLibrary, struct J9GuestMemoryUsage *gmUsage)
@@ -154,7 +152,7 @@ computeCpuTime(struct J9PortLibrary *portLibrary, int64_t *cpuTime)
 		return J9PORT_ERROR_HYPERVISOR_LPDAT_QUERY_FAILED;
 	}
 
-	/* Sum up serivce units in capped and uncapped modes for all entries that are
+	/* Sum up service units in capped and uncapped modes for all entries that are
 	 * present - by default, there being 48 entries, unless configured otherwise.
 	 */
 	for (i = 0; i < lpdatp->serviceTableEntries; i++) {

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -127,7 +127,7 @@ initializeArrayROMClass(J9ROMArrayClass *romClass, J9UTF8 *className, U_32 array
 	NNSRP_SET(romClass->className, className);
 	NNSRP_SET(romClass->superclassName, &arrayROMClasses.objectClassName);
 	romClass->modifiers = J9AccFinal | J9AccPublic | J9AccClassArray | J9AccAbstract;
-	romClass->extraModifiers = J9AccClassCloneable;
+	romClass->extraModifiers = J9AccClassCloneable | J9AccClassIsUnmodifiable;
 	romClass->interfaceCount = sizeof(arrayROMClasses.interfaceClasses) / sizeof(J9SRP);
 	NNSRP_SET(romClass->interfaces, &arrayROMClasses.interfaceClasses);
 	romClass->arrayShape = arrayShape;
@@ -150,6 +150,7 @@ initializeBaseTypeROMClass(J9ROMReflectClass *romClass, J9UTF8 *className, U_32 
 	romClass->romSize = size;
 	NNSRP_SET(romClass->className, className);
 	romClass->modifiers = J9AccFinal | J9AccPublic | J9AccClassInternalPrimitiveType | J9AccAbstract;
+	romClass->extraModifiers = J9AccClassIsUnmodifiable;
 	romClass->reflectTypeCode = typeCode;
 	romClass->instanceShape = instanceShape;
 	romClass->elementSize = elementSize;
@@ -158,8 +159,9 @@ initializeBaseTypeROMClass(J9ROMReflectClass *romClass, J9UTF8 *className, U_32 
 void
 initializeROMClasses(J9JavaVM *vm)
 {
-    memset(&arrayROMClasses, 0, sizeof(arrayROMClasses));
-    memset(&baseTypePrimitiveROMClasses, 0, sizeof(baseTypePrimitiveROMClasses));
+	UDATA referenceSize = J9JAVAVM_COMPRESS_OBJECT_REFERENCES(vm) ? sizeof(U_32) : sizeof(UDATA);
+	memset(&arrayROMClasses, 0, sizeof(arrayROMClasses));
+	memset(&baseTypePrimitiveROMClasses, 0, sizeof(baseTypePrimitiveROMClasses));
 	/* Initialize UTF data for the array classes */
 	INIT_UTF8(arrayROMClasses.objectArrayClassName, OBJECT_ARRAY_NAME);
 	INIT_UTF8(arrayROMClasses.booleanArrayClassName, BOOLEAN_ARRAY_NAME);
@@ -180,7 +182,7 @@ initializeROMClasses(J9JavaVM *vm)
 	NNSRP_SET(arrayROMClasses.interfaceClasses.cloneable, &arrayROMClasses.cloneableClassName);
 	NNSRP_SET(arrayROMClasses.interfaceClasses.serializeable, &arrayROMClasses.serializeableClassName);
 	/* Initialize the array classes */
-	initializeArrayROMClass(&arrayROMClasses.objectArrayROMClass, (J9UTF8*)&arrayROMClasses.objectArrayClassName, sizeof(fj9object_t) == 4 ? J9ArraySizeLongs : J9ArraySizeDoubles, OBJECT_HEADER_SHAPE_POINTERS, sizeof(J9ROMArrayClass));
+	initializeArrayROMClass(&arrayROMClasses.objectArrayROMClass, (J9UTF8*)&arrayROMClasses.objectArrayClassName, (sizeof(U_32) == referenceSize) ? J9ArraySizeLongs : J9ArraySizeDoubles, OBJECT_HEADER_SHAPE_POINTERS, sizeof(J9ROMArrayClass));
 	initializeArrayROMClass(&arrayROMClasses.booleanArrayROMClass, (J9UTF8*)&arrayROMClasses.booleanArrayClassName, J9ArraySizeBytes, OBJECT_HEADER_SHAPE_BYTES, sizeof(J9ROMArrayClass));
 	initializeArrayROMClass(&arrayROMClasses.charArrayROMClass, (J9UTF8*)&arrayROMClasses.charArrayClassName, J9ArraySizeWords, OBJECT_HEADER_SHAPE_WORDS, sizeof(J9ROMArrayClass));
 	initializeArrayROMClass(&arrayROMClasses.floatArrayROMClass, (J9UTF8*)&arrayROMClasses.floatArrayClassName, J9ArraySizeLongs, OBJECT_HEADER_SHAPE_LONGS, sizeof(J9ROMArrayClass));

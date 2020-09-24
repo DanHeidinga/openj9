@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2018 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -28,6 +28,7 @@
 #include "j9consts.h"
 #include "jni.h"
 #include "j9protos.h"
+#include "jcl_internal.h"
 #include "jclprots.h"
 #include "ut_j9jcl.h"
 #include "VM_MethodHandleKinds.h"
@@ -36,6 +37,7 @@
 #include "j9vmnls.h"
 #include "j9vmconstantpool.h"
 #include "j9jclnls.h"
+#include "cfreader.h"
 
 /*
  * Note that the following native methods are implemented in sun_reflect_ConstantPool.c because
@@ -43,6 +45,7 @@
  * 		Java_java_lang_invoke_MethodHandle_getCPTypeAt
  * 		Java_java_lang_invoke_MethodHandle_getCPMethodTypeAt
  * 		Java_java_lang_invoke_MethodHandle_getCPMethodHandleAt
+ * 		Java_java_lang_invoke_MethodHandle_getCPConstantDynamicAt
  */
 
 static VMINLINE UDATA lookupImpl(J9VMThread *currentThread, J9Class *lookupClass, J9UTF8 *name, J9UTF8 *signature, J9Class *senderClass, UDATA options, BOOLEAN *foundDefaultConflicts);
@@ -54,9 +57,6 @@ static void JNICALL vmInvalidate(JNIEnv *env, jclass mutableCallSiteClass, jlong
 static BOOLEAN accessCheckMethodSignature(J9VMThread *currentThread, J9Method *method, j9object_t methodType, J9UTF8 *lookupSig);
 static BOOLEAN accessCheckFieldSignature(J9VMThread *currentThread, J9Class* lookupClass, UDATA romField, j9object_t methodType, J9UTF8 *lookupSig);
 static char * expandNLSTemplate(J9VMThread *vmThread, const char *nlsTemplate, ...);
-#if defined(J9VM_OPT_JAVA_OFFLOAD_SUPPORT)
-static void clearNonZAAPEligibleBit(JNIEnv *env, jclass nativeClass, const JNINativeMethod *nativeMethods, jint nativeMethodCount);
-#endif /* J9VM_OPT_JAVA_OFFLOAD_SUPPORT */
 
 /**
  * Lookup static method name of type signature on lookupClass class.
@@ -90,14 +90,40 @@ lookupInterfaceMethod(J9VMThread *currentThread, J9Class *lookupClass, J9UTF8 *n
 		J9InternalVMFunctions *vmFuncs = currentThread->javaVM->internalVMFunctions;
 
 		Assert_JCL_true(!J9_ARE_ANY_BITS_SET(J9_ROM_METHOD_FROM_RAM_METHOD(method)->modifiers, J9AccStatic));
-		/* [PR 67082] private interface methods require invokespecial, not invokeinterface.*/
-		if (J9_ARE_ANY_BITS_SET(J9_ROM_METHOD_FROM_RAM_METHOD(method)->modifiers, J9AccPrivate)) {
+
+		/* Starting Java 11 Nestmates, invokeInterface is allowed to target private interface methods */
+		if ((J2SE_VERSION(currentThread->javaVM) < J2SE_V11) && J9_ARE_ANY_BITS_SET(J9_ROM_METHOD_FROM_RAM_METHOD(method)->modifiers, J9AccPrivate)) {
+			/* [PR 67082] private interface methods require invokespecial, not invokeinterface.*/
 			vmFuncs->setCurrentExceptionNLS(currentThread, J9VMCONSTANTPOOL_JAVALANGINCOMPATIBLECLASSCHANGEERROR, J9NLS_JCL_PRIVATE_INTERFACE_REQUIRES_INVOKESPECIAL);
 			method = NULL;
 		} else {
-			*methodIndex = getITableIndexForMethod(method, lookupClass);
-			if (*methodIndex == -1) {
-				method = NULL;
+			if (J9_ARE_ANY_BITS_SET(J9_CLASS_FROM_METHOD(method)->romClass->modifiers, J9AccInterface)) {
+				if (J9ROMMETHOD_IN_ITABLE(J9_ROM_METHOD_FROM_RAM_METHOD(method))) {
+					*methodIndex = getITableIndexForMethod(method, lookupClass);
+				} else {
+					PORT_ACCESS_FROM_VMC(currentThread);
+					J9Class *clazz = J9_CLASS_FROM_METHOD(method);
+					J9UTF8 *className = J9ROMCLASS_CLASSNAME(clazz->romClass);
+					J9ROMMethod *romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(method);
+					J9UTF8 *methodName = J9ROMMETHOD_NAME(romMethod);
+					J9UTF8 *sig = J9ROMMETHOD_SIGNATURE(romMethod);
+					size_t nameAndSigLength = J9UTF8_LENGTH(className)
+						+ J9UTF8_LENGTH(methodName) + J9UTF8_LENGTH(sig)
+						+ 4 /* period, parentheses, and terminating null */;
+					char *msg = j9mem_allocate_memory(nameAndSigLength, OMRMEM_CATEGORY_VM);
+					if (NULL != msg) {
+						j9str_printf(PORTLIB, msg, nameAndSigLength, "%.*s.%.*s(%.*s)",
+								J9UTF8_LENGTH(className), J9UTF8_DATA(className),
+								J9UTF8_LENGTH(methodName), J9UTF8_DATA(methodName),
+								J9UTF8_LENGTH(sig), J9UTF8_DATA(sig));
+						vmFuncs->setCurrentExceptionUTF(currentThread,
+								J9VMCONSTANTPOOL_JAVALANGNOSUCHMETHODERROR, msg);
+						j9mem_free_memory(msg);
+					} else {
+						vmFuncs->setNativeOutOfMemoryError(currentThread, 0, 0);
+					}
+					method = NULL;
+				}
 			}
 		}
 	}
@@ -182,7 +208,7 @@ Java_java_lang_invoke_MethodHandle_requestCustomThunkFromJit(JNIEnv* env, jobjec
 		J9_JNI_UNWRAP_REFERENCE(handle), 
 		J9_JNI_UNWRAP_REFERENCE(thunk), 
 		J9_METHOD_HANDLE_COMPILE_CUSTOM);
-	vmFuncs->internalReleaseVMAccess(vmThread);
+	vmFuncs->internalExitVMToJNI(vmThread);
 }
 
 jclass JNICALL
@@ -192,7 +218,9 @@ Java_java_lang_invoke_PrimitiveHandle_lookupMethod(JNIEnv *env, jobject handle, 
 	J9JavaVM *vm = vmThread->javaVM;
 	J9InternalVMFunctions *vmFuncs = vm->internalVMFunctions;
 	J9UTF8 *nameUTF8 = NULL;
+	char nameUTF8Buffer[256];
 	J9UTF8 *signatureUTF8 = NULL;
+	char signatureUTF8Buffer[256];
 	UDATA method;
 	J9Class *j9LookupClass;
 	J9Class *j9SpecialCaller = NULL;
@@ -203,10 +231,17 @@ Java_java_lang_invoke_PrimitiveHandle_lookupMethod(JNIEnv *env, jobject handle, 
 
 	vmFuncs->internalEnterVMFromJNI(vmThread);
 
-	if ((nameUTF8 = allocateJ9UTF8(env, name)) == NULL) {
+	nameUTF8 = vmFuncs->copyStringToJ9UTF8WithMemAlloc(vmThread, J9_JNI_UNWRAP_REFERENCE(name), J9_STR_NONE, "", 0, nameUTF8Buffer, sizeof(nameUTF8Buffer));
+
+	if (nameUTF8 == NULL) {
+		vmFuncs->setNativeOutOfMemoryError(vmThread, 0, 0);
 		goto _cleanup;
 	}
-	if ((signatureUTF8 = allocateJ9UTF8(env, signature)) == NULL) {
+
+	signatureUTF8 = vmFuncs->copyStringToJ9UTF8WithMemAlloc(vmThread, J9_JNI_UNWRAP_REFERENCE(signature), J9_STR_NONE, "", 0, signatureUTF8Buffer, sizeof(signatureUTF8Buffer));
+
+	if (signatureUTF8 == NULL) {
+		vmFuncs->setNativeOutOfMemoryError(vmThread, 0, 0);
 		goto _cleanup;
 	}
 
@@ -222,7 +257,7 @@ Java_java_lang_invoke_PrimitiveHandle_lookupMethod(JNIEnv *env, jobject handle, 
 			J9Class *methodClass = J9_CLASS_FROM_METHOD((J9Method *)method);
 		
 			if (methodClass != j9LookupClass) {
-				if (J9_JAVA_INTERFACE == (j9LookupClass->romClass->modifiers & J9_JAVA_INTERFACE)) {
+				if (J9AccInterface == (j9LookupClass->romClass->modifiers & J9AccInterface)) {
 					/* Throws NoSuchMethodError (an IncompatibleClassChangeError subclass).
 					 * This will be converted to NoSuchMethodException
 					 * by the finishMethodInitialization() call in DirectHandle constructor.
@@ -280,10 +315,16 @@ Java_java_lang_invoke_PrimitiveHandle_lookupMethod(JNIEnv *env, jobject handle, 
 	}
 
 _cleanup:
-	vmFuncs->internalReleaseVMAccess(vmThread);
+	vmFuncs->internalExitVMToJNI(vmThread);
 
-	j9mem_free_memory(signatureUTF8);
-	j9mem_free_memory(nameUTF8);
+	if (signatureUTF8 != (J9UTF8*)signatureUTF8Buffer) {
+		j9mem_free_memory(signatureUTF8);
+	}
+
+	if (nameUTF8 != (J9UTF8*)nameUTF8Buffer) {
+		j9mem_free_memory(nameUTF8);
+	}
+
 	return result;	
 }
 
@@ -305,7 +346,7 @@ accessCheckFieldSignature(J9VMThread *currentThread, J9Class* lookupClass, UDATA
 		}
 	
 		if ('L' == lookupSigData[sigOffset]) {
-			BOOLEAN isVirtual = (0 == (((J9ROMFieldShape*)romField)->modifiers & J9_JAVA_STATIC));
+			BOOLEAN isVirtual = (0 == (((J9ROMFieldShape*)romField)->modifiers & J9AccStatic));
 			j9object_t argsArray = J9VMJAVALANGINVOKEMETHODTYPE_ARGUMENTS(currentThread, methodType);
 			U_32 numParameters = J9INDEXABLEOBJECT_SIZE(currentThread, argsArray);
 			j9object_t clazz = NULL;
@@ -368,7 +409,7 @@ accessCheckMethodSignature(J9VMThread *currentThread, J9Method *method, j9object
 		U_32 start = 0;
 
 		/* For virtual methods we need to skip the first parameter in the MethodType parameter array */
-		if (0 == (romMethod->modifiers & J9_JAVA_STATIC)) {
+		if (0 == (romMethod->modifiers & J9AccStatic)) {
 			J9UTF8 *targetName = J9ROMMETHOD_NAME(romMethod);
 			if ('<' != J9UTF8_DATA(targetName)[0]) {
 				/* ensure the method is not a constructor which has a name <init> */
@@ -454,7 +495,8 @@ releaseMutexAndReturn:
 UDATA
 lookupField(JNIEnv *env, jboolean isStatic, J9Class *j9LookupClass, jstring name, J9UTF8 *sigUTF, J9Class **definingClass, UDATA *romField, jclass accessClass)
 {
-	J9UTF8 *nameUTF = NULL;
+	J9UTF8 *nameUTF8 = NULL;
+	char nameUTF8Buffer[256];
 	J9Class *j9AccessClass = NULL;	/* J9Class for java.lang.Class accessClass */
 	UDATA field = 0;
 	J9VMThread *vmThread = (J9VMThread *) env;
@@ -462,8 +504,10 @@ lookupField(JNIEnv *env, jboolean isStatic, J9Class *j9LookupClass, jstring name
 	J9InternalVMFunctions *vmFuncs = vm->internalVMFunctions;
 	PORT_ACCESS_FROM_VMC(vmThread);
 
-	nameUTF = allocateJ9UTF8(env, name);
-	if (NULL == nameUTF) {
+	nameUTF8 = vmFuncs->copyStringToJ9UTF8WithMemAlloc(vmThread, J9_JNI_UNWRAP_REFERENCE(name), J9_STR_NONE, "", 0, nameUTF8Buffer, sizeof(nameUTF8Buffer));
+
+	if (NULL == nameUTF8) {
+		vmFuncs->setNativeOutOfMemoryError(vmThread, 0, 0);
 		Assert_JCL_notNull(vmThread->currentException);
 		goto _cleanup;
 	}
@@ -473,7 +517,7 @@ lookupField(JNIEnv *env, jboolean isStatic, J9Class *j9LookupClass, jstring name
 	}
 
 	if (JNI_TRUE == isStatic) {
-		field = (UDATA) vmFuncs->staticFieldAddress(vmThread, j9LookupClass, J9UTF8_DATA(nameUTF), J9UTF8_LENGTH(nameUTF), J9UTF8_DATA(sigUTF), J9UTF8_LENGTH(sigUTF), definingClass, romField, 0, j9AccessClass);
+		field = (UDATA) vmFuncs->staticFieldAddress(vmThread, j9LookupClass, J9UTF8_DATA(nameUTF8), J9UTF8_LENGTH(nameUTF8), J9UTF8_DATA(sigUTF), J9UTF8_LENGTH(sigUTF), definingClass, romField, 0, j9AccessClass);
 		if (0 == field) {
 			/* IllegalAccessError / IncompatibleClassChangeError / NoSuchFieldError will be pending */
 			Assert_JCL_notNull(vmThread->currentException);
@@ -485,7 +529,7 @@ lookupField(JNIEnv *env, jboolean isStatic, J9Class *j9LookupClass, jstring name
 		field = (UDATA) field - (UDATA) (*definingClass)->ramStatics;
 		field += J9_SUN_STATIC_FIELD_OFFSET_TAG;
 	} else {
-		field = (UDATA) vmFuncs->instanceFieldOffset(vmThread, j9LookupClass, J9UTF8_DATA(nameUTF), J9UTF8_LENGTH(nameUTF), J9UTF8_DATA(sigUTF), J9UTF8_LENGTH(sigUTF), definingClass, romField, 0);
+		field = (UDATA) vmFuncs->instanceFieldOffset(vmThread, j9LookupClass, J9UTF8_DATA(nameUTF8), J9UTF8_LENGTH(nameUTF8), J9UTF8_DATA(sigUTF), J9UTF8_LENGTH(sigUTF), definingClass, romField, 0);
 		if (-1 == field) {
 			/* IllegalAccessError / IncompatibleClassChangeError / NoSuchFieldError will be pending */
 			Assert_JCL_notNull(vmThread->currentException);
@@ -500,17 +544,22 @@ lookupField(JNIEnv *env, jboolean isStatic, J9Class *j9LookupClass, jstring name
 	Assert_JCL_notNull((J9ROMFieldShape *)(*romField));
 
 _cleanup:
-	j9mem_free_memory(nameUTF);
+
+	if (nameUTF8 != (J9UTF8*)nameUTF8Buffer) {
+		j9mem_free_memory(nameUTF8);
+	}
+
 	return field;
 }
 
 jclass JNICALL
 Java_java_lang_invoke_PrimitiveHandle_lookupField(JNIEnv *env, jobject handle, jclass lookupClass, jstring name, jstring signature, jboolean isStatic, jclass accessClass)
 {
-	J9UTF8 *sigUTF = NULL;
-	J9Class *j9LookupClass;			/* J9Class for java.lang.Class lookupClass */
+	J9UTF8 *signatureUTF8 = NULL;
+	char signatureUTF8Buffer[256];
+	J9Class *j9LookupClass = NULL;			/* J9Class for java.lang.Class lookupClass */
 	J9Class *definingClass = NULL;	/* Returned by calls to find field */
-	UDATA field;
+	UDATA field = 0;
 	jclass result = NULL;
 	UDATA romField = 0;
 	J9VMThread *vmThread = (J9VMThread *) env;
@@ -520,23 +569,35 @@ Java_java_lang_invoke_PrimitiveHandle_lookupField(JNIEnv *env, jobject handle, j
 
 	vmFuncs->internalEnterVMFromJNI(vmThread);
 
-	if ((sigUTF = allocateJ9UTF8(env, signature)) == NULL) {
+	signatureUTF8 = vmFuncs->copyStringToJ9UTF8WithMemAlloc(vmThread, J9_JNI_UNWRAP_REFERENCE(signature), J9_STR_NONE, "", 0, signatureUTF8Buffer, sizeof(signatureUTF8Buffer));
+
+	if (signatureUTF8 == NULL) {
+		vmFuncs->setNativeOutOfMemoryError(vmThread, 0, 0);
 		Assert_JCL_notNull(vmThread->currentException);
 		goto _cleanup;
 	}
 
 	j9LookupClass = J9VM_J9CLASS_FROM_JCLASS(vmThread, lookupClass);
 
-	field = lookupField(env, isStatic, j9LookupClass, name, sigUTF, &definingClass, &romField, accessClass);
+	field = lookupField(env, isStatic, j9LookupClass, name, signatureUTF8, &definingClass, &romField, accessClass);
 
 	if (NULL != vmThread->currentException) {
 		goto _cleanup;
 	}
 
 	/* Check signature for classloader visibility */
-	if (!accessCheckFieldSignature(vmThread, j9LookupClass, romField, J9VMJAVALANGINVOKEMETHODHANDLE_TYPE(vmThread, J9_JNI_UNWRAP_REFERENCE(handle)), sigUTF)) {
-		setClassLoadingConstraintLinkageError(vmThread, definingClass, sigUTF);
+	if (!accessCheckFieldSignature(vmThread, j9LookupClass, romField, J9VMJAVALANGINVOKEMETHODHANDLE_TYPE(vmThread, J9_JNI_UNWRAP_REFERENCE(handle)), signatureUTF8)) {
+		setClassLoadingConstraintLinkageError(vmThread, definingClass, signatureUTF8);
 		goto _cleanup;
+	}
+	if (NULL != accessClass) {
+		J9Class *j9AccessClass = J9VM_J9CLASS_FROM_JCLASS(vmThread, accessClass);
+		if ((j9AccessClass->classLoader != j9LookupClass->classLoader)
+			&& !accessCheckFieldSignature(vmThread, j9AccessClass, romField, J9VMJAVALANGINVOKEMETHODHANDLE_TYPE(vmThread, J9_JNI_UNWRAP_REFERENCE(handle)), signatureUTF8)
+		) {
+			setClassLoadingConstraintLinkageError(vmThread, j9AccessClass, signatureUTF8);
+			goto _cleanup;
+		}
 	}
 
 	J9VMJAVALANGINVOKEPRIMITIVEHANDLE_SET_VMSLOT(vmThread, J9_JNI_UNWRAP_REFERENCE(handle), field);
@@ -545,7 +606,11 @@ Java_java_lang_invoke_PrimitiveHandle_lookupField(JNIEnv *env, jobject handle, j
 
 _cleanup:
 	vmFuncs->internalExitVMToJNI(vmThread);
-	j9mem_free_memory(sigUTF);
+
+	if (signatureUTF8 != (J9UTF8*)signatureUTF8Buffer) {
+		j9mem_free_memory(signatureUTF8);
+	}
+
 	return result;
 }
 
@@ -568,7 +633,7 @@ Java_java_lang_invoke_PrimitiveHandle_setVMSlotAndRawModifiersFromField(JNIEnv *
 	fieldID = reflectFunctions->idFromFieldObject(vmThread, NULL, fieldObject);
 
 	fieldOffset = fieldID->offset;
-	if (J9_JAVA_STATIC == (fieldID->field->modifiers & J9_JAVA_STATIC)) {
+	if (J9AccStatic == (fieldID->field->modifiers & J9AccStatic)) {
 		/* ensure this is correctly tagged so that the JIT targets using Unsafe will correctly detect this is static */
 		fieldOffset |= J9_SUN_STATIC_FIELD_OFFSET_TAG;
 	}
@@ -578,7 +643,7 @@ Java_java_lang_invoke_PrimitiveHandle_setVMSlotAndRawModifiersFromField(JNIEnv *
 	J9VMJAVALANGINVOKEPRIMITIVEHANDLE_SET_RAWMODIFIERS(vmThread, J9_JNI_UNWRAP_REFERENCE(handle), fieldID->field->modifiers);
 	result = JNI_TRUE;
 
-	vmFuncs->internalReleaseVMAccess(vmThread);
+	vmFuncs->internalExitVMToJNI(vmThread);
 	return result;
 }
 
@@ -614,6 +679,7 @@ Java_java_lang_invoke_PrimitiveHandle_setVMSlotAndRawModifiersFromMethod(JNIEnv 
 			vmSlotValue = methodID->vTableIndex;
 			break;
 		case J9_METHOD_HANDLE_KIND_INTERFACE:
+			Assert_JCL_true(J9_ARE_ANY_BITS_SET(methodID->vTableIndex, J9_JNI_MID_INTERFACE));
 			vmSlotValue = methodID->vTableIndex & ~J9_JNI_MID_INTERFACE;
 			break;
 		case J9_METHOD_HANDLE_KIND_SPECIAL:
@@ -640,7 +706,7 @@ Java_java_lang_invoke_PrimitiveHandle_setVMSlotAndRawModifiersFromMethod(JNIEnv 
 	result = JNI_TRUE;
 
 _cleanup:
-	vmFuncs->internalReleaseVMAccess(vmThread);
+	vmFuncs->internalExitVMToJNI(vmThread);
 
 	return result;
 }
@@ -666,7 +732,7 @@ Java_java_lang_invoke_PrimitiveHandle_setVMSlotAndRawModifiersFromConstructor(JN
 
 	result = JNI_TRUE;
 
-	vmFuncs->internalReleaseVMAccess(vmThread);
+	vmFuncs->internalExitVMToJNI(vmThread);
 	return result;
 }
 
@@ -682,7 +748,7 @@ Java_java_lang_invoke_PrimitiveHandle_setVMSlotAndRawModifiersFromSpecialHandle(
 	J9JavaVM *vm = vmThread->javaVM;
 	J9InternalVMFunctions *vmFuncs = vm->internalVMFunctions;
 	jboolean result = JNI_FALSE;
-	UDATA vtableIndex;
+	UDATA vtableOffset;
 	j9object_t specialHandleObject;
 	J9Method *method;
 	j9object_t classObject;
@@ -700,37 +766,16 @@ Java_java_lang_invoke_PrimitiveHandle_setVMSlotAndRawModifiersFromSpecialHandle(
 	if (j9class == NULL) {
 		goto _done;
 	}
-	vtableIndex = vmFuncs->getVTableIndexForMethod(method, j9class, vmThread);
-	if (vtableIndex != 0) {
-		J9VMJAVALANGINVOKEPRIMITIVEHANDLE_SET_VMSLOT(vmThread, J9_JNI_UNWRAP_REFERENCE(handle), vtableIndex);
+	vtableOffset = vmFuncs->getVTableOffsetForMethod(method, j9class, vmThread);
+	if (vtableOffset != 0) {
+		J9VMJAVALANGINVOKEPRIMITIVEHANDLE_SET_VMSLOT(vmThread, J9_JNI_UNWRAP_REFERENCE(handle), vtableOffset);
 		J9VMJAVALANGINVOKEPRIMITIVEHANDLE_SET_RAWMODIFIERS(vmThread, J9_JNI_UNWRAP_REFERENCE(handle), J9_ROM_METHOD_FROM_RAM_METHOD(method)->modifiers);
 		result = JNI_TRUE;
 	}
 
 _done:
-	vmFuncs->internalReleaseVMAccess(vmThread);
+	vmFuncs->internalExitVMToJNI(vmThread);
 	return result;
-}
-
-/* Install the accessClass into the J9VMThread so that the security-related stackwalks
- * can pull it back out.
- *
- * @param accessClass the Lookup.accessClass class
- */
-void JNICALL
-Java_java_lang_invoke_MethodHandles_00024Lookup_setAccessClassForSecuritCheck(JNIEnv *env, jclass ignored, jclass accessClass)
-{
-	J9VMThread *vmThread = (J9VMThread *) env;
-	J9JavaVM *vm = vmThread->javaVM;
-	J9InternalVMFunctions *vmFuncs = vm->internalVMFunctions;
-	J9Class *toInstall = NULL;
-
-	vmFuncs->internalEnterVMFromJNI(vmThread);
-	if (NULL != accessClass) {
-		toInstall = J9VM_J9CLASS_FROM_HEAPCLASS(vmThread, J9_JNI_UNWRAP_REFERENCE(accessClass));
-	}
-	vmThread->methodHandlesLookupAccessClass = toInstall;
-	vmFuncs->internalReleaseVMAccess(vmThread);
 }
 
 /* Return the field offset of the 'vmRef' field in j.l.Class.
@@ -790,7 +835,7 @@ Java_java_lang_invoke_MutableCallSite_freeGlobalRef(JNIEnv *env, jclass mutableC
 		vmFuncs->internalEnterVMFromJNI(vmThread);
 		globalRef = (jobject)((UDATA)J9VM_J9CLASS_FROM_HEAPCLASS(vmThread, J9_JNI_UNWRAP_REFERENCE(mutableCallSite))->ramStatics + ((UDATA)bypassOffset & ~(UDATA)J9_SUN_FIELD_OFFSET_MASK));
 		vmFuncs->j9jni_deleteGlobalRef(env, globalRef, FALSE);
-		vmFuncs->internalReleaseVMAccess(vmThread);
+		vmFuncs->internalExitVMToJNI(vmThread);
 	}
 	return;
 }
@@ -908,38 +953,6 @@ vmFinalizeImpl(JNIEnv *env, jclass methodHandleClass, jlong thunkAddress)
 	return;
 }
 
-/*
- * Allocate and fill in a J9UTF8 based on the jstring passed in.
- * Will set NativeOOM if unable to allocate the utf8.
- * MUST hold VM Access when calling this function
- */
-J9UTF8 *
-allocateJ9UTF8(JNIEnv *env, jstring name)
-{
-	J9VMThread *vmThread = (J9VMThread *) env;
-	J9InternalVMFunctions *vmFuncs = vmThread->javaVM->internalVMFunctions;
-	J9UTF8 *utf8 = NULL;
-	j9object_t jlString = J9_JNI_UNWRAP_REFERENCE(name);
-	UDATA length = vmFuncs->getStringUTF8Length(vmThread, jlString);
-
-	PORT_ACCESS_FROM_ENV(env);
-
-	utf8 = j9mem_allocate_memory(sizeof(U_16) + length, J9MEM_CATEGORY_VM_JCL);
-	if (NULL != utf8) {
-		J9UTF8_SET_LENGTH(utf8, (U_16) length);
-		/* Can't fail - just translates String->length into data */
-		if (UDATA_MAX == vmFuncs->copyStringToUTF8Helper(vmThread, jlString, FALSE, J9_STR_NONE, J9UTF8_DATA(utf8), length)) {
-			j9mem_free_memory(utf8);
-			vmFuncs->setCurrentException(vmThread, J9VMCONSTANTPOOL_JAVALANGINTERNALERROR, NULL);
-			utf8 = NULL;
-		}
-	} else {
-		vmFuncs->setNativeOutOfMemoryError(vmThread, 0, 0);
-	}
-
-	return utf8;
-}
-
 /**
  * Fill in a parameterized NLS message.
  *
@@ -992,7 +1005,7 @@ setClassLoadingConstraintLinkageError(J9VMThread *vmThread, J9Class *methodOrFie
 	const char *nlsTemplate = j9nls_lookup_message(
 			J9NLS_DO_NOT_PRINT_MESSAGE_TAG | J9NLS_DO_NOT_APPEND_NEWLINE,
 			J9NLS_JCL_METHODTYPE_CLASS_LOADING_CONSTRAINT,
-			"loading constraint violation: %2$.*1$s not visible from %4$.*3$s");
+			"loading constraint violation: %.*s not visible from %.*s");
 	char * msg = expandNLSTemplate(
 			vmThread,
 			nlsTemplate,
@@ -1011,7 +1024,7 @@ setClassLoadingConstraintLinkageError(J9VMThread *vmThread, J9Class *methodOrFie
  * @param[in] nativeMethods       The JNI native method pointer
  * @param[in] nativeMethodCount  The count of native methods
  */
-static void
+void
 clearNonZAAPEligibleBit(JNIEnv *env, jclass nativeClass, const JNINativeMethod *nativeMethods, jint nativeMethodCount)
 {
 	J9VMThread *vmThread = (J9VMThread *) env;
@@ -1021,7 +1034,7 @@ clearNonZAAPEligibleBit(JNIEnv *env, jclass nativeClass, const JNINativeMethod *
 	jint count = nativeMethodCount;
 	J9Class *j9clazz = NULL;
 
-	vmFuncs->internalAcquireVMAccess(vmThread);
+	vmFuncs->internalEnterVMFromJNI(vmThread);
 	j9clazz = J9VM_J9CLASS_FROM_HEAPCLASS(vmThread, J9_JNI_UNWRAP_REFERENCE(nativeClass));
 
 	while (0 < count) {
@@ -1030,6 +1043,53 @@ clearNonZAAPEligibleBit(JNIEnv *env, jclass nativeClass, const JNINativeMethod *
 		count -= 1;
 		nativeMethod +=1;
 	}
-	vmFuncs->internalReleaseVMAccess(vmThread);
+	vmFuncs->internalExitVMToJNI(vmThread);
 }
 #endif /* J9VM_OPT_JAVA_OFFLOAD_SUPPORT */
+
+#if JAVA_SPEC_VERSION >= 15
+void JNICALL
+Java_java_lang_invoke_MethodHandleNatives_checkClassBytes(JNIEnv *env, jclass jlClass, jbyteArray classRep)
+{
+	J9VMThread *currentThread = (J9VMThread *)env;
+	J9JavaVM *vm = currentThread->javaVM;
+	J9InternalVMFunctions *vmFuncs = vm->internalVMFunctions;
+	jsize length = 0;
+	U_8* classBytes = NULL;
+	I_32 rc = 0;
+	U_8* segment = NULL;
+	U_32 segmentLength = 0;
+	PORT_ACCESS_FROM_JAVAVM(vm);
+	
+	if (NULL == classRep) {
+		throwNewNullPointerException(env, NULL);
+		goto done;
+	}
+	length = (*env)->GetArrayLength(env, classRep);
+	if (0 == length) {
+		goto done;
+	}
+
+	segmentLength = ESTIMATE_SIZE(length);
+	segment = (U_8*)j9mem_allocate_memory(segmentLength, J9MEM_CATEGORY_VM_JCL);
+	if (NULL == segment) {
+		vmFuncs->setNativeOutOfMemoryError(currentThread, 0, 0);
+		goto done;
+	}
+	memset(segment, 0, segmentLength);
+	classBytes = (*env)->GetPrimitiveArrayCritical(env, classRep, NULL);
+
+	rc = vmFuncs->checkClassBytes(currentThread, classBytes, length, segment, segmentLength);
+	(*env)->ReleasePrimitiveArrayCritical(env, classRep, classBytes, 0);
+	if (0 != rc) {
+		J9CfrError *cfrError = (J9CfrError *)segment;
+		const char* errorMsg = OMRPORT_FROM_J9PORT(PORTLIB)->nls_lookup_message(OMRPORT_FROM_J9PORT(PORTLIB), J9NLS_DO_NOT_APPEND_NEWLINE, cfrError->errorCatalog, cfrError->errorCode, NULL);
+		vmFuncs->internalEnterVMFromJNI(currentThread);
+		vmFuncs->setCurrentExceptionUTF(currentThread, cfrError->errorAction, errorMsg);
+		vmFuncs->internalExitVMToJNI(currentThread);
+	}
+	j9mem_free_memory(segment);
+done:
+	return;
+}
+#endif /* JAVA_SPEC_VERSION >= 15 */

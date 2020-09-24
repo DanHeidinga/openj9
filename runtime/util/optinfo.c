@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -20,14 +20,12 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
 
-#if defined(J9VM_OUT_OF_PROCESS)
-#include "j9dbgext.h"
-#endif
 
 #include "j9.h"
 #include "j9cp.h"
 #include "rommeth.h"
 #include "util_internal.h"
+#include "ut_j9vmutil.h"
 
 #define BE_INT_AT(address) \
 	(((U_32)((U_8 *)address)[3])+\
@@ -37,32 +35,10 @@
 
 #define COUNT_MASK(value, mask) ((value) & ((mask) << 1) - 1)
 
-#if defined(J9VM_OUT_OF_PROCESS)
-
-static UDATA readLocation = DBGEXT_READFROMMEMORY;
-
-static void
-setReadLocation(UDATA readLoc)
-{
-	readLocation = readLoc;
-}
-
-static UDATA
-getReadLocation()
-{
-	return readLocation;
-}
-
-#define READ_U8(ptr) (DBGEXT_READFROMCOREFILE == getReadLocation())? dbgReadByte((U_8 *)(ptr)) : *(U_8 *)ptr
-#define READ_U16(ptr) (DBGEXT_READFROMCOREFILE == getReadLocation())? dbgReadU16((U_16 *)(ptr)) : *(U_16 *)ptr
-#define READ_I32(ptr) (DBGEXT_READFROMCOREFILE == getReadLocation())? (I_32)dbgReadU32((U_32 *)(ptr)) : *(I_32 *)ptr
-#define READ_SRP(ptr, type) (DBGEXT_READFROMCOREFILE == getReadLocation())? (type)dbgReadSRP((J9SRP *)(ptr)) : SRP_GET(*((J9SRP *)ptr), type)
-#else
 #define READ_U8(ptr) *(U_8 *)ptr
 #define READ_U16(ptr) *(U_16 *)ptr
 #define READ_I32(ptr) *(I_32 *)ptr
 #define READ_SRP(ptr, type)  SRP_GET(*((J9SRP *)ptr), type)
-#endif
 
 static U_32* getSRPPtr (U_32 *ptr, U_32 flags, U_32 option);
 static UDATA reloadClass (J9VMThread *vmThread, J9Class *originalClass, U_8 *classFileBytes, UDATA classFileSize, J9ROMClass **result);
@@ -296,7 +272,7 @@ getNextLineNumberFromTable(U_8 **currentLineNumber, J9LineNumber *lineNumber)
 		ilineNumber = (ulineNumber ^ m) - m; /* sign extend from 9bit */
 		lineNumber->lineNumber += ilineNumber;
 		currentLineNumberPtr++;
-	} else if (0xC0 == (*currentLineNumberPtr & 0xE0)) { /* Comparing the 3 most significative bits to 110 */
+	} else if (0xC0 == (*currentLineNumberPtr & 0xE0)) { /* Comparing the 3 most significant bits to 110 */
 		U_32 const m = 1U << (14 - 1);
 		U_32 ulineNumber;
 		I_32 ilineNumber;
@@ -312,7 +288,7 @@ getNextLineNumberFromTable(U_8 **currentLineNumber, J9LineNumber *lineNumber)
 		ilineNumber = (ulineNumber ^ m) - m; /* sign extend from 14bit */
 		lineNumber->lineNumber += ilineNumber;
 		currentLineNumberPtr += 2;
-	} else if (0xE0 == (*currentLineNumberPtr & 0xF0)) { /* Comparing the 4 most significative bits to 1110 */
+	} else if (0xE0 == (*currentLineNumberPtr & 0xF0)) { /* Comparing the 4 most significant bits to 1110 */
 		I_32 lineNumberOffset;
 		U_8 firstByte = *currentLineNumberPtr;
 		/* 5 bytes encoded : 1110000Y xxxxxxxx xxxxxxxx YYYYYYYY YYYYYYYY */
@@ -488,7 +464,7 @@ getVariableTableForMethodDebugInfo(J9MethodDebugInfo *methodInfo) {
 			}
 		} else {
 			/* 
-			 * debug infomation is out of line, this slot is an SRP to the
+			 * debug information is out of line, this slot is an SRP to the
 			 * J9VariableInfo table
 			 */
 			return (SRP_GET(methodInfo->srpToVarInfo, U_8 *));
@@ -496,34 +472,6 @@ getVariableTableForMethodDebugInfo(J9MethodDebugInfo *methodInfo) {
 	}
 	return NULL;
 }
-
-#if defined(J9VM_OUT_OF_PROCESS)
-/**
- * This function is only used by the debug extension code.
- * When this function is called, variable info might have been copied to local memory or not.
- * If it is not copied, then readLocation is set to DBGEXT_READFROMCOREFILE,
- * if it is copied, then readLocation is set to DBGEXT_READFROMMEMORY
- */
-J9VariableInfoValues *
-debugVariableInfoStartDo(U_8 * variableInfo, U_32 variableInfoCount, J9VariableInfoWalkState* state, UDATA readLocation)
-{
-	state->variablesLeft = variableInfoCount;
-
-	if (state->variablesLeft == 0) {
-		return NULL;
-	}
-
-	setReadLocation(readLocation);
-
-	state->variableTablePtr = variableInfo;
-	state->values.slotNumber = 0;
-	state->values.startVisibility = 0;
-	state->values.visibilityLength = 0;
-
-
-	return variableInfoNextDo(state);
-}
-#endif
 
 J9VariableInfoValues * 
 variableInfoStartDo(J9MethodDebugInfo * methodInfo, J9VariableInfoWalkState* state)
@@ -533,10 +481,6 @@ variableInfoStartDo(J9MethodDebugInfo * methodInfo, J9VariableInfoWalkState* sta
 		return NULL;
 	}
 	
-#if defined(J9VM_OUT_OF_PROCESS)
-	setReadLocation(DBGEXT_READFROMMEMORY);
-#endif
-
 	state->variableTablePtr = getVariableTableForMethodDebugInfo(methodInfo);
 	state->values.slotNumber = 0;
 	state->values.startVisibility = 0;
@@ -581,7 +525,7 @@ variableInfoNextDo(J9VariableInfoWalkState *state)
 		firstByte = READ_U8(state->variableTablePtr);
 		state->values.visibilityLength += ((firstByte ^ m8) - m8); /* sign extend from 8bit */;
 		state->variableTablePtr += sizeof(U_8);
-	} else if (0xC0 == (firstByte & 0xE0)) { /* Comparing the 3 most significative bits to 110 */
+	} else if (0xC0 == (firstByte & 0xE0)) { /* Comparing the 3 most significant bits to 110 */
 		/* 110xYYYY YYYYYZZZ ZZZZZZZZ */
 		U_32 const m9 = 1U << (9 - 1);
 		U_32 const m11 = 1U << (11 - 1);
@@ -599,7 +543,7 @@ variableInfoNextDo(J9VariableInfoWalkState *state)
 		startVisibilityUnsigned = (result >> 11) & 0x1FF;
 		state->values.startVisibility += ((startVisibilityUnsigned ^ m9) - m9); /* sign extend from 9bit */;
 		state->values.visibilityLength += (((result & 0x7FF) ^ m11) - m11); /* sign extend from 11bit */;
-	} else if (0xE0 == (firstByte & 0xF0)) { /* Comparing the 4 most significative bits to 1110 */
+	} else if (0xE0 == (firstByte & 0xF0)) { /* Comparing the 4 most significant bits to 1110 */
 		/* 1110xxZZ ZZZZZZZZ ZZZZZZZZ YYYYYYYY YYYYYYYY */
 		U_32 const m16 = 1U << (16 - 1);
 		U_32 const m18 = 1U << (18 - 1);
@@ -619,7 +563,7 @@ variableInfoNextDo(J9VariableInfoWalkState *state)
 		startVisibilityUnsigned = twoBytes;
 		state->variableTablePtr += sizeof(U_16);
 		state->values.startVisibility += ((startVisibilityUnsigned ^ m16) - m16); /* sign extend from 16bit */;
-	} else if (0xF0 == (firstByte)) { /* Comparing the 8 most significative bits to 0xF0 */
+	} else if (0xF0 == (firstByte)) { /* Comparing the 8 most significant bits to 0xF0 */
 		/* 11110000	FULL DATA in case it overflow in some classes */
 		I_32 integerValue;
 		state->variableTablePtr += sizeof(U_8);
@@ -695,7 +639,7 @@ getSimpleNameForROMClass(J9JavaVM *vm, J9ClassLoader *classLoader, J9ROMClass *r
 }
 
 UDATA
-getLineNumberForROMClassFromROMMethod(J9JavaVM *vm, J9ROMMethod *romMethod, J9ROMClass *romClass, UDATA offset, J9ClassLoader *classLoader, UDATA relativePC)
+getLineNumberForROMClassFromROMMethod(J9JavaVM *vm, J9ROMMethod *romMethod, J9ROMClass *romClass, J9ClassLoader *classLoader, UDATA relativePC)
 {
 	UDATA bytecodeSize = J9_BYTECODE_SIZE_FROM_ROM_METHOD(romMethod);
 	UDATA number = (UDATA)-1;
@@ -727,5 +671,138 @@ getLineNumberForROMClassFromROMMethod(J9JavaVM *vm, J9ROMMethod *romMethod, J9RO
 	}
 
 	return number;
+}
+
+U_32*
+getNumberOfPermittedSubclassesPtr(J9ROMClass *romClass)
+{
+	U_32 *ptr = getSRPPtr(J9ROMCLASS_OPTIONALINFO(romClass), romClass->optionalFlags, J9_ROMCLASS_OPTINFO_PERMITTEDSUBCLASSES_ATTRIBUTE);
+
+	Assert_VMUtil_true(ptr != NULL);
+
+	return SRP_PTR_GET(ptr, U_32*);
+}
+
+J9UTF8*
+permittedSubclassesNameAtIndex(U_32* permittedSubclassesCountPtr, U_32 index)
+{
+	/* SRPs to PermittedSubclass name constant pool entries start after the permittedSubclassCountPtr */
+	U_32* permittedSubclassPtr = permittedSubclassesCountPtr + 1 + index;
+
+	return NNSRP_PTR_GET(permittedSubclassPtr, J9UTF8*);
+}
+
+U_32
+getNumberOfRecordComponents(J9ROMClass *romClass)
+{
+	U_32 *ptr = getSRPPtr(J9ROMCLASS_OPTIONALINFO(romClass), romClass->optionalFlags, J9_ROMCLASS_OPTINFO_RECORD_ATTRIBUTE);
+
+	Assert_VMUtil_true(ptr != NULL);
+
+	return *SRP_PTR_GET(ptr, U_32*);
+}
+
+BOOLEAN
+recordComponentHasSignature(J9ROMRecordComponentShape* recordComponent)
+{
+	return (recordComponent->attributeFlags & J9RecordComponentFlagHasGenericSignature);
+}
+
+BOOLEAN
+recordComponentHasAnnotations(J9ROMRecordComponentShape* recordComponent)
+{
+	return (recordComponent->attributeFlags & J9RecordComponentFlagHasAnnotations);
+}
+
+BOOLEAN
+recordComponentHasTypeAnnotations(J9ROMRecordComponentShape* recordComponent)
+{
+	return (recordComponent->attributeFlags & J9RecordComponentFlagHasTypeAnnotations);
+}
+
+J9UTF8*
+getRecordComponentGenericSignature(J9ROMRecordComponentShape* recordComponent)
+{
+	if (recordComponentHasSignature(recordComponent)) {	
+		U_32* signaturePtr = (U_32*) ((UDATA)recordComponent + sizeof(J9ROMRecordComponentShape));
+		return NNSRP_PTR_GET(signaturePtr, J9UTF8*);
+	}
+	return NULL;
+}
+
+U_32*
+getRecordComponentAnnotationData(J9ROMRecordComponentShape* recordComponent)
+{
+	U_32* result = NULL;
+	if (recordComponentHasAnnotations(recordComponent)) {
+		/* calculate offset from start of record component */
+		UDATA offset = sizeof(J9ROMRecordComponentShape);
+		/* U_32 for generic signature if it exists */
+		if (recordComponentHasSignature(recordComponent)) {
+			offset += sizeof(U_32);
+		}
+		result = (U_32*)((UDATA)recordComponent + offset);
+	}
+	return result;
+}
+
+static UDATA
+annotationAttributeSize(U_8* annotationAttribute) {
+	UDATA size = 0;
+	Assert_VMUtil_true(((UDATA)annotationAttribute % sizeof(U_32)) == 0);
+	size = sizeof(U_32);		/* size of length */
+	size += *((U_32 *)annotationAttribute);	/* length of attribute */
+	return ROUND_UP_TO_POWEROF2(size, sizeof(U_32));	/* padding */
+} 
+
+U_32*
+getRecordComponentTypeAnnotationData(J9ROMRecordComponentShape* recordComponent)
+{
+	U_32* result = NULL;
+	if (recordComponentHasTypeAnnotations(recordComponent)) {
+		if (recordComponentHasAnnotations(recordComponent)) {
+			/* use previous annotation result to calculate offset since size is not known */
+			U_8 *recordComponentAnnotationData = (U_8 *)getRecordComponentAnnotationData(recordComponent);
+			result = (U_32*)(recordComponentAnnotationData + annotationAttributeSize(recordComponentAnnotationData));
+		} else {
+			UDATA offset = sizeof(J9ROMRecordComponentShape);
+			if (recordComponentHasSignature(recordComponent)) {
+				offset += sizeof(U_32);
+			}
+			result = (U_32*)((UDATA)recordComponent + offset);
+		}
+	}
+	return result;
+}
+
+J9ROMRecordComponentShape* 
+recordComponentStartDo(J9ROMClass *romClass)
+{
+	U_32 *srp = NULL;
+	U_32 *ptr = getSRPPtr(J9ROMCLASS_OPTIONALINFO(romClass), romClass->optionalFlags, J9_ROMCLASS_OPTINFO_RECORD_ATTRIBUTE);
+
+	Assert_VMUtil_true(ptr != NULL);
+
+	/* first 4 bytes of record entry is the size */
+	srp = SRP_PTR_GET(ptr, U_32*);
+	srp += 1;
+	return (J9ROMRecordComponentShape *)srp;
+}
+
+J9ROMRecordComponentShape* 
+recordComponentNextDo(J9ROMRecordComponentShape* recordComponent)
+{
+	UDATA recordComponentSize = sizeof(J9ROMRecordComponentShape);
+
+	if (recordComponentHasSignature(recordComponent)) {
+		recordComponentSize += sizeof(U_32);
+	}
+	if (recordComponentHasAnnotations(recordComponent)) {
+		recordComponentSize += annotationAttributeSize((U_8*)recordComponent + recordComponentSize);
+	}
+	if (recordComponentHasTypeAnnotations(recordComponent)) {
+		recordComponentSize += annotationAttributeSize((U_8*)recordComponent + recordComponentSize);
+	}
+	return (J9ROMRecordComponentShape*)((U_8*)recordComponent + recordComponentSize);
 }
 

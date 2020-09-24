@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -29,7 +29,6 @@
 #include "mmhook.h"
 #include "mmprivatehook.h"
 
-#include "LightweightNonReentrantLock.hpp"
 #include "VerboseHandlerOutput.hpp"
 #include "GCExtensions.hpp"
 
@@ -74,9 +73,9 @@ private:
 	UDATA _nonDeterministicSweepConsecutiveMax; /**< The maximum of all longest streaks, between two heartbeats */
 	U_64 _nonDeterministicSweepDelayMax;		/**< The longest delay caused by non deterministic sweep among all allocs between two heartbeats */
 
-	U_64 _maxExclusiveAccessTime;		 /**< The maximum time (of all events of the chain) GC master thread spent stopping mutators */
-	U_64 _minExclusiveAccessTime;		 /**< The minimum time (of all events of the chain) GC master thread spent stopping mutators */
-	U_64 _totalExclusiveAccessTime;		 /**< The average time (of all events of the chain) GC master thread spent stopping mutators */
+	U_64 _maxExclusiveAccessTime;		 /**< The maximum time (of all events of the chain) GC main thread spent stopping mutators */
+	U_64 _minExclusiveAccessTime;		 /**< The minimum time (of all events of the chain) GC main thread spent stopping mutators */
+	U_64 _totalExclusiveAccessTime;		 /**< The average time (of all events of the chain) GC main thread spent stopping mutators */
 
 	UDATA _maxStartPriority; /**< The maximum start priority of all increments in the event chain. Only used for the last event in the chain. */
 	UDATA _minStartPriority; /**< The minimum start priority of all increments in the event chain. Only used for the last event in the chain. */
@@ -104,8 +103,6 @@ private:
 	UDATA _syncGCStartClassLoadersUnloaded; /**< The unloaded class loader count at the start of a sync GC */
 	UDATA _syncGCStartClassesUnloaded; /**< The unloaded class count at the start of a sync GC */
 	UDATA _syncGCStartAnonymousClassesUnloaded; /**< The unloaded anonymous class count at the start of a sync GC */
-
-	MM_LightweightNonReentrantLock _outputLock;	/**< Since VLHGC can sometimes have multiple threads trying to access verbose (one reporting events while another reports exclusive), this lock is required to ensure that the writer only sees each report, atomically */
 
 protected:
 	J9HookInterface** _mmHooks;  /**< Pointers to the Hook interface */
@@ -242,7 +239,6 @@ protected:
 		_syncGCStartClassLoadersUnloaded(0),
 		_syncGCStartClassesUnloaded(0),
 		_syncGCStartAnonymousClassesUnloaded(0),
-		_outputLock(),
 		_mmHooks(NULL)
 	{};
 
@@ -251,9 +247,6 @@ protected:
 
 	virtual bool getThreadName(char *buf, UDATA bufLen, OMR_VMThread *vmThread);
 	virtual void writeVmArgs(MM_EnvironmentBase* env);
-
-	virtual void enterAtomicReportingBlock();
-	virtual void exitAtomicReportingBlock();
 
 public:
 	static MM_VerboseHandlerOutput *newInstance(MM_EnvironmentBase *env, MM_VerboseManager *manager);

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2017, 2017 IBM Corp. and others
+ * Copyright (c) 2017, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -78,13 +78,18 @@ public:
 	bool initialize(MM_EnvironmentBase *env, MM_GlobalCollector *globalCollector, MM_MarkingScheme *markingScheme);
 	void tearDown(MM_EnvironmentBase *env);
 
-	void masterThreadGarbageCollectStarted(MM_EnvironmentBase *env);
+	void mainThreadGarbageCollectStarted(MM_EnvironmentBase *env);
 	void postMarkProcessing(MM_EnvironmentBase *env);
-	void masterThreadGarbageCollectFinished(MM_EnvironmentBase *env, bool compactedThisCycle);
+	void mainThreadGarbageCollectFinished(MM_EnvironmentBase *env, bool compactedThisCycle);
 	void postCollect(MM_EnvironmentBase* env, MM_MemorySubSpace* subSpace);
 
 	bool isAllowUserHeapWalk();
 	void prepareHeapForWalk(MM_EnvironmentBase *env);
+
+#if defined(OMR_ENV_DATA64) && defined(OMR_GC_FULL_POINTERS)
+	void poisonSlots(MM_EnvironmentBase *env);
+	void healSlots(MM_EnvironmentBase *env);
+#endif /* defined(OMR_ENV_DATA64) && defined(OMR_GC_FULL_POINTERS) */
 
 	bool heapAddRange(MM_EnvironmentBase *env, MM_MemorySubSpace *subspace, UDATA size, void *lowAddress, void *highAddress);
 	bool heapRemoveRange(MM_EnvironmentBase *env, MM_MemorySubSpace *subspace, UDATA size, void *lowAddress, void *highAddress, void *lowValidAddress, void *highValidAddress);

@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -90,7 +90,7 @@ tgcInstantiateExtensions(J9JavaVM *javaVM)
 }
 
 /**
- * Consume arguments found in the -Xtgc: (tgc_colon) arguement list.
+ * Consume arguments found in the -Xtgc: (tgc_colon) argument list.
  * @return true if parsing was successful, 0 otherwise.
  */
 bool
@@ -295,6 +295,10 @@ tgcInitializeRequestedOptions(J9JavaVM *javaVM)
 		if (tgcExtensions->_heapRequested) {
 			result = result && tgcHeapInitialize(javaVM);
 		}
+
+		if (tgcExtensions->_rootScannerRequested) {
+			result = result && tgcRootScannerInitialize(javaVM);
+		}
 	}
 
 	/* StandardGC and VLHGC both options*/
@@ -321,10 +325,6 @@ tgcInitializeRequestedOptions(J9JavaVM *javaVM)
 
 		if (tgcExtensions->_parallelRequested) {
 			result = result && tgcParallelInitialize(javaVM);
-		}
-
-		if (tgcExtensions->_rootScannerRequested) {
-			result = result && tgcRootScannerInitialize(javaVM);
 		}
 
 		if (tgcExtensions->_terseRequested) {
@@ -468,7 +468,7 @@ tgcPrintClass(J9JavaVM *javaVM, J9Class* clazz)
 
 	/* TODO: In Sov, if the class is char[], the string is printed instead of the class name */
 	romClass = clazz->romClass;
-	if(romClass->modifiers & J9_JAVA_CLASS_ARRAY) {
+	if(romClass->modifiers & J9AccClassArray) {
 		J9ArrayClass* arrayClass = (J9ArrayClass*) clazz;
 		UDATA arity = arrayClass->arity;
 		utf = J9ROMCLASS_CLASSNAME(arrayClass->leafComponentType->romClass);

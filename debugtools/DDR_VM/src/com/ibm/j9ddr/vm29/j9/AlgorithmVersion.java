@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2010, 2014 IBM Corp. and others
+ * Copyright (c) 2010, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -42,14 +42,16 @@ public class AlgorithmVersion {
 	public static final String MONITOR_HASH_FUNCTION_VERSION = "ALG_MONITOR_HASH_FUNCTION_VERSION";
 	public static final String MONITOR_EQUAL_FUNCTION_VERSION = "ALG_MONITOR_EQUAL_FUNCTION_VERSION";
 	public static final String OBJECT_FIELD_OFFSET = "ALG_OBJECT_FIELD_OFFSET_VERSION";
-	public static final String OBJECT_MONITOR_VERSION = "OBJECT_MONITOR_VERSION";
+	public static final String ALG_OBJECT_MONITOR_VERSION = "ALG_OBJECT_MONITOR_VERSION";
 	public static final String OPT_INFO_VERSION = "OPT_INFO_VERSION";
 	public static final String POOL_VERSION = "ALG_POOL_VERSION";
 	public static final String ROM_HELP_VERSION = "ALG_ROM_HELP_VERSION";
 	public static final String STACK_MAP_VERSION = "ALG_STACK_MAP_VERSION";
 	public static final String STACK_WALKER_VERSION = "ALG_STACKWALKER_VERSION";
 	public static final String FOUR_BYTE_OFFSETS_VERSION = "FOUR_BYTE_OFFSETS_VERSION";
-	public static final String STRING_COMPRESSION_VERSION = "STRING_COMPRESSION_VERSION";
+	public static final String VTABLE_VERSION = "ALG_VM_VTABLE_VERSION";
+	public static final String ITABLE_VERSION = "ALG_VM_ITABLE_VERSION";
+	public static final String BYTECODE_VERSION = "ALG_VM_BYTECODE_VERSION";
 	
 	public static final String GC_ARRAYLET_OBJECT_MODEL_VERSION = "ALG_GC_ARRAYLET_OBJECT_MODEL_VERSION";
 	public static final String GC_CLASS_MODEL_VERSION = "ALG_GC_CLASS_MODEL_VERSION";
@@ -68,6 +70,8 @@ public class AlgorithmVersion {
 	public static final String GC_SCAVENGER_FORWARDED_HEADER_VERSION = "ALG_GC_SCAVENGER_FORWARDED_HEADER_VERSION";
 
 	public static final String MM_OBJECT_ACCESS_BARRIER_VERSION = "ALG_MM_OBJECT_ACCESS_BARRIER_VERSION";
+
+	public static final String MIXED_REFERENCE_MODE = "MIXED_REFERENCE_MODE";
 
 	// Fields
 	private static AlgorithmVersion DEFAULT_VERSION;

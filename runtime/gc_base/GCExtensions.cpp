@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -33,6 +32,10 @@
 
 #include "EnvironmentBase.hpp"
 #include "Forge.hpp"
+#if defined(OMR_GC_IDLE_HEAP_MANAGER)
+ #include  "IdleGCManager.hpp"
+#endif /* defined(OMR_GC_IDLE_HEAP_MANAGER) */
+#include "MemorySpace.hpp"
 #include "MemorySubSpace.hpp"
 #include "ObjectModel.hpp"
 #include "ReferenceChainWalkerMarkMap.hpp"
@@ -85,45 +88,9 @@ MM_GCExtensions::initialize(MM_EnvironmentBase *env)
 		goto failed;
 	}
 
-#if defined(OMR_ENV_DATA64)
-	if (J2SE_VERSION((J9JavaVM *)getOmrVM()->_language_vm) >= J2SE_19) {
-		uint64_t physicalMemory = 0;
-		uint64_t memoryLimit = 0;
-		uint64_t usableMemory = 0;
-		/* Initial physicalMemory as per system call. */
-		physicalMemory = j9sysinfo_get_physical_memory();
-		if (OMRPORT_LIMIT_LIMITED == j9sysinfo_get_limit(OMRPORT_RESOURCE_ADDRESS_SPACE, &memoryLimit)) {
-			/* there is a limit on the memory we can use so take the minimum of this usable amount and the physical memory */
-			usableMemory = OMR_MIN(memoryLimit, physicalMemory);
-		} else {
-			/* if there is no memory limit being imposed on us, we will use physical memory as our max */
-			usableMemory = physicalMemory;
-		}
-
-		/* extend java default max memory to 25% of physical RAM */
-		memoryMax = OMR_MAX(memoryMax, usableMemory / 4);
-		/* limit maxheapsize up to MAXIMUM_HEAP_SIZE_RECOMMENDED_FOR_3BIT_SHIFT_COMPRESSEDREFS, then can set 3bit compressedrefs as the default */
-		memoryMax = OMR_MIN(memoryMax, MAXIMUM_HEAP_SIZE_RECOMMENDED_FOR_3BIT_SHIFT_COMPRESSEDREFS);
-
-		/* Initialize Xmx, Xmdx */
-		memoryMax = MM_Math::roundToFloor(heapAlignment, (uintptr_t)memoryMax);
-		maxSizeDefaultMemorySpace = memoryMax;
-	}
-#endif /* OMR_ENV_DATA64 */
-
 #if defined(J9VM_GC_REALTIME)
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
 	/* only ref slots, size in bytes: 2 * minObjectSize - header size */
-	minArraySizeToSetAsScanned = 2 * (1 << J9VMGC_SIZECLASSES_LOG_SMALLEST) - sizeof(J9IndexableObjectContiguous);
-#else /* J9VM_GC_HYBRID_ARRAYLETS */
-	/* only ref slots, size in bytes: 2 * minObjectSize - header size) - 1 * sizeof(arraylet pointer) */
-	minArraySizeToSetAsScanned = 2 * (1 << J9VMGC_SIZECLASSES_LOG_SMALLEST) - sizeof(J9IndexableObjectDiscontiguous) - sizeof(fj9object_t*);
-#endif /* J9VM_GC_HYBRID_ARRAYLETS */
-
-	getJavaVM()->gcCycleOn = 0;
-	if (omrthread_monitor_init_with_name(&getJavaVM()->gcCycleOnMonitor, 0, "gcCycleOn")) {
-		goto failed;
-	}
+	minArraySizeToSetAsScanned = 2 * (1 << J9VMGC_SIZECLASSES_LOG_SMALLEST) - J9JAVAVM_CONTIGUOUS_HEADER_SIZE(getJavaVM());
 #endif /* J9VM_GC_REALTIME */
 
 #if defined(J9VM_GC_JNI_ARRAY_CACHE)
@@ -157,7 +124,7 @@ MM_GCExtensions::initialize(MM_EnvironmentBase *env)
 		}
 	}
 
-#if defined(J9VM_GC_IDLE_HEAP_MANAGER)
+#if defined(OMR_GC_IDLE_HEAP_MANAGER)
 	/* absorbs GC specific idle tuning flags */
 	if (J9_IDLE_TUNING_GC_ON_IDLE == (getJavaVM()->vmRuntimeStateListener.idleTuningFlags & J9_IDLE_TUNING_GC_ON_IDLE)) {
 		gcOnIdle = true;
@@ -166,7 +133,7 @@ MM_GCExtensions::initialize(MM_EnvironmentBase *env)
 		compactOnIdle = true;
 	}
 	idleMinimumFree = getJavaVM()->vmRuntimeStateListener.idleMinFreeHeap;
-#endif /* if defined(J9VM_GC_IDLE_HEAP_MANAGER) */
+#endif /* if defined(OMR_GC_IDLE_HEAP_MANAGER) */
 
 	return true;
 
@@ -187,13 +154,6 @@ MM_GCExtensions::tearDown(MM_EnvironmentBase *env)
 	vmFuncs->J9UnregisterAsyncEvent(getJavaVM(), _asyncCallbackKey);
 	_asyncCallbackKey = -1;
 
-#if defined(J9VM_GC_REALTIME)
-	if (getJavaVM()->gcCycleOnMonitor) {
-		omrthread_monitor_destroy(getJavaVM()->gcCycleOnMonitor);
-		getJavaVM()->gcCycleOnMonitor = (omrthread_monitor_t) NULL;
-	}
-#endif
-
 #if defined(J9VM_GC_MODRON_TRACE) && !defined(J9VM_GC_REALTIME)
 	tgcTearDownExtensions(getJavaVM());
 #endif /* J9VM_GC_MODRON_TRACE && !defined(J9VM_GC_REALTIME) */
@@ -212,6 +172,13 @@ MM_GCExtensions::tearDown(MM_EnvironmentBase *env)
 		*tmpHookInterface = NULL; /* avoid issues with double teardowns */
 	}
 
+#if defined(OMR_GC_IDLE_HEAP_MANAGER)
+	if (NULL != idleGCManager) {
+		idleGCManager->kill(env);
+		idleGCManager = NULL;
+	}
+#endif /* defined(OMR_GC_IDLE_HEAP_MANAGER) */
+
 	MM_GCExtensionsBase::tearDown(env);
 }
 
@@ -221,10 +188,17 @@ MM_GCExtensions::identityHashDataAddRange(MM_EnvironmentBase *env, MM_MemorySubS
 	J9IdentityHashData* hashData = getJavaVM()->identityHashData;
 	if (J9_IDENTITY_HASH_SALT_POLICY_STANDARD == hashData->hashSaltPolicy) {
 		if (MEMORY_TYPE_NEW == (subspace->getTypeFlags() & MEMORY_TYPE_NEW)) {
-			if ((UDATA)lowAddress < hashData->hashData1) {
+			if (hashData->hashData1 == (UDATA)highAddress) {
+				/* Expanding low bound */
 				hashData->hashData1 = (UDATA)lowAddress;
-			}
-			if ((UDATA)highAddress > hashData->hashData2) {
+			} else if (hashData->hashData2 == (UDATA)lowAddress) {
+				/* Expanding high bound */
+				hashData->hashData2 = (UDATA)highAddress;
+			} else {
+				/* First expand */
+				Assert_MM_true(UDATA_MAX == hashData->hashData1);
+				Assert_MM_true(0 == hashData->hashData2);
+				hashData->hashData1 = (UDATA)lowAddress;
 				hashData->hashData2 = (UDATA)highAddress;
 			}
 		}
@@ -237,11 +211,18 @@ MM_GCExtensions::identityHashDataRemoveRange(MM_EnvironmentBase *env, MM_MemoryS
 	J9IdentityHashData* hashData = getJavaVM()->identityHashData;
 	if (J9_IDENTITY_HASH_SALT_POLICY_STANDARD == hashData->hashSaltPolicy) {
 		if (MEMORY_TYPE_NEW == (subspace->getTypeFlags() & MEMORY_TYPE_NEW)) {
-			if ((UDATA)lowAddress > hashData->hashData1) {
-				hashData->hashData1 = (UDATA)lowAddress;
-			}
-			if ((UDATA)highAddress < hashData->hashData2) {
-				hashData->hashData2 = (UDATA)highAddress;
+			if (hashData->hashData1 == (UDATA)lowAddress) {
+				/* Contracting low bound */
+				Assert_MM_true(hashData->hashData1 <= (UDATA)highAddress);
+				Assert_MM_true((UDATA)highAddress <= hashData->hashData2);
+				hashData->hashData1 = (UDATA)highAddress;
+			} else if (hashData->hashData2 == (UDATA)highAddress) {
+				/* Contracting high bound */
+				Assert_MM_true(hashData->hashData1 <= (UDATA)lowAddress);
+				Assert_MM_true((UDATA)lowAddress <= hashData->hashData2);
+				hashData->hashData2 = (UDATA)lowAddress;
+			} else {
+				Assert_MM_unreachable();
 			}
 		}
 	}
@@ -251,4 +232,52 @@ void
 MM_GCExtensions::updateIdentityHashDataForSaltIndex(UDATA index)
 {
 	getJavaVM()->identityHashData->hashSaltTable[index] = (U_32)convertValueToHash(getJavaVM(), getJavaVM()->identityHashData->hashSaltTable[index]);
+}
+
+/*
+ * computeDefaultMaxHeapForJava is for Java only, it will be called during gcParseCommandLineAndInitializeWithValues(),
+ *  computeDefaultMaxHeap() will still be called during MM_GCExtensionsBase::initialize(), computeDefaultMaxHeapForJava() can overwrite value of memoryMax.
+ */
+void
+MM_GCExtensions::computeDefaultMaxHeapForJava(bool enableOriginalJDK8HeapSizeCompatibilityOption)
+{
+	OMRPORT_ACCESS_FROM_OMRVM(_omrVM);
+
+	if (OMR_CGROUP_SUBSYSTEM_MEMORY == omrsysinfo_cgroup_are_subsystems_enabled(OMR_CGROUP_SUBSYSTEM_MEMORY)) {
+		if (omrsysinfo_cgroup_is_memlimit_set()) {
+			/* If running in a cgroup with memory limit > 1G, reserve at-least 512M for JVM's internal requirements
+			 * like JIT compilation etc, and extend default max heap memory to at-most 75% of cgroup limit.
+			 * The value reserved for JVM's internal requirements excludes heap. This value is a conservative
+			 * estimate of the JVM's internal requirements, given that one compilation thread can use up to 256M.
+			 */
+#define OPENJ9_IN_CGROUP_NATIVE_FOOTPRINT_EXCLUDING_HEAP ((U_64)512 * 1024 * 1024)
+			memoryMax = (uintptr_t)OMR_MAX((int64_t)(usablePhysicalMemory / 2), (int64_t)(usablePhysicalMemory - OPENJ9_IN_CGROUP_NATIVE_FOOTPRINT_EXCLUDING_HEAP));
+			memoryMax = (uintptr_t)OMR_MIN(memoryMax, (usablePhysicalMemory / 4) * 3);
+#undef OPENJ9_IN_CGROUP_NATIVE_FOOTPRINT_EXCLUDING_HEAP
+		}
+	}
+
+#if defined(OMR_ENV_DATA64)
+	if (!enableOriginalJDK8HeapSizeCompatibilityOption) {
+		/* extend java default max memory to 25% of usable RAM */
+		memoryMax = OMR_MAX(memoryMax, usablePhysicalMemory / 4);
+	}
+
+	/* limit maxheapsize up to MAXIMUM_HEAP_SIZE_RECOMMENDED_FOR_3BIT_SHIFT_COMPRESSEDREFS, then can set 3bit compressedrefs as the default */
+	memoryMax = OMR_MIN(memoryMax, MAXIMUM_HEAP_SIZE_RECOMMENDED_FOR_3BIT_SHIFT_COMPRESSEDREFS);
+#endif /* OMR_ENV_DATA64 */
+
+	memoryMax = MM_Math::roundToFloor(heapAlignment, memoryMax);
+	maxSizeDefaultMemorySpace = memoryMax;
+}
+
+MM_OwnableSynchronizerObjectList *
+MM_GCExtensions::getOwnableSynchronizerObjectListsExternal(J9VMThread *vmThread)
+{
+	if (isConcurrentScavengerInProgress()) {
+		MM_EnvironmentBase *env = MM_EnvironmentBase::getEnvironment(vmThread->omrVMThread);
+		((MM_MemorySpace *)vmThread->omrVMThread->memorySpace)->localGarbageCollect(env, J9MMCONSTANT_IMPLICIT_GC_COMPLETE_CONCURRENT);
+	}
+
+	return ownableSynchronizerObjectLists;
 }

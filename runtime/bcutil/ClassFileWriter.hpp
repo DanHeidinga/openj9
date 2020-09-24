@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2014 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -34,6 +34,7 @@
 #include "util_api.h"
 
 #include "BuildResult.hpp"
+#include "VMHelpers.hpp"
 
 class ClassFileWriter {
 /*
@@ -99,7 +100,7 @@ private:
 		case CFR_CONSTANT_Class:
 		case CFR_CONSTANT_Utf8: {
 			J9UTF8 *utf8 = (J9UTF8 *) e->address;
-			return computeHashForUTF8(J9UTF8_DATA(utf8), J9UTF8_LENGTH(utf8));
+			return VM_VMHelpers::computeHashForUTF8(J9UTF8_DATA(utf8), J9UTF8_LENGTH(utf8));
 		}
 		default:
 			/* Mix cpType into the 4th byte of the address, which is not likely to vary much within the ROM class */
@@ -289,6 +290,7 @@ private:
 	void analyzeInterfaces();
 	void analyzeFields();
 	void analyzeMethods();
+	void analyzeRecordAttribute();
 
 	void writeClassFile();
 	void writeConstantPool();
@@ -309,6 +311,7 @@ private:
 	void writeTypeAnnotationsAttribute(U_32 *typeAnnotationsData);
 	void writeAnnotationDefaultAttribute(U_32 *annotationsDefaultData);
 	void writeAttributeHeader(J9UTF8 * name, U_32 length);
+	void writeRecordAttribute();
 
 	/* Similar to ClassFileOracle::computeSendSlotCount().
 	 * This is used to get the argument count for the method called using invokeinterface bytecode.
@@ -335,7 +338,7 @@ public:
 		, _originalClassName(NULL)
 	{
 		/* anonClasses have the following name format: '[originalName]/[ROMSegmentAddress]' */
-		if (J9_ARE_ALL_BITS_SET(_romClass->extraModifiers, J9AccClassAnonClass)) {
+		if (J9_ARE_ANY_BITS_SET(_romClass->extraModifiers, J9AccClassAnonClass | J9AccClassHidden)) {
 			PORT_ACCESS_FROM_JAVAVM(_javaVM);
 			_isAnon = true;
 			_anonClassName = J9ROMCLASS_CLASSNAME(_romClass);

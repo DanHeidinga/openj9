@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -38,6 +38,7 @@
 #include "ReferenceObjectBuffer.hpp"
 #include "RootScanner.hpp"
 #include "Scavenger.hpp"
+#include "ScavengerDelegate.hpp"
 #include "ScavengerRootClearer.hpp"
 #include "ScavengerThreadRescanner.hpp"
 #include "StackSlotValidator.hpp"
@@ -56,6 +57,7 @@ class MM_ScavengerRootScanner : public MM_RootScanner
 private:
 	MM_Scavenger *_scavenger;
 	MM_ScavengerRootClearer _rootClearer;
+	MM_ScavengerDelegate *_scavengerDelegate;
 
 protected:
 
@@ -77,6 +79,7 @@ public:
 		: MM_RootScanner(env)
 		, _scavenger(scavenger)
 		, _rootClearer(env, scavenger)
+		, _scavengerDelegate(scavenger->getDelegate())
 	{
 		_typeId = __FUNCTION__;
 		setNurseryReferencesOnly(true);
@@ -146,7 +149,7 @@ public:
 	{
 		reportScanningStarted(RootScannerEntity_FinalizableObjects);
 		/* synchronization can be expensive so skip it if there's no work to do */
-		if (_clij->scavenger_getShouldScavengeFinalizableObjects()) {
+		if (_scavengerDelegate->getShouldScavengeFinalizableObjects()) {
 			if (env->_currentTask->synchronizeGCThreadsAndReleaseSingleThread(env, UNIQUE_ID)) {
 				scavengeFinalizableObjects(MM_EnvironmentStandard::getEnvironment(env));
 				env->_currentTask->releaseSynchronizedGCThreads(env);
@@ -170,9 +173,9 @@ public:
 			env->_cycleState->_referenceObjectOptions |= MM_CycleState::references_clear_weak;
 			env->_currentTask->releaseSynchronizedGCThreads(env);
 		}
-		Assert_GC_true_with_message(env, env->getGCEnvironment()->_referenceObjectBuffer->isEmpty(), "Non-empty reference buffer in MM_EnvironmentBase* env=%p\n", env);
+		Assert_GC_true_with_message(env, env->getGCEnvironment()->_referenceObjectBuffer->isEmpty(), "Non-empty reference buffer in MM_EnvironmentBase* env=%p before scanClearable\n", env);
 		_rootClearer.scanClearable(env);
-		Assert_GC_true_with_message(env, env->getGCEnvironment()->_referenceObjectBuffer->isEmpty(), "Non-empty reference buffer in MM_EnvironmentBase* env=%p\n", env);
+		Assert_GC_true_with_message(env, _extensions->isScavengerBackOutFlagRaised() || env->getGCEnvironment()->_referenceObjectBuffer->isEmpty(), "Non-empty reference buffer in MM_EnvironmentBase* env=%p after scanClearable\n", env);
 	}
 
 	virtual void
@@ -185,7 +188,7 @@ public:
 		 * However Concurrent Scavenger runs might be interlaced with STW Scavenger time to time
 		 * (for example for reducing amount of floating garbage)
 		 */
-		if (_scavenger->isConcurrentInProgress())
+		if (_scavenger->isConcurrentCycleInProgress())
 #endif /* defined(OMR_GC_CONCURRENT_SCAVENGER) */
 		{
 			MM_RootScanner::scanJNIWeakGlobalReferences(env);
@@ -195,7 +198,14 @@ public:
 	virtual void scanRoots(MM_EnvironmentBase *env) 
 	{
 		MM_RootScanner::scanRoots(env);
-		
+		/* Determine if there is unfinalized work (any newly created finalizable objects
+		 * since last GC) to be done later during clearable phase.
+		 * In CS this will be called in first STW increment.
+		 * Doing so may conclude there is no unfinalize work, while new finalizable objects
+		 * can be created later during concurrent phase of this cycle. It's still ok,
+		 * since these objects cannot die (as any newly allocated objects during CS),
+		 * hence not subject for unfinalized processing.
+		 */ 
 		startUnfinalizedProcessing(env);
 	}
 

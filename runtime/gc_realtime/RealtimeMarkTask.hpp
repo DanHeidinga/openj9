@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -24,14 +23,13 @@
 #if !defined(REALTIMEMARKTASK_HPP_)
 #define REALTIMEMARKTASK_HPP_
 
-#include "j9.h"
-#include "j9cfg.h"
-#include "j9modron.h"
+#include "omr.h"
+#include "omrcfg.h"
 
 #include "CycleState.hpp"
 #include "IncrementalParallelTask.hpp"
 
-class MM_Dispatcher;
+class MM_ParallelDispatcher;
 class MM_EnvironmentBase;
 class MM_RealtimeGC;
 class MM_RealtimeMarkingScheme;
@@ -46,13 +44,13 @@ private:
 	MM_CycleState *_cycleState;  /**< Collection cycle state active for the task */
 
 public:
-	virtual UDATA getVMStateID() { return J9VMSTATE_GC_MARK; };
+	virtual uintptr_t getVMStateID() { return OMRVMSTATE_GC_MARK; };
 	
 	virtual void run(MM_EnvironmentBase *env);
 	virtual void setup(MM_EnvironmentBase *env);
 	virtual void cleanup(MM_EnvironmentBase *env);
 	
-	MM_RealtimeMarkTask(MM_EnvironmentBase *env, MM_Dispatcher *dispatcher, MM_RealtimeGC *realtimeGC, MM_RealtimeMarkingScheme *markingScheme, MM_CycleState *cycleState) :
+	MM_RealtimeMarkTask(MM_EnvironmentBase *env, MM_ParallelDispatcher *dispatcher, MM_RealtimeGC *realtimeGC, MM_RealtimeMarkingScheme *markingScheme, MM_CycleState *cycleState) :
 		MM_IncrementalParallelTask(env, dispatcher)
 		,_markingScheme(markingScheme)
 		,_cycleState(cycleState)

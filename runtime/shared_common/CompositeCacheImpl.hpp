@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2017 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -93,7 +93,7 @@ public:
 			J9SharedClassPreinitConfig* piconfig, U_32* actualSize, UDATA* localCrashCntr);
 #endif /* J9SHR_CACHELET_SUPPORT */
 	
-	static SH_CompositeCacheImpl* newInstance(J9JavaVM* vm, J9SharedClassConfig* sharedClassConfig, SH_CompositeCacheImpl* memForConstructor, const char* cacheName, I_32 newPersistentCacheReqd, bool startupForStats);
+	static SH_CompositeCacheImpl* newInstance(J9JavaVM* vm, J9SharedClassConfig* sharedClassConfig, SH_CompositeCacheImpl* memForConstructor, const char* cacheName, I_32 newPersistentCacheReqd, bool startupForStats, I_8 layer);
 	
 	IDATA startup(J9VMThread* currentThread, J9SharedClassPreinitConfig* piconfig, BlockPtr cacheMemoryUT, U_64* runtimeFlags, UDATA verboseFlags,
 			const char* rootName, const char* ctrlDirName, UDATA cacheDirPerm, U_32* actualSize, UDATA* localCrashCntr, bool isFirstStart, bool* cacheHasIntegrity);
@@ -187,6 +187,10 @@ public:
 	void getMinMaxBytes(U_32 *softmx, I_32 *minAOT, I_32 *maxAOT, I_32 *minJIT, I_32 *maxJIT);
 
 	UDATA getFreeBytes(void);
+
+	UDATA getMetadataBytes(void) const;
+
+	UDATA getClassesBytes(void) const;
 	
 	UDATA getFreeAvailableBytes(void);
 
@@ -198,9 +202,9 @@ public:
 
 	U_32 getFreeDebugSpaceBytes(void);
 
-	U_32 getLineNumberTableBytes(void);
+	U_32 getLineNumberTableBytes(void) const;
 
-	U_32 getLocalVariableTableBytes(void);
+	U_32 getLocalVariableTableBytes(void) const;
 
 	UDATA getFreeReadWriteBytes(void);
 	
@@ -226,7 +230,9 @@ public:
 
 	bool isAddressInROMClassSegment(const void* address);
 
-	bool isAddressInCache(const void* address);
+	bool isAddressInMetaDataArea(const void* address) const;
+
+	bool isAddressInCache(const void* address, bool includeHeaderReadWriteArea = true);
 
 	void runExitCode(J9VMThread *currentThread);
 	
@@ -263,6 +269,10 @@ public:
 	SH_CompositeCacheImpl* getNext(void);
 	
 	void setNext(SH_CompositeCacheImpl* next);
+
+	void setPrevious(SH_CompositeCacheImpl* previous);
+	
+	SH_CompositeCacheImpl* getPrevious(void);
 
 	U_32 getBytesRequiredForItemWithAlign(ShcItem* itemToWrite, U_32 align, U_32 alignOffset);
 
@@ -336,7 +346,11 @@ public:
 	void * getClassDebugDataStartAddress(void);
 
 	IDATA startupForStats(J9VMThread* currentThread, SH_OSCache * oscache, U_64 * runtimeFlags, UDATA verboseFlags);
-
+	
+	IDATA startupNonTopLayerForStats(J9VMThread* currentThread, const char* cacheDirName, const char* cacheName, U_32 cacheType, I_8 layer, U_64 * runtimeFlags, UDATA verboseFlags);
+	
+	IDATA getNonTopLayerCacheInfo(J9JavaVM* vm, const char* ctrlDirName, UDATA groupPerm, SH_OSCache_Info *cacheInfo);
+	
 	IDATA shutdownForStats(J9VMThread* currentThread);
 
 #if defined(J9SHR_CACHELET_SUPPORT)
@@ -396,7 +410,7 @@ public:
 	bool canStoreClasspaths(void) const;
 
 	IDATA restoreFromSnapshot(J9JavaVM* vm, const char* cacheName, bool* cacheExist);
-	void dontNeedMetadata(J9VMThread *currentThread, const void* startAddress, size_t length);
+	void dontNeedMetadata(J9VMThread *currentThread);
 
 	void changePartialPageProtection(J9VMThread *currentThread, void *addr, bool readOnly, bool phaseCheck = true);
 
@@ -410,6 +424,28 @@ public:
 	
 	void increaseUnstoredBytes(U_32 blockBytes, U_32 aotBytes, U_32 jitBytes);
 
+	bool isNewCache(void);
+
+	bool updateAccessedShrCacheMetadataBounds(J9VMThread* currentThread, uintptr_t const * metadataAddress);
+
+	bool isAddressInReleasedMetaDataBounds(J9VMThread* currentThread, UDATA metadataAddress) const;
+
+	const char* getCacheUniqueID(J9VMThread* currentThread) const;
+
+	const char* getCacheName(void) const;
+	
+	I_8 getLayer(void) const;
+
+	U_64 getCreateTime(void) const;
+
+	bool verifyCacheUniqueID(J9VMThread* currentThread, const char* expectedCacheUniqueID) const;
+	
+	void setMetadataMemorySegment(J9MemorySegment** segment);
+	
+	const char* getCacheNameWithVGen(void) const;
+	
+	bool hasReadMutex(J9VMThread* currentThread) const;
+
 private:
 	J9SharedClassConfig* _sharedClassConfig;
 	SH_OSCache* _oscache;
@@ -421,6 +457,7 @@ private:
 	const char* _cacheName;
 	
 	SH_CompositeCacheImpl* _next;
+	SH_CompositeCacheImpl* _previous;
 	SH_CompositeCacheImpl* _parent;
 	SH_CompositeCacheImpl* _ccHead; /* first supercache, if chained */
 	
@@ -495,6 +532,14 @@ private:
 
 	bool _reduceStoreContentionDisabled;
 
+	bool _initializingNewCache;
+
+	UDATA  _minimumAccessedShrCacheMetadata;
+
+	UDATA _maximumAccessedShrCacheMetadata;
+	
+	I_8 _layer;
+
 #if defined(J9SHR_CACHELET_SUPPORT)
 	/**
 	 * @bug THIS IS A HORRIBLE HACK FOR CMVC 141328. THIS WILL NOT WORK FOR NON-READONLY CACHES.
@@ -541,8 +586,8 @@ private:
 	void incReaderCount(J9VMThread* currentThread);
 	void decReaderCount(J9VMThread* currentThread);
 
-	void initialize(J9JavaVM* vm, BlockPtr memForConstructor, J9SharedClassConfig* sharedClassConfig, const char* cacheName, I_32 cacheTypeRequired, bool startupForStats);
-	void initializeWithCommonInfo(J9JavaVM* vm, J9SharedClassConfig* sharedClassConfig, BlockPtr memForConstructor, const char* cacheName, I_32 newPersistentCacheReqd, bool startupForStats);
+	void initialize(J9JavaVM* vm, BlockPtr memForConstructor, J9SharedClassConfig* sharedClassConfig, const char* cacheName, I_32 cacheTypeRequired, bool startupForStats, I_8 layer);
+	void initializeWithCommonInfo(J9JavaVM* vm, J9SharedClassConfig* sharedClassConfig, BlockPtr memForConstructor, const char* cacheName, I_32 newPersistentCacheReqd, bool startupForStats, I_8 layer);
 	void initCommonCCInfoHelper();
 
 #if defined(J9SHR_CACHELET_SUPPORT)
@@ -603,7 +648,7 @@ private:
 		_romClassProtectEnd = pointer;
 	}
 
-	class SH_SharedCacheHeaderInit : public SH_OSCache::SH_OSCacheInitialiser
+	class SH_SharedCacheHeaderInit : public SH_OSCache::SH_OSCacheInitializer
 	{
 	protected:
 		void *operator new(size_t size, void *memoryPtr) { return memoryPtr; };

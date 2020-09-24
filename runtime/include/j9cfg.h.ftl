@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1998, 2018 IBM Corp. and others
+ * Copyright (c) 1998, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -41,6 +41,9 @@ extern "C" {
 
 #define EsExtraVersionString ""
 
+#define JAVA_SPEC_VERSION ${uma.spec.properties.JAVA_SPEC_VERSION.value}
+#define JAVA_SPEC_VERSION_STRING "${uma.spec.properties.JAVA_SPEC_VERSION.value}"
+
 /*  Note: The following defines record flags used to build VM.  */
 /*  Changing them here does not remove the feature and may cause linking problems. */
 
@@ -56,6 +59,10 @@ extern "C" {
 #undef ${flag.cname}
 </#if>
 </#list>
+
+#if defined(J9VM_ENV_DATA64)
+#define J9VM_OPT_MULTI_LAYER_SHARED_CLASS_CACHE
+#endif
 
 #ifdef __cplusplus
 }

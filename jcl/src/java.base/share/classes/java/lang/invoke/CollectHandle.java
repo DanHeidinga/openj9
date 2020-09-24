@@ -1,6 +1,6 @@
-/*[INCLUDE-IF Sidecar17]*/
+/*[INCLUDE-IF Sidecar17 & !OPENJDK_METHODHANDLES]*/
 /*******************************************************************************
- * Copyright (c) 2009, 2016 IBM Corp. and others
+ * Copyright (c) 2009, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -23,6 +23,10 @@
 package java.lang.invoke;
 
 import com.ibm.oti.util.Msg;
+import java.lang.reflect.Array;
+/*[IF Java15]*/
+import java.util.List;
+/*[ENDIF] Java15 */
 
 /* CollectHandle is a MethodHandle subclass used to call another MethodHandle.  
  * It accepts the incoming arguments and collects the requested number
@@ -41,12 +45,18 @@ final class CollectHandle extends MethodHandle {
 	final int collectArraySize; /* Size of the collect array */
 	@VMCONSTANTPOOL_FIELD
 	final int collectPosition; /* The starting position of arguments to collect */
+	final Object emptyArray;
 	
 	CollectHandle(MethodHandle next, int collectArraySize, int collectPosition) {
 		super(collectMethodType(next.type(), collectArraySize, collectPosition), KIND_COLLECT, new int[]{collectArraySize, collectPosition});
 		this.collectPosition = collectPosition;
 		this.collectArraySize = collectArraySize;
 		this.next = next;
+		if (collectArraySize == 0) {
+			emptyArray = Array.newInstance(next.type.arguments[collectPosition].getComponentType(), 0);
+		} else {
+			emptyArray = null;
+		}
 	}
 	
 	CollectHandle(CollectHandle original, MethodType newType) {
@@ -54,6 +64,7 @@ final class CollectHandle extends MethodHandle {
 		this.collectPosition = original.collectPosition;
 		this.collectArraySize = original.collectArraySize;
 		this.next = original.next;
+		this.emptyArray = original.emptyArray;
 	}
 
 	private static final MethodType collectMethodType(MethodType type, int collectArraySize, int collectPosition) {
@@ -90,6 +101,14 @@ final class CollectHandle extends MethodHandle {
 		return new CollectHandle(this, newType);
 	}
 
+/*[IF Java15]*/
+	@Override
+	boolean addRelatedMHs(List<MethodHandle> relatedMHs) {
+		relatedMHs.add(next);
+		return true;
+	}
+/*[ENDIF] Java15 */
+
 	// {{{ JIT support
 
 	private static final ThunkTable _thunkTable = new ThunkTable();
@@ -99,10 +118,10 @@ final class CollectHandle extends MethodHandle {
 		return thunkTable().get(new ThunkKeyWithIntArray(ThunkKey.computeThunkableType(type()), collectArguments));
 	}
 
-	private final Object allocateArray() {
-		return java.lang.reflect.Array.newInstance(
-			next.type().parameterType(collectPosition).getComponentType(),
-			collectArraySize);
+	private static final Object allocateArray(CollectHandle mh) {
+		return Array.newInstance(
+			mh.next.type.arguments[mh.collectPosition].getComponentType(),
+			mh.collectArraySize);
 	}
 
 	private static native int numArgsToCollect();
@@ -118,7 +137,7 @@ final class CollectHandle extends MethodHandle {
 			doCustomizationLogic();
 		}
 		ILGenMacros.populateArray(
-			ILGenMacros.push(allocateArray()),
+			ILGenMacros.push(collectArraySize == 0 ? emptyArray : allocateArray(this)),
 			ILGenMacros.middleN(collectionStart(), numArgsToCollect(), argPlaceholder));
 		return ILGenMacros.invokeExact_X(
 			next, 

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -56,32 +56,37 @@ class MM_ScavengerForwardedHeader
 {
 public:
 protected:
-
-	struct MutableHeaderFields {
-		/* class slot must be always aligned to UDATA */
-		j9objectclass_t clazz;
-
-#if defined (J9VM_INTERP_COMPRESSED_OBJECT_HEADER)
-		/*
-		 * this field is used indirectly by extending of clazz field (8 bytes starting from &MutableHeaderFields.clazz)
-		 * must be here to reserve space if clazz field is 4 bytes long
-		 */
-		U_32 overlap;
-#endif /* defined (J9VM_INTERP_COMPRESSED_OBJECT_HEADER) */
-	};
-	
 	omrobjectptr_t _objectPtr; /**< the object on which to act */
-	MutableHeaderFields _preserved; /**< a backup copy of the header fields which may be modified by this class */
+	UDATA _preserved; /**< a backup copy of the header fields which may be modified by this class */
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+	bool _compressObjectReferences;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 private:
 
 public:
 	
 	/**
-	 * Called at the start of a copy-forward (minimally, must be called at least once after trace is enabled but before we use this class) to validate
-	 * sizing and object geometry assumptions.
+	 * Return back true if object references are compressed
+	 * @return true, if object references are compressed
 	 */
-	static void validateAssumptions();
-	
+	MMINLINE bool
+	compressObjectReferences()
+	{
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+#if defined(OMR_GC_FULL_POINTERS)
+#if defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES)
+		return (bool)OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES;
+#else /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+		return _compressObjectReferences;
+#endif /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+#else /* defined(OMR_GC_FULL_POINTERS) */
+		return true;
+#endif /* defined(OMR_GC_FULL_POINTERS) */
+#else /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return false;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+	}
+
 	/**
 	 * Update this object to be forwarded to destinationObjectPtr using atomic operations.
 	 * If the update fails (because the object has already been forwarded), read the forwarded
@@ -120,7 +125,7 @@ public:
 	MMINLINE bool
 	isForwardedPointer()
 	{
-		return FORWARDED_TAG == ((UDATA)_preserved.clazz & FORWARDED_TAG);
+		return FORWARDED_TAG == (getPreservedClassAndTags() & FORWARDED_TAG);
 	}
 	
 	/**
@@ -131,7 +136,7 @@ public:
 	MMINLINE bool
 	isIndexable()
 	{
-		J9Class* preservedClass = (J9Class*)((UDATA)_preserved.clazz & J9GC_J9OBJECT_CLAZZ_ADDRESS_MASK);
+		J9Class* preservedClass = (J9Class*)(getPreservedClassAndTags() & J9GC_J9OBJECT_CLAZZ_ADDRESS_MASK);
 		return J9GC_CLASS_IS_ARRAY(preservedClass);
 	}
 
@@ -143,7 +148,7 @@ public:
 	MMINLINE bool
 	hasBeenMoved()
 	{
-		return (OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS == ((UDATA)_preserved.clazz & OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS));
+		return (OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS == (getPreservedClassAndTags() & OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS));
 	}
 
 	/**
@@ -154,7 +159,7 @@ public:
 	MMINLINE bool
 	hasBeenHashed()
 	{
-		return (0 != ((UDATA)_preserved.clazz & (OBJECT_HEADER_HAS_BEEN_HASHED_IN_CLASS | OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS)));
+		return (0 != (getPreservedClassAndTags() & (OBJECT_HEADER_HAS_BEEN_HASHED_IN_CLASS | OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS)));
 	}
 
 	/**
@@ -165,7 +170,7 @@ public:
 	MMINLINE bool
 	isHasBeenHashedBitSet()
 	{
-		return (OBJECT_HEADER_HAS_BEEN_HASHED_IN_CLASS == ((UDATA)_preserved.clazz & OBJECT_HEADER_HAS_BEEN_HASHED_IN_CLASS));
+		return (OBJECT_HEADER_HAS_BEEN_HASHED_IN_CLASS == (getPreservedClassAndTags() & OBJECT_HEADER_HAS_BEEN_HASHED_IN_CLASS));
 	}
 
 	/**
@@ -179,7 +184,7 @@ public:
 	MMINLINE bool
 	isReverseForwardedPointer()
 	{
-		return J9_GC_MULTI_SLOT_HOLE == ((UDATA)_preserved.clazz & J9_GC_OBJ_HEAP_HOLE_MASK);
+		return J9_GC_MULTI_SLOT_HOLE == (getPreservedClassAndTags() & J9_GC_OBJ_HEAP_HOLE_MASK);
 	}
 	
 	/**
@@ -211,6 +216,27 @@ public:
 	}
 
 	/**
+	 * Fetch the class portion of the preserved data (with any tags).
+	 * 
+	 * @return the class and tags
+	 */
+	MMINLINE UDATA
+	getPreservedClassAndTags()
+	{
+		UDATA result = _preserved;
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+		if (compressObjectReferences()) {
+#if defined(J9VM_ENV_LITTLE_ENDIAN)
+			result &= 0xFFFFFFFF;
+#else /* defined(J9VM_ENV_LITTLE_ENDIAN) */
+			result >>= 32;
+#endif /* defined(J9VM_ENV_LITTLE_ENDIAN) */
+		} 
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return result;
+	}
+
+	/**
 	 * If the object has not been forwarded, return the class pointer
 	 * of the object. Do not attempt to read the class pointer of
 	 * the object directly, as it may have been updated asynchronously
@@ -222,7 +248,7 @@ public:
 	getPreservedClass()
 	{
 		Assert_MM_false(isForwardedPointer());
-		return (J9Class*)((UDATA)_preserved.clazz & J9GC_J9OBJECT_CLAZZ_ADDRESS_MASK);
+		return (J9Class*)(getPreservedClassAndTags() & J9GC_J9OBJECT_CLAZZ_ADDRESS_MASK);
 	}
 	
 	/**
@@ -235,7 +261,7 @@ public:
 	MMINLINE UDATA
 	getPreservedFlags()
 	{
-		return (UDATA)_preserved.clazz & J9GC_J9OBJECT_CLAZZ_FLAGS_MASK;
+		return (UDATA)getPreservedClassAndTags() & J9GC_J9OBJECT_CLAZZ_FLAGS_MASK;
 	}
 
 	/**
@@ -243,7 +269,7 @@ public:
 	 */
 	MMINLINE UDATA getPreservedAge()
 	{
-		return (UDATA)_preserved.clazz & OBJECT_HEADER_AGE_MASK;
+		return (UDATA)getPreservedClassAndTags() & OBJECT_HEADER_AGE_MASK;
 	}
 	/**
 	 * Get the reverse forwarded pointer for this object.
@@ -254,27 +280,53 @@ public:
 	getReverseForwardedPointer()
 	{
 		Assert_MM_true(isReverseForwardedPointer());
-		return (omrobjectptr_t)MM_HeapLinkedFreeHeader::getHeapLinkedFreeHeader(_objectPtr)->getNext();
+		return (omrobjectptr_t)MM_HeapLinkedFreeHeader::getHeapLinkedFreeHeader(_objectPtr)->getNext(compressObjectReferences());
 	}
 	
 	/**
 	 * Construct a new ScavengerForwardedHeader for the specified object.
 	 * Any fields which may be modified by forwarding are cached at this
 	 * time.
-	 * 
+	 *
+	 * The class slot is always aligned to UDATA (it is at offset 0, compressed or not)
+	 * so forwarded pointer is stored in UDATA word starts class slot address
+	 * (overlap next slot for compressed). So, for compressed this read fulfill clazz and
+	 * overlap fields at the same time.
+	 *
 	 * @parm[in] object the object to be used
+	 * @parm[in] extensions the current GC extensions
 	 */
 	MMINLINE
-	MM_ScavengerForwardedHeader(omrobjectptr_t object) :
+	MM_ScavengerForwardedHeader(omrobjectptr_t object, MM_GCExtensionsBase *extensions) :
 		_objectPtr(object)
+		, _preserved(*(volatile UDATA *)_objectPtr)
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+		, _compressObjectReferences(extensions->compressObjectReferences())
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 	{
-		volatile MutableHeaderFields* originalHeader = (volatile MutableHeaderFields *)_objectPtr;
-		/* class slot is always aligned to UDATA (compressed or not)
-		 * so forwarded pointer is stored in UDATA word starts class slot address
-		 * (overlap next slot for compressed)
-		 * So, for compressed this read fulfill clazz and overlap fields at the same time
-		 */
-		*(UDATA *)&_preserved.clazz = *((UDATA *)&originalHeader->clazz);
+	}
+
+	/**
+	 * Construct a new ScavengerForwardedHeader for the specified object.
+	 * Any fields which may be modified by forwarding are cached at this
+	 * time.
+	 * 
+	 * The class slot is always aligned to UDATA (it is at offset 0, compressed or not)
+	 * so forwarded pointer is stored in UDATA word starts class slot address
+	 * (overlap next slot for compressed). So, for compressed this read fulfill clazz and
+	 * overlap fields at the same time.
+	 *
+	 * @parm[in] object the object to be used
+	 * @parm[in] compress boolean indicating whether compressed references is in use
+	 */
+	MMINLINE
+	MM_ScavengerForwardedHeader(omrobjectptr_t object, bool compress) :
+		_objectPtr(object)
+		, _preserved(*(volatile UDATA *)_objectPtr)
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+		, _compressObjectReferences(compress)
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
+	{
 	}
 
 	/**
@@ -288,13 +340,11 @@ public:
 	MMINLINE void
 	fixupCopiedObject(omrobjectptr_t copiedObjectPtr)
 	{
-		volatile MutableHeaderFields* newHeader = (volatile MutableHeaderFields *)copiedObjectPtr;
-
 		/* class slot is always aligned to UDATA (compressed or not)
 		 * so forwarded pointer is stored in UDATA word starts class slot address
 		 * (overlap next slot for compressed)
 		 */
-		*(UDATA *)&newHeader->clazz = *(UDATA *)&_preserved.clazz;
+		*(UDATA*)copiedObjectPtr = _preserved;
 	}
 	/**
 	 * Update the new version of this object after it has been copied. This undoes any damaged
@@ -308,38 +358,42 @@ public:
 	MMINLINE void
 	fixupCopiedObject(omrobjectptr_t copiedObjectPtr, UDATA newAge, bool setOldFlag)
 	{
-		volatile MutableHeaderFields* newHeader = (volatile MutableHeaderFields *)copiedObjectPtr;
-		
 		/* restore class slot from local copy, change age flags in low bits of class slot at the same time */
-		newHeader->clazz = (j9objectclass_t)(((UDATA)_preserved.clazz & ~OBJECT_HEADER_AGE_MASK) | newAge);
-
-#if defined (J9VM_INTERP_COMPRESSED_OBJECT_HEADER)
-		/* first object slot is destroyed, must be restored from local copy as well */
-		newHeader->overlap = _preserved.overlap;
-#endif /* defined (J9VM_INTERP_COMPRESSED_OBJECT_HEADER) */
+		UDATA clazz = (getPreservedClassAndTags() & ~OBJECT_HEADER_AGE_MASK) | newAge;
+#if defined(OMR_GC_COMPRESSED_POINTERS) && !defined(J9VM_ENV_LITTLE_ENDIAN)
+		if (compressObjectReferences()) {
+			/* compressed big endian - classAndFlags in low memory (high order of the UDATA, overlap in high memory */
+			clazz = (clazz << 32) | (_preserved & 0xFFFFFFFF);
+		}
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && !defined(J9VM_ENV_LITTLE_ENDIAN) */
+		*(UDATA*)copiedObjectPtr = clazz;
 	}
 
 	MMINLINE U_32
 	getPreservedIndexableSize()
 	{
-#if defined (J9VM_INTERP_COMPRESSED_OBJECT_HEADER)
+		U_32 size = 0;
+
 		/* in compressed headers, the size of the object is stored in the other half of the UDATA read when we read clazz
 		 * so read it from there instead of the heap (since the heap copy would have been over-written by the forwarding
 		 * pointer if another thread copied the object underneath us).
 		 * In non-compressed, this field should still be readable out of the heap.
 		 */
-		U_32 size = _preserved.overlap;
-#else /* defined (J9VM_INTERP_COMPRESSED_OBJECT_HEADER) */
-		U_32 size = ((J9IndexableObjectContiguous *)_objectPtr)->size;
-#endif /* defined (J9VM_INTERP_COMPRESSED_OBJECT_HEADER) */
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
-		if (0 == size) {
-			/* Discontiguous */
-			size = ((J9IndexableObjectDiscontiguous *)_objectPtr)->size;
+		if (compressObjectReferences()) {
+			size = ((J9IndexableObjectContiguousCompressed *)&_preserved)->size;
+			if (0 == size) {
+				/* Discontiguous */
+				size = ((J9IndexableObjectDiscontiguousCompressed *)_objectPtr)->size;
+			}
+		} else {
+			size = ((J9IndexableObjectContiguousFull *)_objectPtr)->size;
+			if (0 == size) {
+				/* Discontiguous */
+				size = ((J9IndexableObjectDiscontiguousFull *)_objectPtr)->size;
+			}
 		}
-#endif
-		return size;
 
+		return size;
 	}
 
 	MMINLINE I_32 computeObjectHash(J9VMThread* vmThread)
@@ -372,21 +426,17 @@ protected:
 	getForwardedObjectNoCheck()
 	{
 		Assert_MM_true(isForwardedPointer());
+		UDATA forwardedObject = _preserved;
+#if defined(OMR_GC_COMPRESSED_POINTERS) && !defined(J9VM_ENV_LITTLE_ENDIAN)
+		if (compressObjectReferences()) {
+			/* Forwarding pointer has been stored endian-flipped - flip it back
+			 * (see MM_ScavengerForwardedHeader::setForwardedObject).
+			 */
+			forwardedObject = (forwardedObject >> 32) | (forwardedObject << 32);
+		}
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && !defined(J9VM_ENV_LITTLE_ENDIAN) */
 
-#if defined (J9VM_INTERP_COMPRESSED_OBJECT_HEADER) && !defined(J9VM_ENV_LITTLE_ENDIAN)
-		/* compressed big endian - read two halves separately */
-		U_32 low = _preserved.clazz & ~ALL_TAGS;
-		U_32 high = _preserved.overlap;
-		omrobjectptr_t forwardedObject = (omrobjectptr_t)((U_64)low | ((U_64)high << 32));
-
-#else /* defined (J9VM_INTERP_COMPRESSED_OBJECT_HEADER) && !defined(J9VM_ENV_LITTLE_ENDIAN) */
-
-		/* Little endian or not compressed - read all UDATA bytes at once */
-		omrobjectptr_t forwardedObject = (omrobjectptr_t)(*(UDATA *)(&_preserved.clazz) & ~ALL_TAGS);
-
-#endif /* defined (J9VM_INTERP_COMPRESSED_OBJECT_HEADER) && !defined(J9VM_ENV_LITTLE_ENDIAN) */
-
-		return forwardedObject;
+		return (omrobjectptr_t)(forwardedObject & ~ALL_TAGS);
 	}
 
 private:

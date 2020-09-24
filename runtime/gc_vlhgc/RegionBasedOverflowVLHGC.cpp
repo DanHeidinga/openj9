@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -89,9 +88,9 @@ MM_RegionBasedOverflowVLHGC::tearDown(MM_EnvironmentBase *env)
  * Empty a packet on overflow
  * 
  * Empty a packet to resolve overflow by dirtying the appropriate 
- * cards for each object withing a given packet
+ * cards for each object within a given packet
  * 
- * @param packet - Reference to packet to be empited
+ * @param packet - Reference to packet to be emptied
  * @param type - ignored for concurrent collector
  *  
  */
@@ -195,15 +194,15 @@ MM_RegionBasedOverflowVLHGC::overflowItemInternal(MM_EnvironmentBase *env, void 
 
 				bool referentMustBeCleared = false;
 				UDATA referenceObjectOptions = envVLHGC->_cycleState->_referenceObjectOptions;
-				UDATA referenceObjectType = J9CLASS_FLAGS(J9GC_J9OBJECT_CLAZZ(objectPtr)) & J9_JAVA_CLASS_REFERENCE_MASK;
+				UDATA referenceObjectType = J9CLASS_FLAGS(J9GC_J9OBJECT_CLAZZ(objectPtr, env)) & J9AccClassReferenceMask;
 				switch (referenceObjectType) {
-				case J9_JAVA_CLASS_REFERENCE_WEAK:
+				case J9AccClassReferenceWeak:
 					referentMustBeCleared = (0 != (referenceObjectOptions & MM_CycleState::references_clear_weak)) ;
 					break;
-				case J9_JAVA_CLASS_REFERENCE_SOFT:
+				case J9AccClassReferenceSoft:
 					referentMustBeCleared = (0 != (referenceObjectOptions & MM_CycleState::references_clear_soft));
 					break;
-				case J9_JAVA_CLASS_REFERENCE_PHANTOM:
+				case J9AccClassReferencePhantom:
 					referentMustBeCleared = (0 != (referenceObjectOptions & MM_CycleState::references_clear_phantom));
 					break;
 				default:
@@ -211,21 +210,21 @@ MM_RegionBasedOverflowVLHGC::overflowItemInternal(MM_EnvironmentBase *env, void 
 				}
 
 				if (referentMustBeCleared) {
-					GC_SlotObject referentPtr(envVLHGC->getOmrVM(), &J9GC_J9VMJAVALANGREFERENCE_REFERENT(envVLHGC, objectPtr));
+					GC_SlotObject referentPtr(envVLHGC->getOmrVM(), J9GC_J9VMJAVALANGREFERENCE_REFERENT_ADDRESS(envVLHGC, objectPtr));
 					referentPtr.writeReferenceToSlot(NULL);
 					J9GC_J9VMJAVALANGREFERENCE_STATE(envVLHGC, objectPtr) = GC_ObjectModel::REF_STATE_CLEARED;
 				}
 			}
 		} else if ((OMR_GC_CYCLE_TYPE_VLHGC_PARTIAL_GARBAGE_COLLECT == envVLHGC->_cycleState->_type) && (GC_ObjectModel::SCAN_OWNABLESYNCHRONIZER_OBJECT == scantype)) {
 			/* JAZZ 63834 handle new ownableSynchronizer processing in overflowed case
-		 	 * new processing currently only for CopyForwardScheme colloctor
+		 	 * new processing currently only for CopyForwardScheme collector
 		 	 */
 			if (isEvacuateRegion(region) && (NULL != _extensions->accessBarrier->isObjectInOwnableSynchronizerList(objectPtr))) {
 				/* To avoid adding duplication item (abort case the object need to be rescan and interregions remembered objects) 
 				 * To avoid adding constructing object 
 				 */
 				envVLHGC->getGCEnvironment()->_ownableSynchronizerObjectBuffer->add(envVLHGC, objectPtr);
-				if (envVLHGC->_cycleState->_shouldRunCopyForward) {
+				if (MM_CycleState::CT_PARTIAL_GARBAGE_COLLECTION == envVLHGC->_cycleState->_collectionType) {
 					envVLHGC->_copyForwardStats._ownableSynchronizerSurvived += 1;
 				} else {
 					envVLHGC->_markVLHGCStats._ownableSynchronizerSurvived += 1;

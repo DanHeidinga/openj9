@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2014 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -19,12 +19,13 @@
  *
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
+
 #include "YieldCollaborator.hpp"
 
 #include "Task.hpp"
 
 void
-MM_YieldCollaborator::resumeSlavesFromYield(MM_EnvironmentBase *env)
+MM_YieldCollaborator::resumeWorkersFromYield(MM_EnvironmentBase *env)
 {
 	omrthread_monitor_enter(*_mutex);
 	_yieldCount = 0;
@@ -33,39 +34,40 @@ MM_YieldCollaborator::resumeSlavesFromYield(MM_EnvironmentBase *env)
 	omrthread_monitor_notify_all(*_mutex);
 	omrthread_monitor_exit(*_mutex);
 }
+
 void
 MM_YieldCollaborator::yield(MM_EnvironmentBase *env)
 {
 	omrthread_monitor_enter(*_mutex);
 
 	_yieldCount += 1;
-	UDATA index = _yieldIndex;
+	uintptr_t index = _yieldIndex;
 	
 	/* because of sync sections nesting we have to do >= (instead of ==) */
-	if (_yieldCount + *_count >= env->_currentTask->getThreadCount() || env->_currentTask->isSynchronized() /* only master active */) {
-		/* CMVC 142132 We change the resume event, even if we are master thread (ie we do not explicitely notify ourselves).
-		 * This is to "clear" any pending event (like newPacket) that may wake up slave after this point
-		 * (when master thread thinks that every other GC thread is blocked) */
-		_resumeEvent = notifyMaster;
-		if (env->isMasterThread()) {
-			/* all slaves yielded/blocked - return right away */
+	if (_yieldCount + *_count >= env->_currentTask->getThreadCount() || env->_currentTask->isSynchronized() /* only main active */) {
+		/* CMVC 142132 We change the resume event, even if we are main thread (ie we do not explicitly notify ourselves).
+		 * This is to "clear" any pending event (like newPacket) that may wake up worker after this point
+		 * (when main thread thinks that every other GC thread is blocked) */
+		_resumeEvent = notifyMain;
+		if (env->isMainThread()) {
+			/* all workers yielded/blocked - return right away */
 			omrthread_monitor_exit(*_mutex);
 			return;
 		} else {
-			/* notify master last thread synced/yielded */
+			/* notify main last thread synced/yielded */
 			omrthread_monitor_notify_all(*_mutex);
 		}
 	}
 	
 	/* yielding */
-	if (env->isMasterThread()) {
+	if (env->isMainThread()) {
 		do {
-			/* master waiting for slaves to notify all of them synced/yielded */
+			/* main waiting for workers to notify all of them synced/yielded */
 			omrthread_monitor_wait(*_mutex);
-		} while (_resumeEvent != notifyMaster);
+		} while (_resumeEvent != notifyMain);
 	} else {
 		do {
-			/* slaves waiting for master to notify about the start of new quantum */
+			/* workers waiting for main to notify about the start of new quantum */
 			omrthread_monitor_wait(*_mutex);
 		} while (index == _yieldIndex);	
 	}

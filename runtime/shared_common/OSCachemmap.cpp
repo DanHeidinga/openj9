@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2017 IBM Corp. and others
+ * Copyright (c) 2001, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -26,6 +26,7 @@
  */
 
 #include <string.h>
+#include "j2sever.h"
 #include "j9cfg.h"
 #include "j9port.h"
 #include "pool_api.h"
@@ -44,11 +45,10 @@
 #define RETRY_OBTAIN_WRITE_LOCK_MAX_MS 160
 #define NANOSECS_PER_MILLISEC (I_64)1000000
 
-
 /**
  * Multi-argument constructor
- * 
- * Constructs and initialises a SH_OSCachemmap object and calls startup to open/create 
+ *
+ * Constructs and initializes a SH_OSCachemmap object and calls startup to open/create
  * a shared classes cache.
  * This c'tor is currently used during unit testing only. Therefore we pass J9SH_DIRPERM_ABSENT as cacheDirPerm to startup().
  *
@@ -57,7 +57,7 @@
  * @param [in]  piconfig Pointer to a configuration structure
  * @param [in]  numLocks The number of locks to be initialized
  * @param [in]  createFlag Indicates whether cache is to be opened or created.
- * \args J9SH_OSCACHE_CREATE Create the cache if it does not exists, otherwise open existsing cache
+ * \args J9SH_OSCACHE_CREATE Create the cache if it does not exists, otherwise open existing cache
  * \args J9SH_OSCACHE_OPEXIST Open an existing cache only, failed if it doesn't exist.
  * @param [in]  verboseFlags Verbose flags
  * @param [in]  openMode Mode to open the cache in. Any of the following flags:
@@ -66,32 +66,33 @@
  * \args J9OSCACHE_OPEN_MODE_GROUPACCESS - creates a cache with group access. Only applies when a cache is created
  * \args J9OSCACHE_OPEN_MODE_CHECK_NETWORK_CACHE - checks whether we are attempting to connect to a networked cache
  * @param [in]  versionData Version data of the cache to connect to
- * @param [in]  initialiser Pointer to an initialiser to be used to initialise the data
- * 				area of a new cache
- */ 
+ * @param [in]  initializer Pointer to an initializer to be used to initialize the data
+ *              area of a new cache
+ */
 SH_OSCachemmap::SH_OSCachemmap(J9PortLibrary* portLibrary, J9JavaVM* vm, const char* cacheDirName, const char* cacheName, J9SharedClassPreinitConfig* piconfig,
-		IDATA numLocks, UDATA createFlag, UDATA verboseFlags, U_64 runtimeFlags, I_32 openMode, J9PortShcVersion* versionData, SH_OSCacheInitialiser* initialiser)
+		IDATA numLocks, UDATA createFlag, UDATA verboseFlags, U_64 runtimeFlags, I_32 openMode, J9PortShcVersion* versionData, SH_OSCacheInitializer* initializer)
 {
 	Trc_SHR_OSC_Mmap_Constructor_Entry(cacheName, piconfig->sharedClassCacheSize, numLocks, createFlag, verboseFlags);
-	initialize(portLibrary, NULL, OSCACHE_CURRENT_CACHE_GEN);
-	startup(vm, cacheDirName, J9SH_DIRPERM_ABSENT, cacheName, piconfig, numLocks, createFlag, verboseFlags, runtimeFlags, openMode, 0, versionData, initialiser, SHR_STARTUP_REASON_NORMAL);
+	initialize(portLibrary, NULL, OSCACHE_CURRENT_CACHE_GEN, OSCACHE_CURRENT_LAYER_LAYER);
+	startup(vm, cacheDirName, J9SH_DIRPERM_ABSENT, cacheName, piconfig, numLocks, createFlag, verboseFlags, runtimeFlags, openMode, 0, versionData, initializer, SHR_STARTUP_REASON_NORMAL);
 	Trc_SHR_OSC_Mmap_Constructor_Exit();
 }
 
 /**
- * Method to initialise object variables.  This is outside the constructor for
+ * Method to initialize object variables.  This is outside the constructor for
  * consistency with SH_OSCachesysv
  * Note:  This method is public as it is called by the factory method newInstance in SH_OSCache
- * 
+ *
  * @param [in]  portLibraryArg The Port library
  * @param [in]  memForConstructorArg Pointer to the memory to build the OSCachemmap into
  * @param [in]  generation The generation of this cache
+ * @param [in]  layer The layer number of this cache
  */
 void
-SH_OSCachemmap::initialize(J9PortLibrary* portLibrary, char* memForConstructor, UDATA generation)
+SH_OSCachemmap::initialize(J9PortLibrary* portLibrary, char* memForConstructor, UDATA generation, I_8 layer)
 {
 	Trc_SHR_OSC_Mmap_initialize_Entry(portLibrary, memForConstructor);
-	commonInit(portLibrary, generation);
+	commonInit(portLibrary, generation, layer);
 	_fileHandle = -1;
 	_actualFileLength = 0;
 	_finalised = 0;
@@ -106,14 +107,14 @@ SH_OSCachemmap::initialize(J9PortLibrary* portLibrary, char* memForConstructor, 
 }
 
 /**
- * Method to free resources and re-initialise variables when
+ * Method to free resources and re-initialize variables when
  * cache is no longer required
  */
 void
 SH_OSCachemmap::finalise()
 {
 	Trc_SHR_OSC_Mmap_finalise_Entry();
-	
+
 	commonCleanup();
 	_fileHandle = -1;
 	_actualFileLength = 0;
@@ -130,15 +131,15 @@ SH_OSCachemmap::finalise()
 /**
  * Method to create or open a persistent shared classes cache
  * Should be able to successfully start up a cache on any version or generation
- * 
+ *
  * @param [in]  portLibrary The Port library
  * @param [in]  cacheName The name of the cache to be opened/created
  * @param [in]  cacheDirName The directory for the cache file
  * @param [in]  piconfig Pointer to a configuration structure
  * @param [in]  numLocks The number of locks to be initialized
  * @param [in]  createFlag Indicates whether cache is to be opened or created.
- * 				Included for consistency with SH_OSCachesysv, but need to open or create is
- * 				determined by logic within this class
+ *              Included for consistency with SH_OSCachesysv, but need to open or create is
+ *              determined by logic within this class
  * @param [in]  verboseFlags Verbose flags
  * @param [in]  openMode Mode to open the cache in. Any of the following flags:
  * \args J9OSCACHE_OPEN_MODE_DO_READONLY - open the cache readonly
@@ -146,15 +147,15 @@ SH_OSCachemmap::finalise()
  * \args J9OSCACHE_OPEN_MODE_GROUPACCESS - creates a cache with group access. Only applies when a cache is created
  * \args J9OSCACHE_OPEN_MODE_CHECK_NETWORK_CACHE - checks whether we are attempting to connect to a networked cache
  * @param [in]  versionData Version data of the cache to connect to
- * @param [in]  initialiser Pointer to an initialiser to be used to initialise the data
- * 				area of a new cache
+ * @param [in]  initializer Pointer to an initializer to be used to initialize the data
+ *              area of a new cache
  * @param [in]  reason Reason for starting up the cache. Used only when startup is called during destroy
- * 
+ *
  * @return true on success, false on failure
  */
 bool
 SH_OSCachemmap::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPerm, const char* cacheName, J9SharedClassPreinitConfig* piconfig, IDATA numLocks,
-		UDATA createFlag, UDATA verboseFlags, U_64 runtimeFlags, I_32 openMode, UDATA storageKeyTesting, J9PortShcVersion* versionData, SH_OSCacheInitialiser* initialiser, UDATA reason)
+		UDATA createFlag, UDATA verboseFlags, U_64 runtimeFlags, I_32 openMode, UDATA storageKeyTesting, J9PortShcVersion* versionData, SH_OSCacheInitializer* initializer, UDATA reason)
 {
 	I_32 mmapCapabilities;
 	IDATA retryCntr;
@@ -162,13 +163,24 @@ SH_OSCachemmap::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 	struct J9FileStat statBuf;
 	IDATA errorCode = J9SH_OSCACHE_FAILURE;
 	LastErrorInfo lastErrorInfo;
-	
+	UDATA defaultCacheSize = J9_SHARED_CLASS_CACHE_DEFAULT_SIZE;
+
+#if defined(J9VM_ENV_DATA64)
+#if defined(OPENJ9_BUILD)
+	defaultCacheSize = J9_SHARED_CLASS_CACHE_DEFAULT_SIZE_64BIT_PLATFORM;
+#else /* OPENJ9_BUILD */
+	if (J2SE_VERSION(vm) >= J2SE_V11) {
+		defaultCacheSize = J9_SHARED_CLASS_CACHE_DEFAULT_SIZE_64BIT_PLATFORM;
+	}
+#endif /* OPENJ9_BUILD */
+#endif /* J9VM_ENV_DATA64 */
+
 	PORT_ACCESS_FROM_PORT(_portLibrary);
 
 	Trc_SHR_OSC_Mmap_startup_Entry(cacheName, ctrlDirName,
-		(piconfig!= NULL)? piconfig->sharedClassCacheSize : J9_SHARED_CLASS_CACHE_DEFAULT_SIZE,
+		(piconfig!= NULL)? piconfig->sharedClassCacheSize : defaultCacheSize,
 		numLocks, createFlag, verboseFlags, openMode);
-	
+
 	versionData->cacheType = J9PORT_SHR_CACHE_TYPE_PERSISTENT;
 	mmapCapabilities = j9mmap_capabilities();
 	if (!(mmapCapabilities & J9PORT_MMAP_CAPABILITY_WRITE) || !(mmapCapabilities & J9PORT_MMAP_CAPABILITY_MSYNC)) {
@@ -182,7 +194,7 @@ SH_OSCachemmap::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 		goto _errorPreFileOpen;
 	}
 	Trc_SHR_OSC_Mmap_startup_commonStartupSuccess();
-	
+
 	/* Detect remote filesystem */
 	if (openMode & J9OSCACHE_OPEN_MODE_CHECK_NETWORK_CACHE) {
 		if (0 == j9file_stat(_cacheDirName, 0, &statBuf)) {
@@ -193,11 +205,11 @@ SH_OSCachemmap::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 			}
 		}
 	}
-	
+
 	/* Open the file */
 	if (!openCacheFile(_createFlags & J9SH_OSCACHE_CREATE, &lastErrorInfo)) {
 		Trc_SHR_OSC_Mmap_startup_badfileopen(_cachePathName);
-		errorHandler(J9NLS_SHRC_OSCACHE_MMAP_STARTUP_FILEOPEN_ERROR, &lastErrorInfo);  /* TODO: ADD FILE NAME */
+		errorHandler(J9NLS_SHRC_OSCACHE_MMAP_STARTUP_FILEOPEN_ERROR, &lastErrorInfo); /* TODO: ADD FILE NAME */
 		goto _errorPostFileOpen;
 	}
 	Trc_SHR_OSC_Mmap_startup_goodfileopen(_cachePathName, _fileHandle);
@@ -206,7 +218,7 @@ SH_OSCachemmap::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 	 * - user has specified a cache directory, or
 	 * - destroying an existing cache (if SHR_STARTUP_REASON_DESTROY or SHR_STARTUP_REASON_EXPIRE or J9SH_OSCACHE_OPEXIST_DESTROY is set)
 	 */
-	if (!_isUserSpecifiedCacheDir 
+	if (!_isUserSpecifiedCacheDir
 		&& (J9_ARE_NO_BITS_SET(_createFlags, J9SH_OSCACHE_OPEXIST_DESTROY))
 		&& (SHR_STARTUP_REASON_DESTROY != reason)
 		&& (SHR_STARTUP_REASON_EXPIRE != reason)
@@ -248,11 +260,11 @@ SH_OSCachemmap::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 	for (UDATA i = 0; i < J9SH_OSCACHE_MMAP_LOCK_COUNT; i++) {
 		if (omrthread_monitor_init_with_name(&_lockMutex[i], 0, "Persistent shared classes lock mutex")) {
 			Trc_SHR_OSC_Mmap_startup_failed_mutex_init(i);
- 			goto _errorPostFileOpen;
+			goto _errorPostFileOpen;
 		}
 	}
 	Trc_SHR_OSC_Mmap_startup_initialized_mutexes();
-	
+
 	/* Get cache header write lock */
 	if (-1 == acquireHeaderWriteLock(_activeGeneration, &lastErrorInfo)) {
 		Trc_SHR_OSC_Mmap_startup_badAcquireHeaderWriteLock();
@@ -263,7 +275,7 @@ SH_OSCachemmap::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 		goto _errorPostHeaderLock;
 	}
 	Trc_SHR_OSC_Mmap_startup_goodAcquireHeaderWriteLock();
-	
+
 	/* Check the length of the file */
 #if defined(WIN32) || defined(WIN64)
 	if ((_cacheSize = (U_32)j9file_blockingasync_flength(_fileHandle)) > 0) {
@@ -273,7 +285,7 @@ SH_OSCachemmap::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 		IDATA rc;
 		/* We are opening an existing cache */
 		Trc_SHR_OSC_Mmap_startup_fileOpened();
-		
+
 		if (_cacheSize <= sizeof(OSCachemmap_header_version_current)) {
 			Trc_SHR_OSC_Mmap_startup_cacheTooSmall();
 			errorCode = J9SH_OSCACHE_CORRUPT;
@@ -287,9 +299,9 @@ SH_OSCachemmap::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 		if (0 != rc) {
 			errorCode = rc;
 			Trc_SHR_OSC_Mmap_startup_badAttach();
- 			goto _errorPostAttach;
+			goto _errorPostAttach;
 		}
-		
+
 		if (_runningReadOnly) {
 			retryCntr = 0;
 			U_32* initCompleteAddr = (U_32*)getMmapHeaderFieldAddressForGen(_headerStart, _activeGeneration, OSCACHE_HEADER_FIELD_CACHE_INIT_COMPLETE);
@@ -302,10 +314,10 @@ SH_OSCachemmap::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 			if (!*initCompleteAddr) {
 				errorHandler(J9NLS_SHRC_OSCACHE_MMAP_STARTUP_ERROR_READONLY_CACHE_NOTINITIALIZED, NULL);
 				Trc_SHR_OSC_Mmap_startup_cacheNotInitialized();
-	 			goto _errorPostAttach;
+				goto _errorPostAttach;
 			}
 		}
-				
+
 		if (_verboseFlags & J9SHR_VERBOSEFLAG_ENABLE_VERBOSE) {
 			if (_runningReadOnly) {
 				OSC_TRACE1(J9NLS_SHRC_OSCACHE_MMAP_STARTUP_OPENED_READONLY, _cacheName);
@@ -317,31 +329,31 @@ SH_OSCachemmap::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 	} else {
 		OSCachemmap_header_version_current *cacheHeader;
 		IDATA rc;
-		
+
 		creatingNewCache = true;
 
 		/* File is wrong length, so we are creating the cache */
 		Trc_SHR_OSC_Mmap_startup_fileCreated();
-		
+
 		/* We can't create the cache when we're running read-only */
 		if (_runningReadOnly) {
 			Trc_SHR_OSC_Mmap_startup_runningReadOnlyAndWrongLength();
 			errorHandler(J9NLS_SHRC_OSCACHE_MMAP_STARTUP_ERROR_OPENING_CACHE_READONLY, NULL);
- 			goto _errorPostHeaderLock;
+			goto _errorPostHeaderLock;
 		}
-		
+
 		/* Set cache to the correct length */
 		if (!setCacheLength((U_32)piconfig->sharedClassCacheSize, &lastErrorInfo)) {
 			Trc_SHR_OSC_Mmap_startup_badSetCacheLength(piconfig->sharedClassCacheSize);
 			errorHandler(J9NLS_SHRC_OSCACHE_MMAP_STARTUP_ERROR_SETTING_CACHE_LENGTH, &lastErrorInfo);
- 			goto _errorPostHeaderLock;
+			goto _errorPostHeaderLock;
 		}
 		Trc_SHR_OSC_Mmap_startup_goodSetCacheLength(piconfig->sharedClassCacheSize);
 
 		/* Verify if the group access has been set */
 		if (J9_ARE_ALL_BITS_SET(_openMode, J9OSCACHE_OPEN_MODE_GROUPACCESS)) {
 			I_32 groupAccessRc = verifyCacheFileGroupAccess(_portLibrary, _fileHandle, &lastErrorInfo);
-			
+
 			if (0 == groupAccessRc) {
 				Trc_SHR_OSC_Mmap_startup_setGroupAccessFailed(_cachePathName);
 				OSC_WARNING_TRACE(J9NLS_SHRC_OSCACHE_MMAP_SET_GROUPACCESS_FAILED);
@@ -357,33 +369,33 @@ SH_OSCachemmap::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 		if (0 != rc) {
 			errorCode = rc;
 			Trc_SHR_OSC_Mmap_startup_badAttach();
- 			goto _errorPostAttach;
+			goto _errorPostAttach;
 		}
-				
+
 		cacheHeader = (OSCachemmap_header_version_current *)_headerStart;
 
 		/* Create the cache header */
 		if (!createCacheHeader(cacheHeader, versionData)) {
 			Trc_SHR_OSC_Mmap_startup_badCreateCacheHeader();
 			errorHandler(J9NLS_SHRC_OSCACHE_MMAP_STARTUP_ERROR_CREATING_CACHE_HEADER, NULL);
- 			goto _errorPostAttach;
+			goto _errorPostAttach;
 		}
 		Trc_SHR_OSC_Mmap_startup_goodCreateCacheHeader();
 
-		if (initialiser) {
-			if (!initialiseDataHeader(initialiser)) {
-				Trc_SHR_OSC_Mmap_startup_badInitialiseDataHeader();
+		if (initializer) {
+			if (!initializeDataHeader(initializer)) {
+				Trc_SHR_OSC_Mmap_startup_badInitializeDataHeader();
 				errorHandler(J9NLS_SHRC_OSCACHE_MMAP_STARTUP_ERROR_INITIALISING_DATA_HEADER, NULL);
-	 			goto _errorPostAttach;
+				goto _errorPostAttach;
 			}
-	 		Trc_SHR_OSC_Mmap_startup_goodInitialiseDataHeader();
+			Trc_SHR_OSC_Mmap_startup_goodInitializeDataHeader();
 		}
-		
+
 		if (_verboseFlags & J9SHR_VERBOSEFLAG_ENABLE_VERBOSE) {
 			OSC_TRACE1(J9NLS_SHRC_OSCACHE_MMAP_STARTUP_CREATED, _cacheName);
 		}
 	}
-	
+
 	if (creatingNewCache) {
 		OSCachemmap_header_version_current *cacheHeader = (OSCachemmap_header_version_current *)_headerStart;
 
@@ -404,10 +416,10 @@ SH_OSCachemmap::startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPer
 _exitForDestroy:
 	_finalised = 0;
 	_startupCompleted = true;
-	
+
 	Trc_SHR_OSC_Mmap_startup_Exit();
 	return true;
-	
+
 _errorPostAttach :
 	internalDetach(_activeGeneration);
 _errorPostHeaderLock :
@@ -451,16 +463,15 @@ SH_OSCachemmap::dontNeedMetadata(J9VMThread* currentThread, const void* startAdd
 #endif
 }
 
-
 /**
  * Destroy a persistent shared classes cache
- * 
+ *
  * @param[in] suppressVerbose suppresses verbose output
  * @param[in] isReset True if reset option is being used, false otherwise.
- * 
+ *
  * This method detaches from the cache, checks whether it is in use by any other
  * processes and if not, deletes it from the filesystem
- * 
+ *
  * @return 0 for success and -1 for failure
  */
 IDATA
@@ -468,26 +479,26 @@ SH_OSCachemmap::destroy(bool suppressVerbose, bool isReset)
 {
 	PORT_ACCESS_FROM_PORT(_portLibrary);
 	UDATA origVerboseFlags = _verboseFlags;
-	IDATA returnVal = -1; 		/* Assume failure */
+	IDATA returnVal = -1; /* Assume failure */
 	LastErrorInfo lastErrorInfo;
-	
+
 	Trc_SHR_OSC_Mmap_destroy_Entry();
-	
+
 	if (suppressVerbose) {
 		_verboseFlags = 0;
 	}
-	
+
 	if (_headerStart != NULL) {
 		detach();
 	}
-	
+
 	if (!closeCacheFile()) {
 		Trc_SHR_OSC_Mmap_destroy_closefilefailed();
 		goto _done;
 	}
 	_mapFileHandle = 0;
 	_actualFileLength = 0;
-	
+
 	Trc_SHR_OSC_Mmap_destroy_deletingfile(_cachePathName);
 	if (!deleteCacheFile(&lastErrorInfo)) {
 		Trc_SHR_OSC_Mmap_destroy_badunlink();
@@ -514,10 +525,10 @@ SH_OSCachemmap::destroy(bool suppressVerbose, bool isReset)
 			}
 		}
 	}
-	
+
 	Trc_SHR_OSC_Mmap_destroy_finalising();
 	finalise();
-	
+
 	returnVal = 0;
 	Trc_SHR_OSC_Mmap_destroy_Exit();
 
@@ -531,19 +542,19 @@ _done :
 
 /**
  * Method to update the cache's last detached time, detach it from the
- * process and clean up the object's resources.  It is called when the 
+ * process and clean up the object's resources.  It is called when the
  * cache is no longer required by the JVM.
  */
 void
 SH_OSCachemmap::cleanup()
-{	
+{
 	Trc_SHR_OSC_Mmap_cleanup_Entry();
-	
+
 	if (_finalised) {
 		Trc_SHR_OSC_Mmap_cleanup_alreadyfinalised();
 		return;
 	}
-	
+
 	if (_headerStart) {
 		if (acquireHeaderWriteLock(_activeGeneration, NULL) != -1) {
 			if (updateLastDetachedTime()) {
@@ -565,17 +576,17 @@ SH_OSCachemmap::cleanup()
 			Trc_SHR_Assert_ShouldNeverHappen();
 		}
 	}
-	
+
 	if (_headerStart) {
 		detach();
 	}
-	
+
 	if (_fileHandle != -1) {
 		closeCacheFile();
 	}
-	
+
 	finalise();
-	
+
 	Trc_SHR_OSC_Mmap_cleanup_Exit();
 	return;
 }
@@ -583,7 +594,7 @@ SH_OSCachemmap::cleanup()
 /*
  * TODO:
  * There follows a series methods for acquiring/releasing various read/write
- * locks on the cache.  These all contain very similar code and while they 
+ * locks on the cache.  These all contain very similar code and while they
  * do not present a problem in their current form, it would probably be better
  * to reduce them to a few basic methods and have them operate on an array of
  * lock words.
@@ -591,7 +602,7 @@ SH_OSCachemmap::cleanup()
 
 /**
  * Get an ID for a write area lock
- * 
+ *
  * @return a non-negative lockID on success
  */
 IDATA SH_OSCachemmap::getWriteLockID()
@@ -611,21 +622,21 @@ IDATA SH_OSCachemmap::getReadWriteLockID()
 
 /**
  * Method to acquire the write lock on the cache data region
- * 
+ *
  * @return 0 on success, -1 on failure
  */
 IDATA
 SH_OSCachemmap::acquireWriteLock(UDATA lockID)
 {
 	PORT_ACCESS_FROM_PORT(_portLibrary);
-	
+
 	I_32 lockFlags = J9PORT_FILE_WRITE_LOCK | J9PORT_FILE_WAIT_FOR_LOCK;
 	U_64 lockOffset, lockLength;
 	I_32 rc = 0;
 	I_64 startLoopTime = 0;
 	I_64 endLoopTime = 0;
 	UDATA loopCount = 0;
-	
+
 	Trc_SHR_OSC_Mmap_acquireWriteLock_Entry(lockID);
 
 	if ((lockID != J9SH_OSCACHE_MMAP_LOCKID_WRITELOCK) && (lockID != J9SH_OSCACHE_MMAP_LOCKID_READWRITELOCK)) {
@@ -635,7 +646,7 @@ SH_OSCachemmap::acquireWriteLock(UDATA lockID)
 
 	lockOffset = offsetof(OSCachemmap_header_version_current, dataLocks) + (lockID * sizeof(I_32));
 	lockLength = sizeof(((OSCachemmap_header_version_current *)NULL)->dataLocks[0]);
-	
+
 	/* We enter a local mutex before acquiring the file lock. This is because file
 	 * locks only work between processes, whereas we need to lock between processes
 	 * AND THREADS. So we use a local mutex to lock between threads of the same JVM,
@@ -652,8 +663,8 @@ SH_OSCachemmap::acquireWriteLock(UDATA lockID)
 	rc = j9file_blockingasync_lock_bytes(_fileHandle, lockFlags, lockOffset, lockLength);
 #else
 	rc = j9file_lock_bytes(_fileHandle, lockFlags, lockOffset, lockLength);
-#endif	
-	
+#endif
+
 	while ((rc == -1) && (j9error_last_error_number() == J9PORT_ERROR_FILE_LOCK_EDEADLK)) {
 		if (++loopCount > 1) {
 			/* We time the loop so it doesn't loop forever. Try the lock algorithm below
@@ -674,44 +685,43 @@ SH_OSCachemmap::acquireWriteLock(UDATA lockID)
 		 * is to exit and let the caller retry.
 		 */
 		if (lockID == J9SH_OSCACHE_MMAP_LOCKID_READWRITELOCK && omrthread_monitor_owned_by_self(_lockMutex[J9SH_OSCACHE_MMAP_LOCKID_WRITELOCK]) == 1) {
-			/*	CMVC 153095: Case 1
+			/* CMVC 153095: Case 1
 			 * Current thread:
-			 *	- Owns W monitor, W lock, RW monitor, and gets EDADLK on RW lock
+			 *  - Owns W monitor, W lock, RW monitor, and gets EDADLK on RW lock
 			 *
 			 * Notes:
-			 *	- This means other JVMs caused EDEADLK becuase they are holding RW, and
-			 *	  waiting on W in a sequence that gives fcntl the impression of deadlock
-			 *	- If current thread owns the W monitor, it must also own the W lock 
-			 *	  if the call stack ended up here.
+			 *  - This means other JVMs caused EDEADLK because they are holding RW, and
+			 *    waiting on W in a sequence that gives fcntl the impression of deadlock
+			 *  - If current thread owns the W monitor, it must also own the W lock
+			 *    if the call stack ended up here.
 			 *
 			 * Recovery:
-			 *	- In this case we can't do anything but retry RW, because EDEADLK is caused by other JVMs.
-			 *
+			 *  - In this case we can't do anything but retry RW, because EDEADLK is caused by other JVMs.
 			 */
 			Trc_SHR_OSC_Mmap_acquireWriteLockDeadlockMsg("Case 1: Current thread owns W lock & monitor, and RW monitor, but EDEADLK'd on RW lock");
 #if defined(WIN32) || defined(WIN64)
 			rc = j9file_blockingasync_lock_bytes(_fileHandle, lockFlags, lockOffset, lockLength);
 #else
 			rc = j9file_lock_bytes(_fileHandle, lockFlags, lockOffset, lockLength);
-#endif			
+#endif
 
 		} else if (lockID == J9SH_OSCACHE_MMAP_LOCKID_READWRITELOCK) {
-			/*	CMVC 153095: Case 2
+			/* CMVC 153095: Case 2
 			 * Another thread:
-			 *	- Owns the W monitor, and is waiting on (or owns) the W lock
+			 *  - Owns the W monitor, and is waiting on (or owns) the W lock
 			 *
 			 * Current thread:
-			 *	- Current thread owns the RW monitor, and gets EDEADLK on RW lock
+			 *  - Current thread owns the RW monitor, and gets EDEADLK on RW lock
 			 *
 			 * Note:
-			 *  - Deadlock might caused by the order in which threads have taken taken locks, when compaired to another JVM.
+			 *  - Deadlock might caused by the order in which threads have taken taken locks, when compared to another JVM.
 			 *  - In the recovery code below the first release of the RW Monitor is to ensure SCStoreTransactions
 			 *    can complete.
 			 *
 			 * Recovery
-			 *	- Recover by trying to take the W monitor, then RW monitor and lock. This will 
-			 *	  resolve any EDEADLK caused by this JVM, because it ensures no thread in this JVM will hold
-			 *	  the W lock.
+			 *  - Recover by trying to take the W monitor, then RW monitor and lock. This will
+			 *    resolve any EDEADLK caused by this JVM, because it ensures no thread in this JVM will hold
+			 *    the W lock.
 			 */
 			Trc_SHR_OSC_Mmap_acquireWriteLockDeadlockMsg("Case 2: Current thread owns RW mon, but EDEADLK'd on RW lock");
 			omrthread_monitor_exit(_lockMutex[J9SH_OSCACHE_MMAP_LOCKID_READWRITELOCK]);
@@ -730,27 +740,27 @@ SH_OSCachemmap::acquireWriteLock(UDATA lockID)
 			rc = j9file_blockingasync_lock_bytes(_fileHandle, lockFlags, lockOffset, lockLength);
 #else
 			rc = j9file_lock_bytes(_fileHandle, lockFlags, lockOffset, lockLength);
-#endif	
+#endif
 
 			omrthread_monitor_exit(_lockMutex[J9SH_OSCACHE_MMAP_LOCKID_WRITELOCK]);
 
 		} else if (lockID == J9SH_OSCACHE_MMAP_LOCKID_WRITELOCK) {
-			/*	CMVC 153095: Case 3
+			/* CMVC 153095: Case 3
 			 * Another thread:
-			 *	- Owns RW monintor, and is waiting on (or owns) the RW lock.
-			 * 
+			 *  - Owns RW monitor, and is waiting on (or owns) the RW lock.
+			 *
 			 * Current thread:
-			 *	- Owns W monintor, and gets EDEADLK on W lock.
-			 *	
+			 *  - Owns W monitor, and gets EDEADLK on W lock.
+			 *
 			 * Note:
-			 *  - If the 'call stack' ends up here then it is known the current thread 
-			 *    does not own the ReadWrite lock. The shared classes code always 
+			 *  - If the 'call stack' ends up here then it is known the current thread
+			 *    does not own the ReadWrite lock. The shared classes code always
 			 *    takes the W lock, then RW lock, OR just the RW lock.
 			 *
 			 * Recovery:
-			 *	- In this case we recover by waiting on the RW monitor before taking the W lock. This will 
-			 *	  resolve any EDEADLK caused by this JVM, because it ensures no thread in this JVM will hold
-			 *	  the RW lock.
+			 *  - In this case we recover by waiting on the RW monitor before taking the W lock. This will
+			 *    resolve any EDEADLK caused by this JVM, because it ensures no thread in this JVM will hold
+			 *    the RW lock.
 			 */
 			Trc_SHR_OSC_Mmap_acquireWriteLockDeadlockMsg("Case 3: Current thread owns W mon, but EDEADLK'd on W lock");
 			if (omrthread_monitor_enter(_lockMutex[J9SH_OSCACHE_MMAP_LOCKID_READWRITELOCK]) != 0) {
@@ -775,24 +785,24 @@ SH_OSCachemmap::acquireWriteLock(UDATA lockID)
 	} else {
 		Trc_SHR_OSC_Mmap_acquireWriteLock_goodLock();
 	}
-	
+
 	Trc_SHR_OSC_Mmap_acquireWriteLock_Exit(rc);
 	return rc;
 }
 
 /**
  * Method to release the write lock on the cache data region
- * 
+ *
  * @return 0 on success, -1 on failure
  */
 IDATA
 SH_OSCachemmap::releaseWriteLock(UDATA lockID)
 {
 	PORT_ACCESS_FROM_PORT(_portLibrary);
-	
+
 	U_64 lockOffset, lockLength;
 	I_32 rc = 0;
-	
+
 	Trc_SHR_OSC_Mmap_releaseWriteLock_Entry(lockID);
 
 	if (lockID >= J9SH_OSCACHE_MMAP_LOCK_COUNT) {
@@ -802,44 +812,56 @@ SH_OSCachemmap::releaseWriteLock(UDATA lockID)
 
 	lockOffset = offsetof(OSCachemmap_header_version_current, dataLocks) + (lockID * sizeof(I_32));
 	lockLength = sizeof(((OSCachemmap_header_version_current *)NULL)->dataLocks[0]);
-	
+
 	Trc_SHR_OSC_Mmap_releaseWriteLock_gettingLock(_fileHandle, lockOffset, lockLength);
-#if defined(WIN32) || defined(WIN64)	
+#if defined(WIN32) || defined(WIN64)
 	rc = j9file_blockingasync_unlock_bytes(_fileHandle, lockOffset, lockLength);
 #else
 	rc = j9file_unlock_bytes(_fileHandle, lockOffset, lockLength);
-#endif	
-	
+#endif
+
 	if (-1 == rc) {
 		Trc_SHR_OSC_Mmap_releaseWriteLock_badLock();
 	} else {
 		Trc_SHR_OSC_Mmap_releaseWriteLock_goodLock();
 	}
-	
+
 	Trc_SHR_OSC_Mmap_releaseWriteLock_exiting_monitor(lockID);
 	if (omrthread_monitor_exit(_lockMutex[lockID]) != 0) {
 		Trc_SHR_OSC_Mmap_releaseWriteLock_bad_monitor_exit(lockID);
 		rc = -1;
- 	}
-	
+	}
+
 	Trc_SHR_OSC_Mmap_releaseWriteLock_Exit(rc);
 	return rc;
 }
 
 /**
+ * Get the createTime from the OSCache_header2
+ * 
+ * @return the createTime
+ */
+U_64
+SH_OSCachemmap::getCreateTime()
+{
+	OSCachemmap_header_version_current *cacheHeader = (OSCachemmap_header_version_current *)_headerStart;
+	return cacheHeader->oscHdr.createTime; 
+}
+
+/**
  * Method to acquire the read lock on the cache attach region
- * 
+ *
  * Needs to be able to work with all generations
- * 
+ *
  * @param [in] generation The generation of the cache header to use when calculating the lock offset
- * 
+ *
  * @return 0 on success, -1 on failure
  */
 IDATA
 SH_OSCachemmap::acquireAttachReadLock(UDATA generation, LastErrorInfo *lastErrorInfo)
 {
 	PORT_ACCESS_FROM_PORT(_portLibrary);
-	
+
 	I_32 lockFlags = J9PORT_FILE_READ_LOCK | J9PORT_FILE_WAIT_FOR_LOCK;
 	U_64 lockOffset, lockLength;
 	I_32 rc = 0;
@@ -854,11 +876,11 @@ SH_OSCachemmap::acquireAttachReadLock(UDATA generation, LastErrorInfo *lastError
 	lockLength = sizeof(((OSCachemmap_header_version_current *)NULL)->attachLock);
 
 	Trc_SHR_OSC_Mmap_acquireAttachReadLock_gettingLock(_fileHandle, lockFlags, lockOffset, lockLength);
-#if defined(WIN32) || defined(WIN64)	
+#if defined(WIN32) || defined(WIN64)
 	rc = j9file_blockingasync_lock_bytes(_fileHandle, lockFlags, lockOffset, lockLength);
 #else
 	rc = j9file_lock_bytes(_fileHandle, lockFlags, lockOffset, lockLength);
-#endif	
+#endif
 	if (-1 == rc) {
 		if (NULL != lastErrorInfo) {
 			lastErrorInfo->lastErrorCode = j9error_last_error_number();
@@ -868,60 +890,60 @@ SH_OSCachemmap::acquireAttachReadLock(UDATA generation, LastErrorInfo *lastError
 	} else {
 		Trc_SHR_OSC_Mmap_acquireAttachReadLock_goodLock();
 	}
-	
+
 	Trc_SHR_OSC_Mmap_acquireAttachReadLock_Exit(rc);
 	return rc;
 }
 
 /**
  * Method to release the read lock on the cache attach region
- * 
+ *
  * Needs to be able to work with all generations
- * 
+ *
  * @param [in] generation The generation of the cache header to use when calculating the lock offset
- * 
+ *
  * @return 0 on success, -1 on failure
  */
 IDATA
 SH_OSCachemmap::releaseAttachReadLock(UDATA generation)
 {
 	PORT_ACCESS_FROM_PORT(_portLibrary);
-	
+
 	U_64 lockOffset, lockLength;
 	I_32 rc = 0;
-	
+
 	Trc_SHR_OSC_Mmap_releaseAttachReadLock_Entry();
-	
+
 	lockOffset = (U_64)getMmapHeaderFieldOffsetForGen(generation, OSCACHEMMAP_HEADER_FIELD_ATTACH_LOCK);
 	lockLength = sizeof(((OSCachemmap_header_version_current *)NULL)->attachLock);
 
 	Trc_SHR_OSC_Mmap_releaseAttachReadLock_gettingLock(_fileHandle, lockOffset, lockLength);
-#if defined(WIN32) || defined(WIN64)	
+#if defined(WIN32) || defined(WIN64)
 	rc = j9file_blockingasync_unlock_bytes(_fileHandle, lockOffset, lockLength);
 #else
 	rc = j9file_unlock_bytes(_fileHandle, lockOffset, lockLength);
-#endif	
-	
+#endif
+
 	if (-1 == rc) {
 		Trc_SHR_OSC_Mmap_releaseAttachReadLock_badLock();
 	} else {
 		Trc_SHR_OSC_Mmap_releaseAttachReadLock_goodLock();
 	}
-	
+
 	Trc_SHR_OSC_Mmap_releaseAttachReadLock_Exit(rc);
 	return rc;
 }
 
 /*
- * This function performs enough of an attach to start the cache, but nothing more 
+ * This function performs enough of an attach to start the cache, but nothing more
  * The internalDetach function is the equivalent for detach
- * isNewCache should be true if we're attaching to a completely uninitialized cache, false otherwise 
+ * isNewCache should be true if we're attaching to a completely uninitialized cache, false otherwise
  * THREADING: Pre-req caller holds the cache header write lock
- * 
+ *
  * Needs to be able to work with all generations
- * 
+ *
  * @param [in] isNewCache true if the cache is new and we should calculate cache size using the file size;
- * 				false if the cache is pre-existing and we can read the size fields from the cache header 
+ *              false if the cache is pre-existing and we can read the size fields from the cache header
  * @param [in] generation The generation of the cache header to use when calculating the lock offset
  *
  * @return 0 on success, J9SH_OSCACHE_FAILURE on failure, J9SH_OSCACHE_CORRUPT for corrupt cache
@@ -933,12 +955,12 @@ SH_OSCachemmap::internalAttach(bool isNewCache, UDATA generation)
 	U_32 accessFlags = _runningReadOnly ? J9PORT_MMAP_FLAG_READ : J9PORT_MMAP_FLAG_WRITE;
 	LastErrorInfo lastErrorInfo;
 	IDATA rc = J9SH_OSCACHE_FAILURE;
-	
+
 	Trc_SHR_OSC_Mmap_internalAttach_Entry();
-	
+
 	/* Get current length of file */
 	accessFlags |= J9PORT_MMAP_FLAG_SHARED;
-	
+
 	_actualFileLength = _cacheSize;
 	Trc_SHR_Assert_True(_actualFileLength > 0);
 
@@ -951,7 +973,8 @@ SH_OSCachemmap::internalAttach(bool isNewCache, UDATA generation)
 	Trc_SHR_OSC_Mmap_internalAttach_goodAcquireAttachReadLock();
 
 #ifndef WIN32
-	{
+	/* if the cache is read-only and not being written, no free disk space is required */
+	if (!_runningReadOnly && J9_ARE_NO_BITS_SET(_runtimeFlags, J9SHR_RUNTIMEFLAG_NO_PERSISTENT_DISK_SPACE_CHECK)) {
 		J9FileStatFilesystem fileStatFilesystem;
 		/* check for free disk space */
 		rc = j9file_stat_filesystem(_cachePathName, 0, &fileStatFilesystem);
@@ -977,7 +1000,7 @@ SH_OSCachemmap::internalAttach(bool isNewCache, UDATA generation)
 	}
 	_headerStart = _mapFileHandle->pointer;
 	Trc_SHR_OSC_Mmap_internalAttach_goodmapfile(_headerStart);
-	
+
 	if (!isNewCache) {
 		J9SRP* dataStartField;
 		U_32* dataLengthField;
@@ -1001,23 +1024,23 @@ SH_OSCachemmap::internalAttach(bool isNewCache, UDATA generation)
 		_dataLength = (U_32)MMAP_CACHEDATASIZE(_actualFileLength);
 		_dataStart = (void*)((UDATA)_headerStart + MMAP_CACHEHEADERSIZE);
 	}
-	
+
 	Trc_SHR_OSC_Mmap_internalAttach_Exit(_dataStart, sizeof(OSCachemmap_header_version_current));
 	return 0;
 
 error:
 	internalDetach(generation);
 	return rc;
-} 
+}
 
 /**
  * Function to attach a persistent shared classes cache to the process
  * Function performs version checking on the cache if the version data is provided
- * 
+ *
  * @param [in] expectedVersionData  If not NULL, function checks the version data of the cache against the values in this struct
- * 
+ *
  * @return Pointer to the start of the cache data area on success, NULL on failure
- */ 
+ */
 void *
 SH_OSCachemmap::attach(J9VMThread *currentThread, J9PortShcVersion* expectedVersionData)
 {
@@ -1028,23 +1051,23 @@ SH_OSCachemmap::attach(J9VMThread *currentThread, J9PortShcVersion* expectedVers
 	J9JavaVM *vm = currentThread->javaVM;
 	bool doRelease = false;
 	IDATA rc;
-	
+
 	Trc_SHR_OSC_Mmap_attach_Entry1(UnitTest::unitTest);
-	
+
 	/* If we are already attached, just return */
 	if (_dataStart) {
 		Trc_SHR_OSC_Mmap_attach_alreadyattached(_headerStart, _dataStart, _dataLength);
 		return _dataStart;
 	}
-	
+
 	if (acquireHeaderWriteLock(_activeGeneration, &lastErrorInfo) == -1) {
 		Trc_SHR_OSC_Mmap_attach_acquireHeaderLockFailed();
 		errorHandler(J9NLS_SHRC_OSCACHE_MMAP_ATTACH_ACQUIREHEADERWRITELOCK_ERROR, &lastErrorInfo);
 		return NULL;
 	}
-	
+
 	doRelease = true;
-	
+
 	rc = internalAttach(false, _activeGeneration);
 	if (0 != rc) {
 		setError(rc);
@@ -1098,10 +1121,10 @@ SH_OSCachemmap::attach(J9VMThread *currentThread, J9PortShcVersion* expectedVers
 	if ((_verboseFlags & J9SHR_VERBOSEFLAG_ENABLE_VERBOSE) && _startupCompleted) {
 		OSC_TRACE1(J9NLS_SHRC_OSCACHE_MMAP_ATTACH_ATTACHED, _cacheName);
 	}
-	
+
 	Trc_SHR_OSC_Mmap_attach_Exit(_dataStart);
 	return _dataStart;
-	
+
 detach:
 	internalDetach(_activeGeneration);
 release:
@@ -1111,13 +1134,13 @@ release:
 	}
 	Trc_SHR_OSC_Mmap_attach_ExitWithError();
 	return NULL;
-} 
+}
 
 /**
  * Method to update the last attached time in a cache's header
- * 
+ *
  * @param [in] headerArg  A pointer to the cache header
- * 
+ *
  * @return true on success, false on failure
  * THREADING: Pre-req caller holds the cache header write lock
  */
@@ -1125,25 +1148,25 @@ I_32
 SH_OSCachemmap::updateLastAttachedTime(OSCachemmap_header_version_current* header)
 {
 	PORT_ACCESS_FROM_PORT(_portLibrary);
-	
+
 	Trc_SHR_OSC_Mmap_updateLastAttachedTime_Entry();
-	
+
 	if (_runningReadOnly) {
 		Trc_SHR_OSC_Mmap_updateLastAttachedTime_ReadOnly();
 		return true;
 	}
-	
+
 	I_64 newTime = j9time_current_time_millis();
 	Trc_SHR_OSC_Mmap_updateLastAttachedTime_time(newTime, header->lastAttachedTime);
 	header->lastAttachedTime = newTime;
-	
+
 	Trc_SHR_OSC_Mmap_updateLastAttachedTime_Exit();
 	return true;
 }
 
 /**
  * Method to update the last detached time in a cache's header
- * 
+ *
  * @return true on success, false on failure
  * THREADING: Pre-req caller holds the cache header write lock
  */
@@ -1151,12 +1174,12 @@ I_32
 SH_OSCachemmap::updateLastDetachedTime()
 {
 	PORT_ACCESS_FROM_PORT(_portLibrary);
-	
+
 	OSCachemmap_header_version_current* cacheHeader = (OSCachemmap_header_version_current*)_headerStart;
 	I_64 newTime;
-	
+
 	Trc_SHR_OSC_Mmap_updateLastDetachedTime_Entry();
-	
+
 	if (_runningReadOnly) {
 		Trc_SHR_OSC_Mmap_updateLastDetachedTime_ReadOnly();
 		return true;
@@ -1165,17 +1188,17 @@ SH_OSCachemmap::updateLastDetachedTime()
 	newTime = j9time_current_time_millis();
 	Trc_SHR_OSC_Mmap_updateLastDetachedTime_time(newTime, cacheHeader->lastDetachedTime);
 	cacheHeader->lastDetachedTime = newTime;
-	
+
 	Trc_SHR_OSC_Mmap_updateLastDetachedTime_Exit();
 	return true;
 }
 
 /**
  * Method to create the cache header for a new persistent cache
- * 
+ *
  * @param [in] cacheHeader  A pointer to the cache header
  * @param [in] versionData  The version data of the cache
- * 
+ *
  * @return true on success, false on failure
  * THREADING: Pre-req caller holds the cache header write lock
  */
@@ -1184,24 +1207,24 @@ SH_OSCachemmap::createCacheHeader(OSCachemmap_header_version_current *cacheHeade
 {
 	PORT_ACCESS_FROM_PORT(_portLibrary);
 	U_32 headerLen = MMAP_CACHEHEADERSIZE;
-	
+
 	if(NULL == cacheHeader) {
 		return false;
 	}
 
 	Trc_SHR_OSC_Mmap_createCacheHeader_Entry(cacheHeader, headerLen, versionData);
-	
+
 	memset(cacheHeader, 0, headerLen);
-	strncpy(cacheHeader->eyecatcher, J9SH_OSCACHE_MMAP_EYECATCHER, J9SH_OSCACHE_MMAP_EYECATCHER_LENGTH);
-	
+	memcpy(cacheHeader->eyecatcher, J9SH_OSCACHE_MMAP_EYECATCHER, J9SH_OSCACHE_MMAP_EYECATCHER_LENGTH);
+
 	initOSCacheHeader(&(cacheHeader->oscHdr), versionData, headerLen);
 
 	cacheHeader->createTime = j9time_current_time_millis();
 	cacheHeader->lastAttachedTime = j9time_current_time_millis();
 	cacheHeader->lastDetachedTime = j9time_current_time_millis();
-	
-	Trc_SHR_OSC_Mmap_createCacheHeader_header(cacheHeader->eyecatcher, 
-													cacheHeader->oscHdr.size, 
+
+	Trc_SHR_OSC_Mmap_createCacheHeader_header(cacheHeader->eyecatcher,
+													cacheHeader->oscHdr.size,
 													cacheHeader->oscHdr.dataStart,
 													cacheHeader->oscHdr.dataLength,
 													cacheHeader->createTime,
@@ -1213,9 +1236,9 @@ SH_OSCachemmap::createCacheHeader(OSCachemmap_header_version_current *cacheHeade
 
 /**
  * Method to set the length of a new cache file
- * 
+ *
  * @param [in] cacheSize  The length of the cache in bytes
- * 
+ *
  * @return true on success, false on failure
  * THREADING: Pre-req caller holds the cache header write lock
  */
@@ -1225,7 +1248,7 @@ SH_OSCachemmap::setCacheLength(U_32 cacheSize, LastErrorInfo *lastErrorInfo)
 	PORT_ACCESS_FROM_PORT(_portLibrary);
 
 	Trc_SHR_OSC_Mmap_setCacheLength_Entry(cacheSize);
-	
+
 	if (NULL != lastErrorInfo) {
 		lastErrorInfo->lastErrorCode = 0;
 	}
@@ -1233,7 +1256,7 @@ SH_OSCachemmap::setCacheLength(U_32 cacheSize, LastErrorInfo *lastErrorInfo)
 	if (cacheSize < sizeof(OSCachemmap_header_version_current)) {
 		return false;
 	}
-	
+
 #if defined(WIN32) || defined(WIN64)
 	if (0 != j9file_blockingasync_set_length(_fileHandle, cacheSize)) {
 #else
@@ -1250,33 +1273,33 @@ SH_OSCachemmap::setCacheLength(U_32 cacheSize, LastErrorInfo *lastErrorInfo)
 		return false;
 	}
 	Trc_SHR_OSC_Mmap_setCacheLength_goodfilesetlength();
-	
+
 	_cacheSize = cacheSize;
-	
+
 	Trc_SHR_OSC_Mmap_setCacheLength_Exit();
 	return true;
 }
 
 /**
- * Method to run the initialiser supplied to the multi argument constructor
+ * Method to run the initializer supplied to the multi argument constructor
  * or the startup method against the data area of a new cache
- * 
- * @param [in] initialiser  Struct containing fields to initialize
- * 
+ *
+ * @param [in] initializer  Struct containing fields to initialize
+ *
  * @return true on success, false on failure
  * THREADING: Pre-req caller holds the cache header write lock
  */
 I_32
-SH_OSCachemmap::initialiseDataHeader(SH_OSCacheInitialiser *initialiser)
+SH_OSCachemmap::initializeDataHeader(SH_OSCacheInitializer *initializer)
 {
 	U_32 readWriteBytes = (U_32)((_config->sharedClassReadWriteBytes > 0) ? _config->sharedClassReadWriteBytes : 0);
 	U_32 softMaxBytes = (U_32)_config->sharedClassSoftMaxBytes;
 
-	Trc_SHR_OSC_Mmap_initialiseDataHeader_Entry();
-	
-	Trc_SHR_OSC_Mmap_initialiseDataHeader_callinginit3(_dataStart,
-															_dataLength, 
-															_config->sharedClassMinAOTSize, 
+	Trc_SHR_OSC_Mmap_initializeDataHeader_Entry();
+
+	Trc_SHR_OSC_Mmap_initializeDataHeader_callinginit3(_dataStart,
+															_dataLength,
+															_config->sharedClassMinAOTSize,
 															_config->sharedClassMaxAOTSize,
 															_config->sharedClassMinJITSize,
 															_config->sharedClassMaxJITSize,
@@ -1287,31 +1310,31 @@ SH_OSCachemmap::initialiseDataHeader(SH_OSCacheInitialiser *initialiser)
 		softMaxBytes = (U_32)-1;
 	} else if (softMaxBytes > _actualFileLength) {
 		softMaxBytes = (U_32)_actualFileLength;
-		Trc_SHR_OSC_Mmap_initialiseDataHeader_softMaxBytesTooBig(softMaxBytes);
+		Trc_SHR_OSC_Mmap_initializeDataHeader_softMaxBytesTooBig(softMaxBytes);
 	}
 
-	initialiser->init((char*)_dataStart, 
-								_dataLength, 
-								(I_32)_config->sharedClassMinAOTSize, 
+	initializer->init((char*)_dataStart,
+								_dataLength,
+								(I_32)_config->sharedClassMinAOTSize,
 								(I_32)_config->sharedClassMaxAOTSize,
 								(I_32)_config->sharedClassMinJITSize,
 								(I_32)_config->sharedClassMaxJITSize,
 								readWriteBytes,
 								softMaxBytes);
-	Trc_SHR_OSC_Mmap_initialiseDataHeader_initialised();
-	
-	Trc_SHR_OSC_Mmap_initialiseDataHeader_Exit();
+	Trc_SHR_OSC_Mmap_initializeDataHeader_initialized();
+
+	Trc_SHR_OSC_Mmap_initializeDataHeader_Exit();
 	return true;
 }
 
 /**
  * Method to detach a persistent cache from the process
  */
-void
+IDATA
 SH_OSCachemmap::detach()
 {
 	if (acquireHeaderWriteLock(_activeGeneration, NULL) != -1) {
-		updateLastDetachedTime();	
+		updateLastDetachedTime();
 		if (releaseHeaderWriteLock(_activeGeneration, NULL) == -1) {
 			PORT_ACCESS_FROM_PORT(_portLibrary);
 			I_32 myerror = j9error_last_error_number();
@@ -1325,6 +1348,7 @@ SH_OSCachemmap::detach()
 		Trc_SHR_Assert_ShouldNeverHappen();
 	}
 	internalDetach(_activeGeneration);
+	return 0;
 }
 
 /* Perform enough work to detach from the cache after having called internalAttach */
@@ -1332,19 +1356,19 @@ void
 SH_OSCachemmap::internalDetach(UDATA generation)
 {
 	PORT_ACCESS_FROM_PORT(_portLibrary);
-	
+
 	Trc_SHR_OSC_Mmap_internalDetach_Entry();
-	
+
 	if (NULL == _headerStart) {
 		Trc_SHR_OSC_Mmap_internalDetach_notattached();
 		return;
 	}
-	
+
 	if (_mapFileHandle) {
 		j9mmap_unmap_file(_mapFileHandle);
 		_mapFileHandle = NULL;
 	}
-	
+
 	if (0 != releaseAttachReadLock(generation)) {
 		Trc_SHR_OSC_Mmap_internalDetach_badReleaseAttachReadLock();
 	}
@@ -1353,37 +1377,38 @@ SH_OSCachemmap::internalDetach(UDATA generation)
 	_headerStart = NULL;
 	_dataStart = NULL;
 	_dataLength = 0;
-	/* The member variable '_actualFileLength' is not set to zero b/c 
-	 * the cache size may be needed to reset the cache (e.g. in the 
-	 * case of a build id mismatch, the cache may be reset, and 
-	 * ::getTotalSize() may be called to ensure the new cache is the 
-	 * same size). 
+	/* The member variable '_actualFileLength' is not set to zero b/c
+	 * the cache size may be needed to reset the cache (e.g. in the
+	 * case of a build id mismatch, the cache may be reset, and
+	 * ::getTotalSize() may be called to ensure the new cache is the
+	 * same size).
 	 */
-	
+
 	Trc_SHR_OSC_Mmap_internalDetach_Exit(_headerStart, _dataStart, _dataLength);
 	return;
 }
 
 /**
  * Method to get the statistics for a shared classes cache
- * 
+ *
  * Needs to be able to get stats for all cache generations
- * 
+ *
  * This method returns the last attached, detached and created times,
  * whether the cache is in use and that it is a persistent cache.
- * 
+ *
  * Details of data held in the cache data area are not accessed here
- * 
+ *
  * @param [in] vm The Java VM
  * @param [in] ctrlDirName  Cache directory
  * @param [in] cacheNameWithVGen Filename of the cache to stat
- * @param [out]	cacheInfo Pointer to the structure to be completed with the cache's details
+ * @param [out] cacheInfo Pointer to the structure to be completed with the cache's details
  * @param [in] reason Indicates the reason for getting cache stats. Refer sharedconsts.h for valid values.
- * 
+ * @param [out] lowerLayerList A list of SH_OSCache_Info for all lower layer caches.
+ *
  * @return 0 on success and -1 for failure
  */
 IDATA
-SH_OSCachemmap::getCacheStats(J9JavaVM* vm, const char* cacheDirName, const char *cacheNameWithVGen, SH_OSCache_Info *cacheInfo, UDATA reason)
+SH_OSCachemmap::getCacheStats(J9JavaVM* vm, const char* ctrlDirName, UDATA groupPerm, const char *cacheNameWithVGen, SH_OSCache_Info *cacheInfo, UDATA reason, J9Pool** lowerLayerList)
 {
 	J9PortLibrary *portLibrary = vm->portLibrary;
 	PORT_ACCESS_FROM_PORT(portLibrary);
@@ -1399,37 +1424,37 @@ SH_OSCachemmap::getCacheStats(J9JavaVM* vm, const char* cacheDirName, const char
 	J9SharedClassPreinitConfig piconfig;
 	J9PortShcVersion versionData;
 	UDATA reasonForStartup = SHR_STARTUP_REASON_NORMAL;
-	
+
 	Trc_SHR_OSC_Mmap_getCacheStats_Entry(cacheNameWithVGen, cacheInfo);
 
 	getValuesFromShcFilePrefix(portLibrary, cacheNameWithVGen, &versionData);
 	versionData.cacheType = J9PORT_SHR_CACHE_TYPE_PERSISTENT;
-	
+
 	if (removeCacheVersionAndGen(cacheInfo->name, CACHE_ROOT_MAXLEN, J9SH_VERSION_STRING_LEN+1, cacheNameWithVGen) != 0) {
 		return -1;
 	}
-	
+
 	if (SHR_STATS_REASON_DESTROY == reason) {
 		reasonForStartup = SHR_STARTUP_REASON_DESTROY;
 	} else if (SHR_STATS_REASON_EXPIRE == reason) {
 		reasonForStartup = SHR_STARTUP_REASON_EXPIRE;
 	}
+	
 
-	cache = (SH_OSCachemmap *) SH_OSCache::newInstance(PORTLIB, &cacheStruct, cacheInfo->name, cacheInfo->generation, &versionData);
-	
+	cache = (SH_OSCachemmap *) SH_OSCache::newInstance(PORTLIB, &cacheStruct, cacheInfo->name, cacheInfo->generation, &versionData, getLayerFromName(cacheNameWithVGen));
+
 	/* We try to open the cache read/write */
-	if (!cache->startup(vm, cacheDirName, vm->sharedCacheAPI->cacheDirPerm, cacheInfo->name, &piconfig, SH_CompositeCacheImpl::getNumRequiredOSLocks(), J9SH_OSCACHE_OPEXIST_STATS, 0, 0/*runtime flags*/, 0, 0, &versionData, NULL, reasonForStartup)) {
-	
+	if (!cache->startup(vm, ctrlDirName, vm->sharedCacheAPI->cacheDirPerm, cacheInfo->name, &piconfig, SH_CompositeCacheImpl::getNumRequiredOSLocks(), J9SH_OSCACHE_OPEXIST_STATS, 0, 0/*runtime flags*/, 0, 0, &versionData, NULL, reasonForStartup)) {
 		/* If that fails - try to open the cache read-only */
-		if (!cache->startup(vm, cacheDirName, vm->sharedCacheAPI->cacheDirPerm, cacheInfo->name, &piconfig, 0, J9SH_OSCACHE_OPEXIST_STATS, 0, 0/*runtime flags*/, J9OSCACHE_OPEN_MODE_DO_READONLY, 0, &versionData, NULL, reasonForStartup)) {
+		if (!cache->startup(vm, ctrlDirName, vm->sharedCacheAPI->cacheDirPerm, cacheInfo->name, &piconfig, 0, J9SH_OSCACHE_OPEXIST_STATS, 0, 0/*runtime flags*/, J9OSCACHE_OPEN_MODE_DO_READONLY, 0, &versionData, NULL, reasonForStartup)) {
 			cache->cleanup();
 			return -1;
 		}
 		inUse = J9SH_OSCACHE_UNKNOWN; /* We can't determine whether there are JVMs attached to a read-only cache */
-	
+
 	} else {
-		/* Try to acquire the attach write lock. This will only succeed if noone else
-		 * has the attach read lock i.e. there is noone connected to the cache */
+		/* Try to acquire the attach write lock. This will only succeed if no one else
+		 * has the attach read lock i.e. there is no one connected to the cache */
 		lockRc = cache->tryAcquireAttachWriteLock(cacheInfo->generation);
 		if (0 == lockRc) {
 			Trc_SHR_OSC_Mmap_getCacheStats_cacheNotInUse();
@@ -1447,10 +1472,10 @@ SH_OSCachemmap::getCacheStats(J9JavaVM* vm, const char* cacheDirName, const char
 	cacheInfo->os_shmid = (UDATA)J9SH_OSCACHE_UNKNOWN;
 	cacheInfo->os_semid = (UDATA)J9SH_OSCACHE_UNKNOWN;
 	cacheInfo->nattach = inUse;
-	
+
 	/* CMVC 177634: Skip calling internalAttach() when destroying the cache */
 	if (SHR_STARTUP_REASON_DESTROY != reasonForStartup) {
-		/* The offset of fields createTime, lastAttachedTime, lastDetachedTime in struct OSCache_mmap_header2 are different on 32-bit and 64-bit caches. 
+		/* The offset of fields createTime, lastAttachedTime, lastDetachedTime in struct OSCache_mmap_header2 are different on 32-bit and 64-bit caches.
 		 * This depends on OSCachemmap_header_version_current and OSCache_header_version_current not changing in an incompatible way.
 		 */
 		if (J9SH_ADDRMODE == cacheInfo->versionData.addrmode) {
@@ -1475,12 +1500,12 @@ SH_OSCachemmap::getCacheStats(J9JavaVM* vm, const char* cacheDirName, const char
 				cacheInfo->createtime = *timeValue;
 			}
 			if (SHR_STATS_REASON_ITERATE == reason) {
-				getCacheStatsCommon(vm, cache, cacheInfo);
+				getCacheStatsCommon(vm, ctrlDirName, groupPerm, cache, cacheInfo, lowerLayerList);
 			}
 			cache->internalDetach(cacheInfo->generation);
 		}
 	}
-	
+
 	Trc_SHR_OSC_Mmap_getCacheStats_Exit(cacheInfo->os_shmid,
 											cacheInfo->os_semid,
 											cacheInfo->lastattach,
@@ -1494,9 +1519,77 @@ SH_OSCachemmap::getCacheStats(J9JavaVM* vm, const char* cacheDirName, const char
 	return 0;
 }
 
+
+/**
+ * Method to get a SH_OSCache_Info for a compatible non-top layer shared classes cache.
+ * 
+ * This method returns the last attached, detached and created times,
+ * 
+ * Details of data held in the cache data area are not accessed here.
+ * 
+ * @param[in] vm The Java VM
+ * @param[in] ctrlDirName Cache directory
+ * @param[in] groupPerm Group permissions to open the cache directory
+ * @param[in] cacheNameWithVGen Filename of the cache to stat
+ * @param[out] cacheInfo Pointer to the structure to be completed with the cache's details
+ * @param[in] reason Indicates the reason for getting cache stats. Refer sharedconsts.h for valid values.
+ * @param[in] A pointer of SH_OSCachemmap
+ * 
+ * @return 0 on success and -1 for failure
+ */
+IDATA
+SH_OSCachemmap::getNonTopLayerCacheInfo(J9JavaVM* vm, const char* ctrlDirName, UDATA groupPerm, const char *cacheNameWithVGen, SH_OSCache_Info *cacheInfo, UDATA reason, SH_OSCachemmap* oscache)
+{
+	PORT_ACCESS_FROM_JAVAVM(vm);
+	void *cacheHeader = NULL;
+	I_64 *timeValue = NULL;
+	J9PortShcVersion versionData;
+	IDATA ret = 0;
+	
+	Trc_SHR_OSC_Mmap_getNonTopLayerCacheInfo_Entry(ctrlDirName, groupPerm, cacheNameWithVGen, reason);
+
+	Trc_SHR_Assert_True(SHR_STATS_REASON_ITERATE == reason);
+
+	getValuesFromShcFilePrefix(PORTLIB, cacheNameWithVGen, &versionData);
+	versionData.cacheType = J9PORT_SHR_CACHE_TYPE_PERSISTENT;
+	
+	if (removeCacheVersionAndGen(cacheInfo->name, CACHE_ROOT_MAXLEN, J9SH_VERSION_STRING_LEN + 1, cacheNameWithVGen) != 0) {
+		ret = -1;
+		goto done;
+	}
+
+	cacheInfo->lastattach = J9SH_OSCACHE_UNKNOWN;
+	cacheInfo->lastdetach = J9SH_OSCACHE_UNKNOWN;
+	cacheInfo->createtime = J9SH_OSCACHE_UNKNOWN;
+	cacheInfo->os_shmid = (UDATA)J9SH_OSCACHE_UNKNOWN;
+	cacheInfo->os_semid = (UDATA)J9SH_OSCACHE_UNKNOWN;
+	cacheInfo->nattach = J9SH_OSCACHE_UNKNOWN;
+
+	/* The offset of fields createTime, lastAttachedTime, lastDetachedTime in struct OSCache_mmap_header2 are different on 32-bit and 64-bit caches. 
+	 * This depends on OSCachemmap_header_version_current and OSCache_header_version_current not changing in an incompatible way.
+	 */
+	Trc_SHR_Assert_True(J9SH_ADDRMODE == cacheInfo->versionData.addrmode);
+
+	cacheHeader = oscache->_headerStart;
+
+	/* Read the fields from the header and populate cacheInfo */
+	if ((timeValue = (I_64*)getMmapHeaderFieldAddressForGen(cacheHeader, cacheInfo->generation, OSCACHEMMAP_HEADER_FIELD_LAST_ATTACHED_TIME))) {
+		cacheInfo->lastattach = *timeValue;
+	} 
+	if ((timeValue = (I_64*)getMmapHeaderFieldAddressForGen(cacheHeader, cacheInfo->generation, OSCACHEMMAP_HEADER_FIELD_LAST_DETACHED_TIME))) {
+		cacheInfo->lastdetach = *timeValue;
+	}
+	if ((timeValue = (I_64*)getMmapHeaderFieldAddressForGen(cacheHeader, cacheInfo->generation, OSCACHEMMAP_HEADER_FIELD_CREATE_TIME))) {
+		cacheInfo->createtime = *timeValue;
+	}
+done:
+	Trc_SHR_OSC_Mmap_getNonTopLayerCacheInfo_Exit(ret, cacheInfo->name, cacheInfo->lastattach, cacheInfo->lastdetach, cacheInfo->createtime);
+	return ret;
+}
+
 /**
  * Delete the cache file
- * 
+ *
  * @return true on success, false on failure
  */
 bool
@@ -1504,7 +1597,7 @@ SH_OSCachemmap::deleteCacheFile(LastErrorInfo *lastErrorInfo)
 {
 	bool result = true;
 	PORT_ACCESS_FROM_PORT(_portLibrary);
-	
+
 	Trc_SHR_OSC_Mmap_deleteCacheFile_entry();
 
 	if (NULL != lastErrorInfo) {
@@ -1530,15 +1623,15 @@ SH_OSCachemmap::deleteCacheFile(LastErrorInfo *lastErrorInfo)
 
 /**
  * Method to perform processing required when the JVM is exiting
- * 
- * Note:  The JVM requires that memory should not be freed during
- * 			exit processing
+ *
+ * Note: The JVM requires that memory should not be freed during
+ *          exit processing
  */
 void
 SH_OSCachemmap::runExitCode()
 {
 	Trc_SHR_OSC_Mmap_runExitCode_Entry();
-	
+
 	if (acquireHeaderWriteLock(_activeGeneration, NULL) != -1) {
 		if (updateLastDetachedTime()) {
 			Trc_SHR_OSC_Mmap_runExitCode_goodUpdateLastDetachedTime();
@@ -1546,7 +1639,7 @@ SH_OSCachemmap::runExitCode()
 			Trc_SHR_OSC_Mmap_runExitCode_badUpdateLastDetachedTime();
 			errorHandler(J9NLS_SHRC_OSCACHE_MMAP_CLEANUP_ERROR_UPDATING_LAST_DETACHED_TIME, NULL);
 		}
-		releaseHeaderWriteLock(_activeGeneration, NULL);			/* No point checking return value - we're going down */
+		releaseHeaderWriteLock(_activeGeneration, NULL); /* No point checking return value - we're going down */
 	} else {
 		PORT_ACCESS_FROM_PORT(_portLibrary);
 		I_32 myerror = j9error_last_error_number();
@@ -1560,27 +1653,27 @@ SH_OSCachemmap::runExitCode()
 #if defined (J9SHR_MSYNC_SUPPORT)
 /**
  * Synchronise cache updates to disk
- * 
+ *
  * This function call j9mmap_msync to synchronise the cache to disk
- * 
+ *
  * @return 0 on success, -1 on failure
  */
 IDATA
 SH_OSCachemmap::syncUpdates(void* start, UDATA length, U_32 flags)
 {
 	PORT_ACCESS_FROM_PORT(_portLibrary);
-	
+
 	IDATA rc;
-	
+
 	Trc_SHR_OSC_Mmap_syncUpdates_Entry(start, length, flags);
-	
+
 	rc = j9mmap_msync(start, length, flags);
 	if (-1 == rc) {
 		Trc_SHR_OSC_Mmap_syncUpdates_badmsync();
 		return -1;
 	}
 	Trc_SHR_OSC_Mmap_syncUpdates_goodmsync();
-	
+
 	Trc_SHR_OSC_Mmap_syncUpdates_Exit();
 	return 0;
 }
@@ -1588,10 +1681,10 @@ SH_OSCachemmap::syncUpdates(void* start, UDATA length, U_32 flags)
 
 /**
  * Return the locking capabilities of this shared classes cache implementation
- * 
+ *
  * Read and write locks are supported for this implementation
- * 
- * @return J9OSCACHE_DATA_WRITE_LOCK | J9OSCACHE_DATA_READ_LOCK 
+ *
+ * @return J9OSCACHE_DATA_WRITE_LOCK | J9OSCACHE_DATA_READ_LOCK
  */
 IDATA
 SH_OSCachemmap::getLockCapabilities()
@@ -1603,17 +1696,17 @@ SH_OSCachemmap::getLockCapabilities()
  * Sets the protection as specified by flags for the memory pages containing all or part of the interval address->(address+len)
  *
  * @param[in] portLibrary An instance of portLibrary
- * @param[in] address 	Pointer to the shared memory region.
- * @param[in] length	The size of memory in bytes spanning the region in which we want to set protection
- * @param[in] flags 	The specified protection to apply to the pages in the specified interval
- * 
+ * @param[in] address   Pointer to the shared memory region.
+ * @param[in] length    The size of memory in bytes spanning the region in which we want to set protection
+ * @param[in] flags     The specified protection to apply to the pages in the specified interval
+ *
  * @return 0 if the operations has been successful, -1 if an error has occured
  */
 IDATA
 SH_OSCachemmap::setRegionPermissions(J9PortLibrary* portLibrary, void *address, UDATA length, UDATA flags)
 {
 	PORT_ACCESS_FROM_PORT(portLibrary);
-		
+
 	return j9mmap_protect(address, length, flags);
 }
 
@@ -1621,7 +1714,7 @@ SH_OSCachemmap::setRegionPermissions(J9PortLibrary* portLibrary, void *address, 
  * Returns the minimum sized region of a shared classes cache on which the process can set permissions, in the number of bytes.
  *
  * @param[in] portLibrary An instance of portLibrary
- * 
+ *
  * @return the minimum size of region on which we can control permissions size or 0 if this is unsupported
  */
 UDATA
@@ -1642,9 +1735,9 @@ SH_OSCachemmap::getPermissionsRegionGranularity(J9PortLibrary* portLibrary)
 
 /**
  * Returns the total size of the cache memory
- * 
+ *
  * This value is not derived from the cache header, so is reliable even if the cache is corrupted
- * 
+ *
  * @return size of cache memory
  */
 U_32
@@ -1653,7 +1746,7 @@ SH_OSCachemmap::getTotalSize()
 	return (U_32)_actualFileLength;
 }
 
-UDATA 
+UDATA
 SH_OSCachemmap::getJavacoreData(J9JavaVM *vm, J9SharedClassJavacoreDataDescriptor* descriptor)
 {
 	descriptor->cacheGen = _activeGeneration;
@@ -1663,10 +1756,10 @@ SH_OSCachemmap::getJavacoreData(J9JavaVM *vm, J9SharedClassJavacoreDataDescripto
 	return 1;
 }
 
-void * 
+void *
 SH_OSCachemmap::getAttachedMemory()
 {
-	/* This method should only be called betwen calls to 
+	/* This method should only be called between calls to
 	 * internalAttach and internalDetach
 	 */
 	return _dataStart;

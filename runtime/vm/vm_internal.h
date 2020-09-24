@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -211,7 +211,6 @@ processXLogOptions(J9JavaVM * vm);
 
 
 /* ---------------- lockwordconfig.c ---------------- */
-#if defined(J9VM_THR_LOCK_NURSERY)
 /**
  * This method should be called to clean up the lockword configuration
  *
@@ -239,16 +238,6 @@ parseLockwordConfig(J9JavaVM* jvm, char* options, BOOLEAN* what);
 void
 printLockwordWhat(J9JavaVM* jvm);
 
-#if defined(J9VM_OUT_OF_PROCESS)
-/**
- * This method is called to copy the lock nursery exceptions hashtable so that it can be used locally for debugging
- *
- * @param jvm pointer to J9JavaVM to be localized
- * @return to the local version of the hashtable
- */
-J9HashTable* readLocknurseryHashtable(J9HashTable* lockwordExceptions);
-#endif /* J9VM_OUT_OF_PROCESS */
-#endif /* J9VM_THR_LOCK_NURSERY */
 
 
 /* ------------------- stringhelpers.c ----------------- */
@@ -336,23 +325,50 @@ convertCStringToByteArray(J9VMThread *currentThread, const char *byteArray);
 void
 initializeROMClasses(J9JavaVM *vm);
 
+/* ------------------- visible.c ----------------- */
+
+/**
+ * Check module access from srcModule to destModule.
+ *
+ * The algorithm for validating module access is:
+ * 1) check to see if the source module `reads` the dest module.
+ * 2) check to see if the dest module exports the package (that
+ * dest class belongs to) to the source module.
+ *
+ * For reflective calls, the rules are slightly different as all reflect
+ * reflect accesses implicitly have read access.  Set the
+ *  J9_LOOK_REFLECT_CALL flag in the lookup options for reflective
+ * checks.
+ *
+ * The unnamedModules export all the packages they own and have read access to all modules
+ * they require access to.
+ *
+ * @param[in] currentThread the current J9VMThread
+ * @param[in] vm the javaVM
+ * @param[in] srcRomClass the accessing class
+ * @param[in] srcModule the module of the src class
+ * @param[in] destRomClass the accessing class
+ * @param[in] destModule the module of the dest class
+ * @param[in] destPackageID packageID of the dest class
+ * @param[in] lookupOptions J9_LOOK* options
+ *
+ * @return 	J9_VISIBILITY_ALLOWED if the access is allowed,
+ * 			J9_VISIBILITY_MODULE_READ_ACCESS_ERROR if module read access error occurred,
+ * 			J9_VISIBILITY_MODULE_PACKAGE_EXPORT_ERROR if module package access error
+ */
+
+IDATA
+checkModuleAccess(J9VMThread *currentThread, J9JavaVM* vm, J9ROMClass* srcRomClass, J9Module* srcModule, J9ROMClass* destRomClass, J9Module* destModule, UDATA destPackageID, UDATA lookupOptions);
+
 /* ------------------- guardedstorage.c ----------------- */
 
 #if defined(OMR_GC_CONCURRENT_SCAVENGER) && defined(J9VM_ARCH_S390)
 /**
- * Guarded Storage Trap Handler
+ * Hardware Read Barrier Handler
  *
  * The trap handler that gets invoked when a H/W Read Barrier is triggered
  */
-J9_EXTERN_BUILDER_SYMBOL(handleGuardedStorageEvent);
-
-/**
- * Software Read Barrier Handler
- *
- * The handler that gets invoked by JIT before loads when running concurrent scavenger on hardware
- * that doesn't support guarded storage facility for object that are being evacuated
- */
-J9_EXTERN_BUILDER_SYMBOL(handleReadBarrier);
+J9_EXTERN_BUILDER_SYMBOL(handleHardwareReadBarrier);
 
 /**
  * Handle a Guarded Storage Event
@@ -388,6 +404,11 @@ j9gs_initializeThread(struct J9VMThread *vmThread);
 int32_t
 j9gs_deinitializeThread(struct J9VMThread *vmThread);
 #endif
+
+/* FlushProcessWriteBuffers.cpp */
+
+UDATA initializeExclusiveAccess(J9JavaVM *vm);
+void shutDownExclusiveAccess(J9JavaVM *vm);
 
 #ifdef __cplusplus
 }

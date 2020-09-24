@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2017 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -40,10 +40,13 @@ IDATA j9shr_sharedClassesFinishInitialization(J9JavaVM *vm);
 void j9shr_guaranteed_exit(J9JavaVM *vm, BOOLEAN exitForDebug);
 void j9shr_shutdown(J9JavaVM *vm);
 IDATA j9shr_print_stats(J9JavaVM *vm, UDATA parseResult, U_64 runtimeFlags, UDATA printStatsOptions);
+void j9shr_updateClasspathOpenState(J9JavaVM* vm, J9ClassPathEntry* classPathEntries, UDATA entryIndex, UDATA entryCount, BOOLEAN isOpen);
+
 void hookFindSharedClass(J9HookInterface** hookInterface, UDATA eventNum, void* voidData, void* userData);
 void hookSerializeSharedCache(J9HookInterface** hookInterface, UDATA eventNum, void* voidData, void* userData);
 void hookStoreSharedClass(J9HookInterface** hookInterface, UDATA eventNum, void* voidData, void* userData);
 UDATA j9shr_getCacheSizeBytes(J9JavaVM *vm);
+J9SharedClassCacheMode j9shr_getSharedClassCacheMode(J9JavaVM *vm);
 UDATA j9shr_getTotalUsableCacheBytes(J9JavaVM *vm);
 void j9shr_getMinMaxBytes(J9JavaVM *vm, U_32 *softmx, I_32 *minAOT, I_32 *maxAOT, I_32 *minJIT, I_32 *maxJIT);
 I_32 j9shr_setMinMaxBytes(J9JavaVM *vm, U_32 softmx, I_32 minAOT, I_32 maxAOT, I_32 minJIT, I_32 maxJIT);
@@ -53,11 +56,11 @@ UDATA j9shr_getFreeAvailableSpaceBytes(J9JavaVM *vm);
 void j9shr_hookZipLoadEvent(J9HookInterface** hook, UDATA eventNum, void* eventData, void* userData);
 void j9shr_resetSharedStringTable(J9JavaVM* vm);
 BOOLEAN j9shr_isCacheFull(J9JavaVM *vm);
-BOOLEAN j9shr_isAddressInCache(J9JavaVM *vm, void *address, UDATA length);
+BOOLEAN j9shr_isAddressInCache(J9JavaVM *vm, void *address, UDATA length, BOOLEAN checkReadWriteCacheOnly);
 void j9shr_populatePreinitConfigDefaults(J9JavaVM *vm, J9SharedClassPreinitConfig *updatedWithDefaults);
 BOOLEAN j9shr_isPlatformDefaultPersistent(struct J9JavaVM* vm);
 UDATA j9shr_isBCIEnabled(J9JavaVM *vm);
-UDATA ensureCorrectCacheSizes(J9PortLibrary* portlib, U_64 runtimeFlags, UDATA verboseFlags, J9SharedClassPreinitConfig* piconfig);
+UDATA ensureCorrectCacheSizes(J9JavaVM *vm, J9PortLibrary* portlib, U_64 runtimeFlags, UDATA verboseFlags, J9SharedClassPreinitConfig* piconfig);
 UDATA parseArgs(J9JavaVM* vm, char* options, U_64* runtimeFlags, UDATA* verboseFlags, char** cacheName, char** modContext, char** expireTime, char** ctrlDirName, char** cacheDirPerm, char** methodSpecs, UDATA* printStatsOptions, UDATA* storageKeyTesting);
 UDATA convertPermToDecimal(J9JavaVM *vm, const char *permStr);
 SCAbstractAPI * initializeSharedAPI(J9JavaVM *vm);
@@ -66,6 +69,11 @@ void j9shr_freeClasspathData(J9JavaVM *vm, void *cpData);
 IDATA j9shr_createCacheSnapshot(J9JavaVM* vm, const char* cacheName);
 const U_8* j9shr_findCompiledMethodEx1(J9VMThread* currentThread, const J9ROMMethod* romMethod, UDATA* flags);
 void j9shr_jvmPhaseChange(J9VMThread* currentThread, UDATA phase);
+void j9shr_storeGCHints(J9VMThread* currentThread, UDATA heapSize1, UDATA heapSize2, BOOLEAN forceReplace);
+IDATA j9shr_findGCHints(J9VMThread* currentThread, UDATA *heapSize1, UDATA *heapSize2);
+const U_8* storeStartupHintsToSharedCache(J9VMThread* currentThread);
+IDATA j9shr_getCacheDir(J9JavaVM* vm, const char* ctrlDirName, char* buffer, UDATA bufferSize, U_32 cacheType);
+U_32 getCacheTypeFromRuntimeFlags(U_64 runtimeFlags);
 
 typedef struct J9SharedClassesHelpText {
 	const char* option;
@@ -90,10 +98,13 @@ typedef struct J9SharedClassesOptions {
 #define OPTION_PRINTDETAILS "printDetails"
 #define OPTION_PRINTALLSTATS "printAllStats"
 #define OPTION_PRINTALLSTATS_EQUALS "printAllStats="
+#define OPTION_PRINT_TOP_LAYER_STATS "printTopLayerStats"
+#define OPTION_PRINT_TOP_LAYER_STATS_EQUALS "printTopLayerStats="
 #define OPTION_PRINT_CACHENAME "printCacheFilename"
 #define OPTION_NAME_EQUALS "name="
 #define OPTION_DESTROY "destroy"
 #define OPTION_DESTROYALL "destroyAll"
+#define OPTION_DESTROYALLLAYERS "destroyAllLayers"
 #define OPTION_EXPIRE_EQUALS "expire="
 #define OPTION_LISTALLCACHES "listAllCaches"
 #define OPTION_HELP "help"
@@ -109,9 +120,10 @@ typedef struct J9SharedClassesOptions {
 #define OPTION_TRACECOUNT "traceCount"
 #define OPTION_PRINTORPHANSTATS "printOrphanStats"
 #define OPTION_NONFATAL "nonfatal"
+#define OPTION_FATAL "fatal"
 #define OPTION_SILENT "silent"
 #define OPTION_NONE "none"
-#define OPTION_CONTROLDIR_EQUALS "controlDir="		/* purely for java5 compatability */
+#define OPTION_CONTROLDIR_EQUALS "controlDir="		/* purely for java5 compatibility */
 #define OPTION_NOAOT "noaot"
 #define OPTION_PERSISTENT "persistent"
 #define OPTION_NONPERSISTENT "nonpersistent"
@@ -121,6 +133,7 @@ typedef struct J9SharedClassesOptions {
 #define OPTION_NO_ROUND_PAGES "noRoundPages"
 #define OPTION_CACHERETRANSFORMED "cacheRetransformed"
 #define OPTION_NOBOOTCLASSPATH "noBootclasspath"
+#define OPTION_BOOTCLASSESONLY "bootClassesOnly"
 #if !defined(WIN32)
 #define OPTION_SNAPSHOTCACHE "snapshotCache"
 #define OPTION_DESTROYSNAPSHOT "destroySnapshot"
@@ -128,8 +141,8 @@ typedef struct J9SharedClassesOptions {
 #define OPTION_RESTORE_FROM_SNAPSHOT "restoreFromSnapshot"
 #define OPTION_PRINT_SNAPSHOTNAME "printSnapshotFilename"
 #endif /* !defined(WIN32) */
-#define OPTION_SINGLEJVM "singleJVM"		/* purely for java5 compatability */
-#define OPTION_KEEP "keep"					/* purely for java5 compatability */
+#define OPTION_SINGLEJVM "singleJVM"		/* purely for java5 compatibility */
+#define OPTION_KEEP "keep"					/* purely for java5 compatibility */
 #define OPTION_MPROTECT_EQUALS "mprotect="
 #define SUB_OPTION_MPROTECT_ALL "all"
 #define SUB_OPTION_MPROTECT_ONFIND "onfind"
@@ -177,6 +190,11 @@ typedef struct J9SharedClassesOptions {
 #define OPTION_ADJUST_MAXAOT_EQUALS "adjustmaxaot="
 #define OPTION_ADJUST_MINJITDATA_EQUALS "adjustminjitdata="
 #define OPTION_ADJUST_MAXJITDATA_EQUALS "adjustmaxjitdata="
+#define OPTION_NO_URL_TIMESTAMP_CHECK "noCheckURLTimestamps"
+#define OPTION_URL_TIMESTAMP_CHECK "checkURLTimestamps"
+#define OPTION_LAYER_EQUALS "layer="
+#define OPTION_CREATE_LAYER "createLayer"
+#define OPTION_NO_PERSISTENT_DISK_SPACE_CHECK "noPersistentDiskSpaceCheck"
 
 /* public options for printallstats= and printstats=  */
 #define SUB_OPTION_PRINTSTATS_ALL "all"
@@ -191,6 +209,7 @@ typedef struct J9SharedClassesOptions {
 #define SUB_OPTION_PRINTSTATS_ZIPCACHE "zipcache"
 #define SUB_OPTION_PRINTSTATS_JITHINT "jithint"
 #define SUB_OPTION_PRINTSTATS_STALE "stale"
+#define SUB_OPTION_PRINTSTATS_STARTUPHINT "startuphint"
 /* private options for printallstats= and printstats= */
 #define SUB_OPTION_PRINTSTATS_EXTRA "extra"
 #define SUB_OPTION_PRINTSTATS_ORPHAN "orphan"
@@ -250,7 +269,12 @@ typedef struct J9SharedClassesOptions {
 #define RESULT_DO_ADJUST_MAXAOT_EQUALS 46
 #define RESULT_DO_ADJUST_MINJITDATA_EQUALS 47
 #define RESULT_DO_ADJUST_MAXJITDATA_EQUALS 48
-
+#define RESULT_DO_BOOTCLASSESONLY 49
+#define RESULT_DO_DESTROYALLLAYERS 50
+#define RESULT_DO_LAYER_EQUALS 51
+#define RESULT_DO_CREATE_LAYER 52
+#define RESULT_DO_PRINT_TOP_LAYER_STATS 53
+#define RESULT_DO_PRINT_TOP_LAYER_STATS_EQUALS 54
 
 #define PARSE_TYPE_EXACT 1
 #define PARSE_TYPE_STARTSWITH 2
@@ -263,15 +287,16 @@ typedef struct J9SharedClassesOptions {
 #define HELPTEXT_CACHEDIR_OPTION OPTION_CACHEDIR_EQUALS"<directory>"
 #define HELPTEXT_CACHEDIRPERM_OPTION OPTION_CACHEDIRPERM_EQUALS"<permission>"
 #if defined(J9ZOS390) || defined(AIXPPC)
-#define HELPTEXT_MPROTECTEQUALS_PUBLIC_OPTION OPTION_MPROTECT_EQUALS"["SUB_OPTION_MPROTECT_ALL"|"SUB_OPTION_MPROTECT_DEF"|"SUB_OPTION_MPROTECT_NONE"]"
-#define HELPTEXT_MPROTECTEQUALS_PARTIAL_PAGES_PRIVATE_OPTION OPTION_MPROTECT_EQUALS""SUB_OPTION_MPROTECT_PARTIAL_PAGES
-#define HELPTEXT_MPROTECTEQUALS_PARTIAL_PAGES_ON_STARTUP_PRIVATE_OPTION OPTION_MPROTECT_EQUALS""SUB_OPTION_MPROTECT_PARTIAL_PAGES_ON_STARTUP
+#define HELPTEXT_MPROTECTEQUALS_PUBLIC_OPTION OPTION_MPROTECT_EQUALS "[" SUB_OPTION_MPROTECT_ALL "|" SUB_OPTION_MPROTECT_DEF "|" SUB_OPTION_MPROTECT_NONE "]"
+#define HELPTEXT_MPROTECTEQUALS_PARTIAL_PAGES_PRIVATE_OPTION OPTION_MPROTECT_EQUALS "" SUB_OPTION_MPROTECT_PARTIAL_PAGES
+#define HELPTEXT_MPROTECTEQUALS_PARTIAL_PAGES_ON_STARTUP_PRIVATE_OPTION OPTION_MPROTECT_EQUALS "" SUB_OPTION_MPROTECT_PARTIAL_PAGES_ON_STARTUP
 #else
-#define HELPTEXT_MPROTECTEQUALS_PUBLIC_OPTION OPTION_MPROTECT_EQUALS"["SUB_OPTION_MPROTECT_ALL"|"SUB_OPTION_MPROTECT_ONFIND"|"SUB_OPTION_MPROTECT_PARTIAL_PAGES_ON_STARTUP"|"SUB_OPTION_MPROTECT_DEF"|"SUB_OPTION_MPROTECT_NO_PARTIAL_PAGES"|"SUB_OPTION_MPROTECT_NONE"]"
-#define HELPTEXT_MPROTECTEQUALS_NO_RW_PRIVATE_OPTION OPTION_MPROTECT_EQUALS""SUB_OPTION_MPROTECT_NO_RW
+#define HELPTEXT_MPROTECTEQUALS_PUBLIC_OPTION OPTION_MPROTECT_EQUALS "[" SUB_OPTION_MPROTECT_ALL "|" SUB_OPTION_MPROTECT_ONFIND "|" SUB_OPTION_MPROTECT_PARTIAL_PAGES_ON_STARTUP "|" SUB_OPTION_MPROTECT_DEF "|" SUB_OPTION_MPROTECT_NO_PARTIAL_PAGES "|" SUB_OPTION_MPROTECT_NONE "]"
+#define HELPTEXT_MPROTECTEQUALS_NO_RW_PRIVATE_OPTION OPTION_MPROTECT_EQUALS "" SUB_OPTION_MPROTECT_NO_RW
 #endif /* defined(J9ZOS390) || defined(AIXPPC) */
 #define HELPTEXT_PRINTALLSTATS_OPTION OPTION_PRINTALLSTATS"[=option[+s]]"
 #define HELPTEXT_PRINTSTATS_OPTION OPTION_PRINTSTATS"[=option[+s]]"
+#define HELPTEXT_OPTION_PRINT_TOP_LAYER_STATS OPTION_PRINT_TOP_LAYER_STATS"[=option[+s]]"
 #define HELPTEXT_STORAGE_KEY_EQUALS OPTION_STORAGE_KEY_EQUALS"<key>"
 #define HELPTEXT_INVALIDATE_AOT_METHODS_OPTION OPTION_INVALIDATE_AOT_METHODS_EQUALS"help|{<method_specification>[,<method_specification>]}"
 #define HELPTEXT_REVALIDATE_AOT_METHODS_OPTION OPTION_REVALIDATE_AOT_METHODS_EQUALS"help|{<method_specification>[,<method_specification>]}"
@@ -281,6 +306,7 @@ typedef struct J9SharedClassesOptions {
 #define HELPTEXT_ADJUST_MAXAOT_EQUALS OPTION_ADJUST_MAXAOT_EQUALS"<size>"
 #define HELPTEXT_ADJUST_MINJITDATA_EQUALS OPTION_ADJUST_MINJITDATA_EQUALS"<size>"
 #define HELPTEXT_ADJUST_MAXJITDATA_EQUALS OPTION_ADJUST_MAXJITDATA_EQUALS"<size>"
+#define HELPTEXT_LAYER_EQUALS OPTION_LAYER_EQUALS "<number>"
 
 #define HELPTEXT_NEWLINE {"", 0, 0, 0, 0}
 

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -43,6 +43,10 @@
 #include <unistd.h>
 #endif
 
+#if defined(LINUX) && !defined(J9ZTPF)
+#include <pthread.h>
+#endif /* defined(LINUX) && !defined(J9ZTPF) */
+
 /**
  * @name Port library access
  * @anchor PortAccess
@@ -67,6 +71,17 @@
 #define J9PORT_CAPABILITY_STANDARD 1
 #define J9PORT_CAPABILITY_CAN_RESERVE_SPECIFIC_ADDRESS 2
 #define J9PORT_CAPABILITY_ALLOCATE_TOP_DOWN 4
+
+#if defined(WIN32)
+#define J9PORT_LIBRARY_SUFFIX ".dll"
+#elif defined(OSX)
+#define J9PORT_LIBRARY_SUFFIX ".dylib"
+#elif defined(LINUX) || defined(AIXPPC) || defined(J9ZOS390)
+#define J9PORT_LIBRARY_SUFFIX ".so"
+#else
+#error "J9PORT_LIBRARY_SUFFIX must be defined"
+#endif
+
 
 /**
  * @name Shared Semaphore Success flags
@@ -166,7 +181,12 @@
 #define J9SH_SEMAPHORE_ID "_semaphore_"
 
 #define J9SH_DIRPERM_ABSENT ((uintptr_t)-2)
-#define J9SH_DIRPERM (0777)
+#define J9SH_DIRPERM_ABSENT_GROUPACCESS ((uintptr_t)-3)
+
+#define J9SH_DIRPERM (0700)
+#define J9SH_DIRPERM_GROUPACCESS (0770)
+#define J9SH_DIRPERM_DEFAULT_TMP (0777)
+
 #define J9SH_PARENTDIRPERM (01777)
 #define J9SH_DIRPERM_DEFAULT (0000)
 #define J9SH_DIRPERM_DEFAULT_WITH_STICKYBIT (01000)
@@ -202,6 +222,10 @@
 #define J9SHSEM_OPEN_FOR_DESTROY	0x2
 #define J9SHSEM_OPEN_DO_NOT_CREATE	0x4
 
+/* Flags passed to "flags" argument of j9shmem_getDir(). */
+#define J9SHMEM_GETDIR_APPEND_BASEDIR		0x1
+#define J9SHMEM_GETDIR_USE_USERHOME			0x2
+
 /* Maximum id we should try when we do ftok */
 #define J9SH_MAX_PROJ_ID 20 
 
@@ -233,7 +257,8 @@ typedef struct  J9PortShSemParameters {
  	const char* controlFileDir; /* Directory in which to create control files (SysV semaphores only) */
  	uint8_t proj_id; /* parameter used with semName to generate semaphore key */
  	uint32_t deleteBasefile : 1; /* delete the base file (used to generate the semaphore key) when destroying the semaphore */
- } J9PortShSemParameters;
+ 	uint32_t global : 1; /* Windows only: use the global namespace for the sempahore */
+} J9PortShSemParameters;
 /**
  * @name Process Handle
  * J9ProcessHandle is a pointer to the opaque structure J9ProcessHandleStruct.
@@ -327,6 +352,7 @@ typedef enum J9ProcessorArchitecture {
 	PROCESSOR_S390_GP11,
 	PROCESSOR_S390_GP12,
 	PROCESSOR_S390_GP13,
+	PROCESSOR_S390_GP14,
 
 	PROCESSOR_PPC_UNKNOWN,
 	PROCESSOR_PPC_7XX,
@@ -349,6 +375,7 @@ typedef enum J9ProcessorArchitecture {
 	PROCESSOR_PPC_P7,
 	PROCESSOR_PPC_P8,
 	PROCESSOR_PPC_P9,
+	PROCESSOR_PPC_P10,
 
 	PROCESSOR_X86_UNKNOWN,
 	PROCESSOR_X86_INTELPENTIUM,
@@ -365,6 +392,8 @@ typedef enum J9ProcessorArchitecture {
 	PROCESSOR_X86_AMDATHLONDURON,
 	PROCESSOR_X86_AMDOPTERON,
 
+	PROCESOR_RISCV64_UNKNOWN,
+
 	PROCESSOR_DUMMY = 0x40000000 /* force wide enums */
 
 } J9ProcessorArchitecture;
@@ -380,7 +409,7 @@ typedef struct J9ProcessorDesc {
 } J9ProcessorDesc;
 
 /* PowerPC features
- * Auxlliary Vector Hardware Capability (AT_HWCAP) features for PowerPC.
+ * Auxiliary Vector Hardware Capability (AT_HWCAP) features for PowerPC.
  */
 #define J9PORT_PPC_FEATURE_32                    31 /* 32-bit mode.  */
 #define J9PORT_PPC_FEATURE_64                    30 /* 64-bit mode.  */
@@ -428,7 +457,6 @@ typedef struct J9ProcessorDesc {
 #define J9PORT_S390_FEATURE_MSA        3 /* STFLE bit 17 */
 #define J9PORT_S390_FEATURE_DFP        6 /* STFLE bit 42 & 44 */
 #define J9PORT_S390_FEATURE_HPAGE      7
-#define J9PORT_S390_FEATURE_HIGH_GPRS  9 /* set if 64 bit */
 #define J9PORT_S390_FEATURE_TE        10 /* STFLE bit 50 & 73 */
 #define J9PORT_S390_FEATURE_MSA_EXTENSION3                      11 /* STFLE bit 76 */
 #define J9PORT_S390_FEATURE_MSA_EXTENSION4                      12 /* STFLE bit 77 */
@@ -462,6 +490,9 @@ typedef struct J9ProcessorDesc {
 #define J9PORT_S390_FEATURE_GENERAL_INSTRUCTIONS_EXTENSIONS 34
 
 /* z196 facilities */
+
+/* STFLE bit 45 - High-word facility */
+#define J9PORT_S390_FEATURE_HIGH_WORD 45
 
 /* STFLE bit 45 - Load/store-on-condition facility 1 */
 #define J9PORT_S390_FEATURE_LOAD_STORE_ON_CONDITION_1 45
@@ -507,6 +538,42 @@ typedef struct J9ProcessorDesc {
 
 /* STFLE bit 57 - Message-security-assist-extension-5 facility */
 #define J9PORT_S390_FEATURE_MSA_EXTENSION_5 57
+
+/* z15 facilities */
+
+/* STFLE bit 61 - Miscellaneous-instruction-extensions facility 3 */ 
+#define J9PORT_S390_FEATURE_MISCELLANEOUS_INSTRUCTION_EXTENSION_3 61
+
+/* STFLE bit 148 - Vector enhancements facility 2 */
+#define J9PORT_S390_FEATURE_VECTOR_FACILITY_ENHANCEMENT_2 148
+
+/* STFLE bit 152 - Vector packed decimal enhancement facility */
+#define J9PORT_S390_FEATURE_VECTOR_PACKED_DECIMAL_ENHANCEMENT_FACILITY 152
+
+
+/*  Linux on Z features
+ *  Auxiliary Vector Hardware Capability (AT_HWCAP) features for Linux on Z.
+ *  Obtained from: https://github.com/torvalds/linux/blob/050cdc6c9501abcd64720b8cc3e7941efee9547d/arch/s390/include/asm/elf.h#L94-L109.
+ *  If new facility support is required, then it must be defined there (and here), before we can check for it consistently.
+ *
+ *  The linux kernel will use the defines in the above link to set HWCAP features. This is done inside "setup_hwcaps(void)" routine found
+ *  in arch/s390/kernel/setup.c in the linux kernel source tree.
+ */
+#define J9PORT_HWCAP_S390_ESAN3     0x1
+#define J9PORT_HWCAP_S390_ZARCH     0x2
+#define J9PORT_HWCAP_S390_STFLE     0x4
+#define J9PORT_HWCAP_S390_MSA       0x8
+#define J9PORT_HWCAP_S390_LDISP     0x10
+#define J9PORT_HWCAP_S390_EIMM      0x20
+#define J9PORT_HWCAP_S390_DFP       0x40
+#define J9PORT_HWCAP_S390_HPAGE     0x80
+#define J9PORT_HWCAP_S390_ETF3EH    0x100
+#define J9PORT_HWCAP_S390_HIGH_GPRS 0x200
+#define J9PORT_HWCAP_S390_TE        0x400
+#define J9PORT_HWCAP_S390_VXRS      0x800
+#define J9PORT_HWCAP_S390_VXRS_BCD  0x1000
+#define J9PORT_HWCAP_S390_VXRS_EXT  0x2000
+#define J9PORT_HWCAP_S390_GS        0x4000
 
 /* x86 features
  * INTEL INSTRUCTION SET REFERENCE, A-M
@@ -580,6 +647,43 @@ typedef struct J9ProcessorDesc {
 #define J9PORT_X86_FEATURE_F16C         32 + 29 /* 16-bit floating-point conversion instructions. */
 #define J9PORT_X86_FEATURE_RDRAND       32 + 30 /* Processor supports RDRAND instruction. */
 
+
+/* INTEL INSTRUCTION SET REFERENCE, A-L May 2019
+ * Vol. 2 3-197 Table 3-8. Structured Feature Information Returned in the EBX Register by CPUID instruction
+ */
+#define J9PORT_X86_FEATURE_FSGSBASE 		96 + 0	/* fsgsbase instructions support */
+#define J9PORT_X86_FEATURE_IA32_TSC_ADJUST	96 + 1	/* IA32_TSC_ADJUST MSR support */
+#define J9PORT_X86_FEATURE_SGX				96 + 2	/* Intel Software Guard Extensions */
+#define J9PORT_X86_FEATURE_BMI1				96 + 3	/* Bit Manipulation Instructions 1 */
+#define J9PORT_X86_FEATURE_HLE				96 + 4	/* Hardware Lock Elison */
+#define J9PORT_X86_FEATURE_AVX2				96 + 5	/* AVX2 support */
+#define J9PORT_X86_FEATURE_FDP_EXCPTN_ONLY	96 + 6	/* x87 FPU data pointer updated only on exceptions */
+#define J9PORT_X86_FEATURE_SMEP				96 + 7	/* Supervsior-Mode Execution Prevention */
+#define J9PORT_X86_FEATURE_BMI2				96 + 8	/* Bit Manipulation Instructions 2 */
+#define J9PORT_X86_FEATURE_ERMSB			96 + 9	/* Enhanced REP MOVSB/STOSB */
+#define J9PORT_X86_FEATURE_INVPCID			96 + 10	/* Invalidate Process-Context Identifier instruction */
+#define J9PORT_X86_FEATURE_RTM				96 + 11	/* Restricted Transactional Memory */
+#define J9PORT_X86_FEATURE_RDT_M			96 + 12	/* Intel RDT Monitoring */
+#define J9PORT_X86_FEATURE_DEPRECATE_FPUCS	96 + 13	/* Deprecates FPU CS and FPU DS when set */
+#define J9PORT_X86_FEATURE_MPX				96 + 14	/* Intel Memory Protextion Extensions */
+#define J9PORT_X86_FEATURE_RDT_A			96 + 15	/* Intel RDT Allocation */
+#define J9PORT_X86_FEATURE_AVX512F			96 + 16	/* AVX512 Foundation */
+#define J9PORT_X86_FEATURE_AVX512DQ			96 + 17	/* AVX512 Doubleword & Quadword */
+#define J9PORT_X86_FEATURE_RDSEED			96 + 18	/* RDSEED instruction support */
+#define J9PORT_X86_FEATURE_ADX				96 + 19	/* Intel ADX (multi-precision arithmetic) */
+#define J9PORT_X86_FEATURE_SMAP				96 + 20	/* Supervisor-Mode Access Prevention */
+#define J9PORT_X86_FEATURE_AVX512_IFMA		96 + 21	/* AVX512 Integer Fused Multiply Add */
+#define J9PORT_X86_FEATURE_22				96 + 22	/* reserved */
+#define J9PORT_X86_FEATURE_CLFLUSHOPT		96 + 23	/* cache flush optimized */
+#define J9PORT_X86_FEATURE_CLWB				96 + 24	/* cache line write back */
+#define J9PORT_X86_FEATURE_IPT				96 + 25	/* Intel Processor Trace */
+#define J9PORT_X86_FEATURE_AVX512PF			96 + 26	/* AVX512 Prefetch */
+#define J9PORT_X86_FEATURE_AVX512ER			96 + 27	/* AVX512 Exponential and Reciprocal */
+#define J9PORT_X86_FEATURE_AVX512CD			96 + 28	/* AVX512 Conflict Detection */
+#define J9PORT_X86_FEATURE_SHA				96 + 29	/* Intel SHA Extensions */
+#define J9PORT_X86_FEATURE_AVX512BW			96 + 30	/* AVX512 Byte and Word */
+#define J9PORT_X86_FEATURE_AVX512VL			96 + 31	/* AVX512 Vector Length */
+
 /* cache types */
 #define J9PORT_CACHEINFO_ICACHE 0x01
 #define J9PORT_CACHEINFO_DCACHE 0x02
@@ -648,6 +752,7 @@ typedef struct J9CacheInfoQuery {
 #define J9PORT_VMEM_ZOS_USE_EXTENDED_PRIVATE_AREA OMRPORT_VMEM_ZOS_USE2TO32G_AREA
 #define J9PORT_VMEM_ALLOCATE_TOP_DOWN OMRPORT_VMEM_ALLOCATE_TOP_DOWN
 #define J9PORT_VMEM_ADDRESS_HINT OMRPORT_VMEM_ADDRESS_HINT
+#define J9PORT_VMEM_NO_AFFINITY OMRPORT_VMEM_NO_AFFINITY
 
 #define J9PORT_SLOPEN_DECORATE OMRPORT_SLOPEN_DECORATE
 #define J9PORT_SLOPEN_LAZY OMRPORT_SLOPEN_LAZY
@@ -662,6 +767,7 @@ typedef struct J9CacheInfoQuery {
 #define J9PORT_CTLDATA_TRACE_STOP OMRPORT_CTLDATA_TRACE_STOP
 #define J9PORT_CTLDATA_VMEM_NUMA_IN_USE OMRPORT_CTLDATA_VMEM_NUMA_IN_USE
 #define J9PORT_CTLDATA_VMEM_NUMA_ENABLE OMRPORT_CTLDATA_VMEM_NUMA_ENABLE
+#define J9PORT_CTLDATA_VMEM_NUMA_INTERLEAVE_MEM OMRPORT_CTLDATA_VMEM_NUMA_INTERLEAVE_MEM
 #define J9PORT_CTLDATA_SYSLOG_OPEN OMRPORT_CTLDATA_SYSLOG_OPEN
 #define J9PORT_CTLDATA_SYSLOG_CLOSE OMRPORT_CTLDATA_SYSLOG_CLOSE
 #define J9PORT_CTLDATA_NOIPT OMRPORT_CTLDATA_NOIPT
@@ -672,10 +778,11 @@ typedef struct J9CacheInfoQuery {
 #define J9PORT_CTLDATA_NOSUBALLOC32BITMEM OMRPORT_CTLDATA_NOSUBALLOC32BITMEM
 #define J9PORT_CTLDATA_VMEM_ADVISE_OS_ONFREE OMRPORT_CTLDATA_VMEM_ADVISE_OS_ONFREE
 #define J9PORT_CTLDATA_VECTOR_REGS_SUPPORT_ON OMRPORT_CTLDATA_VECTOR_REGS_SUPPORT_ON
+#define J9PORT_CTLDATA_VMEM_ADVISE_HUGEPAGE OMRPORT_CTLDATA_VMEM_ADVISE_HUGEPAGE
+#define J9PORT_CTLDATA_VMEM_HUGE_PAGES_MMAP_ENABLED OMRPORT_CTLDATA_VMEM_HUGE_PAGES_MMAP_ENABLED
 
 #define J9PORT_CPU_ONLINE OMRPORT_CPU_ONLINE
 #define J9PORT_CPU_TARGET OMRPORT_CPU_TARGET
-#define J9PORT_CPU_ENTITLED OMRPORT_CPU_ENTITLED
 #define J9PORT_CPU_PHYSICAL OMRPORT_CPU_PHYSICAL
 #define J9PORT_CPU_BOUND OMRPORT_CPU_BOUND
 
@@ -867,6 +974,7 @@ typedef struct J9CacheInfoQuery {
 #define J9PORT_ARCH_PPC64LE OMRPORT_ARCH_PPC64LE
 #define J9PORT_ARCH_S390 OMRPORT_ARCH_S390
 #define J9PORT_ARCH_S390X OMRPORT_ARCH_S390X
+#define J9PORT_ARCH_RISCV OMRPORT_ARCH_RISCV
 
 #define J9PORT_RESOURCE_CORE_FLAGS OMRPORT_RESOURCE_CORE_FLAGS
 #define J9PORT_RESOURCE_FILE_DESCRIPTORS OMRPORT_RESOURCE_FILE_DESCRIPTORS

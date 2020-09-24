@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -49,10 +49,10 @@ jvmtiSetEventCallbacks(jvmtiEnv* env,
 			JVMTI_ERROR(JVMTI_ERROR_ILLEGAL_ARGUMENT);
 		}
 
-		/* Assume jvmtiEventCallbacks always reflects the largest possible callback table (most current version) */
+		/* Ignore any callbacks which exceed the size of the table of the latest known version in this VM */
 
 		if (size_of_callbacks > sizeof(jvmtiEventCallbacks)) {
-			JVMTI_ERROR(JVMTI_ERROR_ILLEGAL_ARGUMENT);
+			size_of_callbacks = sizeof(jvmtiEventCallbacks);
 		}
 
 		size_of_callbacks /= sizeof(void *);
@@ -88,8 +88,8 @@ jvmtiSetEventNotificationMode(jvmtiEnv* env,
 {
 	J9JVMTIEnv * j9env = (J9JVMTIEnv *) env;
 	J9JavaVM * vm = j9env->vm;
-	J9VMThread * currentThread;
-	jvmtiError rc;
+	J9VMThread * currentThread = NULL;
+	jvmtiError rc = JVMTI_ERROR_NONE;
 
 	Trc_JVMTI_jvmtiSetEventNotificationMode_Entry(env);
 
@@ -149,7 +149,13 @@ jvmtiSetEventNotificationMode(jvmtiEnv* env,
 				case  JVMTI_EVENT_VM_OBJECT_ALLOC:
 					ENSURE_CAPABILITY(env, can_generate_vm_object_alloc_events);
 					break;
- 
+
+#if JAVA_SPEC_VERSION >= 11
+				case  JVMTI_EVENT_SAMPLED_OBJECT_ALLOC:
+					ENSURE_CAPABILITY(env, can_generate_sampled_object_alloc_events);
+					break;
+#endif /* JAVA_SPEC_VERSION >= 11 */
+
 				case JVMTI_EVENT_NATIVE_METHOD_BIND:
 					ENSURE_CAPABILITY(env, can_generate_native_method_bind_events);
 					break;
@@ -167,6 +173,14 @@ jvmtiSetEventNotificationMode(jvmtiEnv* env,
 					break;
  			}
 		}
+#if JAVA_SPEC_VERSION >= 11
+		else if (JVMTI_DISABLE == mode) {
+			if (JVMTI_EVENT_SAMPLED_OBJECT_ALLOC == event_type) {
+				/* Set sampling interval to UDATA_MAX to inform GC that sampling is not required */
+				vm->memoryManagerFunctions->j9gc_set_allocation_sampling_interval(vm, UDATA_MAX);
+			}
+		}
+#endif /* JAVA_SPEC_VERSION >= 11 */
 
 		/* Disallow certain events at the thread level */
 
@@ -179,6 +193,9 @@ jvmtiSetEventNotificationMode(jvmtiEnv* env,
 			case JVMTI_EVENT_COMPILED_METHOD_UNLOAD:
 			case JVMTI_EVENT_DYNAMIC_CODE_GENERATED:
 			case JVMTI_EVENT_DATA_DUMP_REQUEST:
+#if JAVA_SPEC_VERSION >= 11
+			case  JVMTI_EVENT_SAMPLED_OBJECT_ALLOC:
+#endif /* JAVA_SPEC_VERSION >= 11 */
 				if (event_thread != NULL) {
 					JVMTI_ERROR(JVMTI_ERROR_ILLEGAL_ARGUMENT);
 				}
@@ -190,7 +207,7 @@ jvmtiSetEventNotificationMode(jvmtiEnv* env,
 		rc = setEventNotificationMode(j9env, currentThread, mode, event_type, event_thread, J9JVMTI_LOWEST_EVENT, J9JVMTI_HIGHEST_EVENT);
 
 done:
-		vm->internalVMFunctions->internalReleaseVMAccess(currentThread);
+		vm->internalVMFunctions->internalExitVMToJNI(currentThread);
 	}
 
 	TRACE_JVMTI_RETURN(jvmtiSetEventNotificationMode);
@@ -254,7 +271,7 @@ jvmtiGenerateEvents(jvmtiEnv* env,
 			}
 
 			vm->internalVMFunctions->releaseExclusiveVMAccess(currentThread);
-			vm->internalVMFunctions->internalReleaseVMAccess(currentThread);
+			vm->internalVMFunctions->internalExitVMToJNI(currentThread);
 
 			/* Wait for the events to be reported */
 

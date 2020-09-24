@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar19-SE]*/
 /*******************************************************************************
- * Copyright (c) 2016, 2017 IBM Corp. and others
+ * Copyright (c) 2016, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -32,9 +32,11 @@ import com.ibm.java.lang.management.internal.ManagementUtils;
 import com.ibm.lang.management.JvmCpuMonitorMXBean;
 import com.ibm.virtualization.management.internal.GuestOS;
 import com.ibm.virtualization.management.internal.HypervisorMXBeanImpl;
+import openj9.lang.management.OpenJ9DiagnosticsMXBean;
+import openj9.lang.management.internal.OpenJ9DiagnosticsMXBeanImpl;
 
 /**
- * This class implements the service-provider interface to make IBM-specific
+ * This class implements the service-provider interface to make OpenJ9-specific
  * MXBeans available. These beans are either in addition to the basic set or
  * implement non-standard interfaces.
  */
@@ -53,13 +55,13 @@ public final class PlatformMBeanProvider extends sun.management.spi.PlatformMBea
 		 *     PlatformLoggingMXBean
 		 */
 
-		// register IBM extensions of standard singleton beans
-		ComponentBuilder.create(ExtendedMemoryMXBeanImpl.getInstance())
+		// register OpenJ9 extensions of standard singleton beans
+		ComponentBuilder.create(ManagementFactory.MEMORY_MXBEAN_NAME, ExtendedMemoryMXBeanImpl.getInstance())
 			.addInterface(com.ibm.lang.management.MemoryMXBean.class)
 			.addInterface(java.lang.management.MemoryMXBean.class)
 			.register(allComponents);
 
-		ComponentBuilder.create(ExtendedOperatingSystemMXBeanImpl.getInstance())
+		ComponentBuilder.create(ManagementFactory.OPERATING_SYSTEM_MXBEAN_NAME, ExtendedOperatingSystemMXBeanImpl.getInstance())
 			.addInterface(com.ibm.lang.management.OperatingSystemMXBean.class)
 			.addInterface(com.sun.management.OperatingSystemMXBean.class)
 			.addInterface(java.lang.management.OperatingSystemMXBean.class)
@@ -67,42 +69,72 @@ public final class PlatformMBeanProvider extends sun.management.spi.PlatformMBea
 			.addInterfaceIf(com.sun.management.UnixOperatingSystemMXBean.class, ManagementUtils.isRunningOnUnix())
 			.register(allComponents);
 
-		ComponentBuilder.create(ExtendedRuntimeMXBeanImpl.getInstance())
+		ComponentBuilder.create(ManagementFactory.RUNTIME_MXBEAN_NAME, ExtendedRuntimeMXBeanImpl.getInstance())
 			.addInterface(com.ibm.lang.management.RuntimeMXBean.class)
 			.addInterface(java.lang.management.RuntimeMXBean.class)
 			.register(allComponents);
 
-		ComponentBuilder.create(ExtendedThreadMXBeanImpl.getInstance())
+		ComponentBuilder.create(ManagementFactory.THREAD_MXBEAN_NAME, ExtendedThreadMXBeanImpl.getInstance())
 			.addInterface(com.ibm.lang.management.ThreadMXBean.class)
 			.addInterface(java.lang.management.ThreadMXBean.class)
 			.register(allComponents);
 
-		// register IBM-specific singleton beans
-		ComponentBuilder.create(GuestOS.getInstance())
+		// register OpenJ9-specific singleton beans
+		ComponentBuilder.create("com.ibm.virtualization.management:type=GuestOS", GuestOS.getInstance()) //$NON-NLS-1$
 			.addInterface(com.ibm.virtualization.management.GuestOSMXBean.class)
 			.register(allComponents);
 
-		ComponentBuilder.create(HypervisorMXBeanImpl.getInstance())
+		ComponentBuilder.create("com.ibm.virtualization.management:type=Hypervisor", HypervisorMXBeanImpl.getInstance()) //$NON-NLS-1$
 			.addInterface(com.ibm.virtualization.management.HypervisorMXBean.class)
 			.register(allComponents);
 
-		ComponentBuilder.create(JvmCpuMonitor.getInstance())
+		ComponentBuilder.create("com.ibm.lang.management:type=JvmCpuMonitor", JvmCpuMonitor.getInstance()) //$NON-NLS-1$
 			.addInterface(JvmCpuMonitorMXBean.class)
 			.register(allComponents);
 
-		// register beans with zero or more instances
-		ComponentBuilder.create(ManagementFactory.GARBAGE_COLLECTOR_MXBEAN_DOMAIN_TYPE, ExtendedMemoryMXBeanImpl.getInstance().getGarbageCollectorMXBeans())
-			.addInterfaceIf(com.ibm.lang.management.GarbageCollectorMXBean.class, true)
-			.addInterfaceIf(com.sun.management.GarbageCollectorMXBean.class, true)
-			.addInterface(java.lang.management.GarbageCollectorMXBean.class)
-			.addInterface(java.lang.management.MemoryManagerMXBean.class)
-			.register(allComponents);
+		/* OpenJ9DiagnosticsMXBeanImpl depends on openj9.jvm. If openj9.jvm is not
+		 * available exclude this component.
+		 */
+		if (ModuleLayer.boot().findModule("openj9.jvm").isPresent()) { //$NON-NLS-1$
+			ComponentBuilder.create("openj9.lang.management:type=OpenJ9Diagnostics", OpenJ9DiagnosticsMXBeanImpl.getInstance()) //$NON-NLS-1$
+				.addInterface(OpenJ9DiagnosticsMXBean.class)
+				.register(allComponents);
+		}
 
-		ComponentBuilder.create(ManagementFactory.MEMORY_POOL_MXBEAN_DOMAIN_TYPE, ExtendedMemoryMXBeanImpl.getInstance().getMemoryPoolMXBeans(false))
-			.addInterfaceIf(com.ibm.lang.management.MemoryPoolMXBean.class, true)
-			.addInterface(java.lang.management.MemoryPoolMXBean.class)
-			.register(allComponents);
-		
+		// register beans with zero or more instances
+
+		{
+			List<java.lang.management.GarbageCollectorMXBean> beans = ExtendedMemoryMXBeanImpl.getInstance().getGarbageCollectorMXBeans();
+			int beanCount = beans.size();
+			List<String> names = new ArrayList<>(beanCount);
+
+			for (java.lang.management.GarbageCollectorMXBean bean : beans) {
+				names.add(bean.getName());
+			}
+
+			ComponentBuilder.create(ManagementFactory.GARBAGE_COLLECTOR_MXBEAN_DOMAIN_TYPE, names, beans)
+				.addInterfaceIf(com.ibm.lang.management.GarbageCollectorMXBean.class, true)
+				.addInterfaceIf(com.sun.management.GarbageCollectorMXBean.class, true)
+				.addInterface(java.lang.management.GarbageCollectorMXBean.class)
+				.addInterface(java.lang.management.MemoryManagerMXBean.class)
+				.register(allComponents);
+		}
+
+		{
+			List<java.lang.management.MemoryPoolMXBean> beans = ExtendedMemoryMXBeanImpl.getInstance().getMemoryPoolMXBeans(false);
+			int beanCount = beans.size();
+			List<String> names = new ArrayList<>(beanCount);
+
+			for (java.lang.management.MemoryPoolMXBean bean : beans) {
+				names.add(bean.getName());
+			}
+
+			ComponentBuilder.create(ManagementFactory.MEMORY_POOL_MXBEAN_DOMAIN_TYPE, names, beans)
+				.addInterfaceIf(com.ibm.lang.management.MemoryPoolMXBean.class, true)
+				.addInterface(java.lang.management.MemoryPoolMXBean.class)
+				.register(allComponents);
+		}
+
 		components = Collections.unmodifiableList(allComponents);
 	}
 

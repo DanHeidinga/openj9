@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -35,20 +35,25 @@
 #include "j9modron.h"
 #include "ModronAssertions.h"
 #include "omr.h"
+#include "omrcfg.h"
 #include "VerboseGCInterface.h"
 
-#include "Collector.hpp"
 #if defined(J9VM_GC_FINALIZATION)
 #include "FinalizeListManager.hpp"
 #endif /* J9VM_GC_FINALIZATION */
 #include "GCExtensions.hpp"
+#include "GlobalCollector.hpp"
 #include "Heap.hpp"
+#include "HeapRegionManager.hpp"
+#if defined(OMR_GC_VLHGC_CONCURRENT_COPY_FORWARD)
+#include "HeapRegionStateTable.hpp"
+#endif /* defined(OMR_GC_VLHGC_CONCURRENT_COPY_FORWARD) */
 #include "MemorySpace.hpp"
 #include "MemorySubSpace.hpp"
 
 extern "C" {
 extern J9MemoryManagerFunctions MemoryManagerFunctions;
-extern void initialiseVerboseFunctionTableWithDummies(J9MemoryManagerVerboseInterface *table);
+extern void initializeVerboseFunctionTableWithDummies(J9MemoryManagerVerboseInterface *table);
 
 /**
  * sets the mode where TLH pages are zeroed
@@ -142,7 +147,31 @@ j9gc_concurrent_scavenger_enabled(J9JavaVM *javaVM)
 UDATA
 j9gc_software_read_barrier_enabled(J9JavaVM *javaVM)
 {
-	return MM_GCExtensions::getExtensions(javaVM)->isSoftwareEvacuateReadBarrierEnabled() ? 1 : 0;
+	return MM_GCExtensions::getExtensions(javaVM)->isSoftwareRangeCheckReadBarrierEnabled() ? 1 : 0;
+}
+
+/**
+ * Query if hot reference field is reqired for scavenger dynamicBreadthFirstScanOrdering
+ *  @return true if scavenger dynamicBreadthFirstScanOrdering is enabled, 0 otherwise 
+ */
+BOOLEAN
+j9gc_hot_reference_field_required(J9JavaVM *javaVM)
+{
+#if defined(J9VM_GC_MODRON_SCAVENGER)
+	return MM_GCExtensions::OMR_GC_SCAVENGER_SCANORDERING_DYNAMIC_BREADTH_FIRST == MM_GCExtensions::getExtensions(javaVM)->scavengerScanOrdering;
+#else /* J9VM_GC_MODRON_SCAVENGER */
+	return FALSE;
+#endif /* J9VM_GC_MODRON_SCAVENGER */
+}
+
+/**
+ * Query for the max hot field list length that a class is allowed to have.
+ * Valid if dynamicBreadthFirstScanOrdering is enabled.
+ */
+uint32_t
+j9gc_max_hot_field_list_length(J9JavaVM *javaVM)
+{
+	return MM_GCExtensions::getExtensions(javaVM)->maxHotFieldListLength;
 }
 
 /**
@@ -304,21 +333,41 @@ j9gc_modron_getConfigurationValueForKey(J9JavaVM *javaVM, UDATA key, void *value
 		keyFound = TRUE;
 		break;
 	case j9gc_modron_configuration_discontiguousArraylets:
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
 		*((UDATA *)value) = (UDATA_MAX != extensions->getOmrVM()->_arrayletLeafSize) ? TRUE : FALSE;
 		keyFound = TRUE;
-#elif defined(J9VM_GC_ARRAYLETS)
-		*((UDATA *)value) = TRUE;
-		keyFound = TRUE;
-#else
-		keyFound = FALSE;
-#endif /* J9VM_GC_HYBRID_ARRAYLETS */
 		break;
 	case j9gc_modron_configuration_gcThreadCount:
-		*((UDATA *)value) =  extensions->gcThreadCount;
+		*((UDATA *)value) = extensions->gcThreadCount;
 		keyFound = TRUE;
 		break;
+	case j9gc_modron_configuration_compressObjectReferences:
+		*((UDATA *)value) = extensions->compressObjectReferences();
+		keyFound = TRUE;
+		break;
+	case j9gc_modron_configuration_heapRegionShift:
+		if (extensions->isVLHGC()) {
+			*((UDATA *)value) = extensions->heapRegionManager->getRegionShift();
+			keyFound = TRUE;
+		} else {
+			*((UDATA *)value) = 0;
+			keyFound = FALSE;
+		}
+		break;
+	case j9gc_modron_configuration_heapRegionStateTable:
+#if defined(OMR_GC_VLHGC_CONCURRENT_COPY_FORWARD)
+		if (extensions->isConcurrentCopyForwardEnabled()) {
+			*((UDATA *)value) = (UDATA) extensions->heapRegionStateTable->getTable();
+			keyFound = TRUE;
+		} else {
+			*((UDATA *)value) = 0;
+			keyFound = FALSE;
+		}
+#else /* defined(OMR_GC_VLHGC_CONCURRENT_COPY_FORWARD) */
+		*((UDATA *)value) = 0;
+		keyFound = FALSE;
+#endif /* defined(OMR_GC_VLHGC_CONCURRENT_COPY_FORWARD) */
 
+		break;
 	default:
 		/* key is either invalid or unknown for this configuration - should not have been requested */
 		Assert_MM_unreachable();

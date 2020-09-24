@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -23,6 +23,16 @@
 #if !defined(OBJECTHASH_HPP_)
 #define OBJECTHASH_HPP_
 
+#include "j9cfg.h"
+
+#if defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES)
+#if OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES
+#define VM_ObjectHash VM_ObjectHashCompressed
+#else /* OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES */
+#define VM_ObjectHash VM_ObjectHashFull
+#endif /* OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES */
+#endif /* OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES */
+
 #include "j9.h"
 #include "j9accessbarrier.h"
 #include "j9consts.h"
@@ -44,20 +54,17 @@ public:
 private:
 
 	static VMINLINE void
-	setHasBeenHashed(j9object_t objectPtr)
+	setHasBeenHashed(J9JavaVM *vm, j9object_t objectPtr)
 	{
-		volatile j9objectclass_t* flagsPtr = (j9objectclass_t*)&((J9Object*)objectPtr)->clazz;
-		j9objectclass_t oldFlags = 0;
-		j9objectclass_t newFlags = 0;
-		do {
-			oldFlags = *flagsPtr;
-			newFlags = oldFlags | OBJECT_HEADER_HAS_BEEN_HASHED_IN_CLASS;
+		if (J9JAVAVM_COMPRESS_OBJECT_REFERENCES(vm)) {
+			VM_AtomicSupport::bitOrU32(
+				(uint32_t*)&((J9Object*)objectPtr)->clazz,
+				(uint32_t)OBJECT_HEADER_HAS_BEEN_HASHED_IN_CLASS);
+		} else {
+			VM_AtomicSupport::bitOr(
+				(uintptr_t*)&((J9Object*)objectPtr)->clazz,
+				(uintptr_t)OBJECT_HEADER_HAS_BEEN_HASHED_IN_CLASS);
 		}
-#if defined(J9VM_INTERP_COMPRESSED_OBJECT_HEADER)
-		while (oldFlags != VM_AtomicSupport::lockCompareExchangeU32(flagsPtr, oldFlags, newFlags));
-#else /* defined(J9VM_INTERP_COMPRESSED_OBJECT_HEADER) */
-		while (oldFlags != VM_AtomicSupport::lockCompareExchange(flagsPtr, (UDATA)oldFlags, (UDATA)newFlags));
-#endif /* defined(J9VM_INTERP_COMPRESSED_OBJECT_HEADER) */
 	}
 
 	static VMINLINE U_32
@@ -174,6 +181,11 @@ public:
 		hashValue *= MUL2;
 		hashValue ^= hashValue >> 16;
 
+		/* If forcing positive hash codes, AND out the sign bit */
+		if (J9_ARE_ANY_BITS_SET(vm->extendedRuntimeFlags, J9_EXTENDED_RUNTIME_POSITIVE_HASHCODE)) {
+			hashValue &= (U_32)0x7FFFFFFF;
+		}
+
 		return (I_32) hashValue;
 	}
 
@@ -209,28 +221,41 @@ public:
 		} else {
 #if defined(J9VM_GC_MODRON_COMPACTION) || defined(J9VM_GC_GENERATIONAL)
 			J9Class *objectClass = J9OBJECT_CLAZZ_VM(vm, objectPointer);
-
-			/* Technically, one should use J9OBJECT_FLAGS_FROM_CLAZZ macro to fetch the clazz flags.
-			 * However, considering the need to optimize hashcode code path and how we actually use
-			 * the flag, it is sufficent to fetch objectPointer->clazz.
-			 */
-			UDATA flags = (UDATA)(((J9Object*)objectPointer)->clazz);
+			UDATA flags = J9OBJECT_FLAGS_FROM_CLAZZ_VM(vm, objectPointer);
 
 			if (J9_ARE_ANY_BITS_SET(flags, OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS)) {
 				if (J9CLASS_IS_ARRAY(objectClass)) {
-					UDATA offset = ((J9IndexableObjectContiguous*)objectPointer)->size;
-					if (0 != offset) {
-						/* Contiguous array */
-						J9ROMArrayClass *romClass = (J9ROMArrayClass*)objectClass->romClass;
-						offset = ROUND_UP_TO_POWEROF2((offset << (romClass->arrayShape & 0x0000FFFF)) + sizeof(J9IndexableObjectContiguous), sizeof(I_32));
-						hashValue = *(I_32*)((UDATA)objectPointer + offset);
-					} else {
-						if (0 == ((J9IndexableObjectDiscontiguous*)objectPointer)->size) {
-							/* Zero-sized array */
-							hashValue = *(I_32*)((J9IndexableObjectDiscontiguous*)objectPointer + 1);
+					if (J9JAVAVM_COMPRESS_OBJECT_REFERENCES(vm)) {
+						UDATA offset = ((J9IndexableObjectContiguousCompressed*)objectPointer)->size;
+						if (0 != offset) {
+							/* Contiguous array */
+							J9ROMArrayClass *romClass = (J9ROMArrayClass*)objectClass->romClass;
+							offset = ROUND_UP_TO_POWEROF2((offset << (romClass->arrayShape & 0x0000FFFF)) + sizeof(J9IndexableObjectContiguousCompressed), sizeof(I_32));
+							hashValue = *(I_32*)((UDATA)objectPointer + offset);
 						} else {
-							/* Discontiguous array */
-							hashValue = vm->memoryManagerFunctions->j9gc_objaccess_getObjectHashCode(vm, objectPointer);
+							if (0 == ((J9IndexableObjectDiscontiguousCompressed*)objectPointer)->size) {
+								/* Zero-sized array */
+								hashValue = *(I_32*)((J9IndexableObjectDiscontiguousCompressed*)objectPointer + 1);
+							} else {
+								/* Discontiguous array */
+								hashValue = vm->memoryManagerFunctions->j9gc_objaccess_getObjectHashCode(vm, objectPointer);
+							}
+						}
+					} else {
+						UDATA offset = ((J9IndexableObjectContiguousFull*)objectPointer)->size;
+						if (0 != offset) {
+							/* Contiguous array */
+							J9ROMArrayClass *romClass = (J9ROMArrayClass*)objectClass->romClass;
+							offset = ROUND_UP_TO_POWEROF2((offset << (romClass->arrayShape & 0x0000FFFF)) + sizeof(J9IndexableObjectContiguousFull), sizeof(I_32));
+							hashValue = *(I_32*)((UDATA)objectPointer + offset);
+						} else {
+							if (0 == ((J9IndexableObjectDiscontiguous*)objectPointer)->size) {
+								/* Zero-sized array */
+								hashValue = *(I_32*)((J9IndexableObjectDiscontiguousFull*)objectPointer + 1);
+							} else {
+								/* Discontiguous array */
+								hashValue = vm->memoryManagerFunctions->j9gc_objaccess_getObjectHashCode(vm, objectPointer);
+							}
 						}
 					}
 				} else {
@@ -239,7 +264,7 @@ public:
 
 			} else {
 				if (J9_ARE_NO_BITS_SET(flags, OBJECT_HEADER_HAS_BEEN_HASHED_IN_CLASS)) {
-					setHasBeenHashed(objectPointer);
+					setHasBeenHashed(vm, objectPointer);
 				}
 				hashValue = inlineConvertValueToHash(vm, (UDATA)objectPointer);
 			}

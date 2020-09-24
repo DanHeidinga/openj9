@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -26,35 +25,34 @@
  * @ingroup GC_Modron_Startup
  */
 
+#include <string.h>
+
 #include "j9.h"
 #include "j9cfg.h"
 #include "j9consts.h"
-#include "modronopt.h"
+#include "mmhook_internal.h"
 #include "ModronAssertions.h"
+#include "modronopt.h"
 #include "omrgc.h"
-
-#include <string.h>
-
 #include "rommeth.h"
-
-#include "modronapi.hpp"
 
 #include "AllocateDescription.hpp"
 #include "AtomicOperations.hpp"
 #include "EnvironmentBase.hpp"
+#include "GlobalCollector.hpp"
 #include "IndexableObjectAllocationModel.hpp"
-#include "mmhook_internal.h"
 #include "MemorySpace.hpp"
 #include "MemorySubSpace.hpp"
 #include "MixedObjectAllocationModel.hpp"
+#include "modronapi.hpp"
 #include "ObjectAccessBarrier.hpp"
+#include "ObjectAccessBarrierAPI.hpp"
 #include "ObjectAllocationInterface.hpp"
 #include "ObjectModel.hpp"
-
+#include "ObjectMonitor.hpp"
 #if defined (J9VM_GC_REALTIME)
 #include "Scheduler.hpp"
 #endif /* J9VM_GC_REALTIME */
-#include "GlobalCollector.hpp"
 #include "VMAccess.hpp"
 
 extern "C" {
@@ -62,8 +60,8 @@ extern "C" {
 static uintptr_t stackIterator(J9VMThread *currentThread, J9StackWalkState *walkState);
 static void dumpStackFrames(J9VMThread *currentThread);
 static void traceAllocateIndexableObject(J9VMThread *vmThread, J9Class* clazz, uintptr_t objSize, uintptr_t numberOfIndexedFields);
-static void traceAllocateObject(J9VMThread *vmThread, J9Class* clazz, uintptr_t objSize, uintptr_t numberOfIndexedFields=0);
-static bool traceObjectCheck(J9VMThread *vmThread);
+static J9Object * traceAllocateObject(J9VMThread *vmThread, J9Object * object, J9Class* clazz, uintptr_t objSize, uintptr_t numberOfIndexedFields=0);
+static bool traceObjectCheck(J9VMThread *vmThread, bool *shouldTriggerAllocationSampling = NULL);
 
 #define STACK_FRAMES_TO_DUMP	8
 
@@ -89,7 +87,7 @@ J9AllocateObjectNoGC(J9VMThread *vmThread, J9Class *clazz, uintptr_t allocateFla
 
 #if defined(J9VM_GC_THREAD_LOCAL_HEAP)
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
-	if (extensions->instrumentableAllocateHookEnabled ) {
+	if (extensions->instrumentableAllocateHookEnabled || !env->isInlineTLHAllocateEnabled()) {
 		/* This function is restricted to only being used for instrumentable allocates so we only need to check that one allocation hook.
 		 * Note that we can't handle hooked allocates since we might be called without a JIT resolve frame and that is required for us to
 		 * report the allocation event.
@@ -114,9 +112,20 @@ J9AllocateObjectNoGC(J9VMThread *vmThread, J9Class *clazz, uintptr_t allocateFla
 			if (NULL != objectPtr) {
 				uintptr_t allocatedBytes = env->getExtensions()->objectModel.getConsumedSizeInBytesWithHeader(objectPtr);
 				Assert_MM_true(allocatedBytes == mixedOAM.getAllocateDescription()->getContiguousBytes());
+				if (LN_HAS_LOCKWORD(vmThread, objectPtr)) {
+					j9objectmonitor_t initialLockword = VM_ObjectMonitor::getInitialLockword(vmThread->javaVM, clazz);
+					if (0 != initialLockword) {
+						j9objectmonitor_t *lockEA = J9OBJECT_MONITOR_EA(vmThread, objectPtr);
+						J9_STORE_LOCKWORD(vmThread, lockEA, initialLockword);
+					}
+				}
 			}
 			env->_isInNoGCAllocationCall = false;
 		}
+	}
+
+	if ((NULL != objectPtr) && J9_ARE_ALL_BITS_SET(clazz->classFlags, J9ClassContainsUnflattenedFlattenables)) {
+		vmThread->javaVM->internalVMFunctions->defaultValueWithUnflattenedFlattenables(vmThread, clazz, objectPtr);
 	}
 
 	return objectPtr;
@@ -213,14 +222,17 @@ traceAllocateIndexableObject(J9VMThread *vmThread, J9Class* clazz, uintptr_t obj
 	return;
 }
 
-static void
-traceAllocateObject(J9VMThread *vmThread, J9Class* clazz, uintptr_t objSize, uintptr_t numberOfIndexedFields)
+static J9Object *
+traceAllocateObject(J9VMThread *vmThread, J9Object * object, J9Class* clazz, uintptr_t objSize, uintptr_t numberOfIndexedFields)
 {
-	if(traceObjectCheck(vmThread)){
+	bool shouldTrigggerObjectAllocationSampling = false;
+	uintptr_t byteGranularity = 0;
+
+	if (traceObjectCheck(vmThread, &shouldTrigggerObjectAllocationSampling)){
 		MM_EnvironmentBase *env = MM_EnvironmentBase::getEnvironment(vmThread->omrVMThread);
 		MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
-		uintptr_t byteGranularity = extensions->oolObjectSamplingBytesGranularity;
 		J9ROMClass *romClass = clazz->romClass;
+		byteGranularity = extensions->oolObjectSamplingBytesGranularity;
 	
 		if (J9ROMCLASS_IS_ARRAY(romClass)){
 			traceAllocateIndexableObject(vmThread, clazz, objSize, numberOfIndexedFields);
@@ -228,11 +240,42 @@ traceAllocateObject(J9VMThread *vmThread, J9Class* clazz, uintptr_t objSize, uin
 			Trc_MM_J9AllocateObject_outOfLineObjectAllocation(
 				vmThread, clazz, J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(romClass)), J9UTF8_DATA(J9ROMCLASS_CLASSNAME(romClass)), objSize);
 		}
+
 		/* Keep the remainder, want this to happen so that we don't miss objects
 		 * after seeing large objects
 		 */
 		env->_oolTraceAllocationBytes = (env->_oolTraceAllocationBytes) % byteGranularity;
 	}
+
+	if (shouldTrigggerObjectAllocationSampling) {
+		PORT_ACCESS_FROM_VMC(vmThread);
+		MM_EnvironmentBase *env = MM_EnvironmentBase::getEnvironment(vmThread->omrVMThread);
+		MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
+
+		byteGranularity = extensions->objectSamplingBytesGranularity;
+		/* Keep the remainder, want this to happen so that we don't miss objects
+		 * after seeing large objects
+		 */
+		uintptr_t allocSizeInsideTLH = env->getAllocatedSizeInsideTLH();
+		uintptr_t remainder = (env->_traceAllocationBytes + allocSizeInsideTLH) % byteGranularity;
+		env->_traceAllocationBytesCurrentTLH = allocSizeInsideTLH + (env->_traceAllocationBytes % byteGranularity) - remainder;
+		env->_traceAllocationBytes = (env->_traceAllocationBytes) % byteGranularity;
+
+		if (!extensions->needDisableInlineAllocation()) {
+
+			env->setTLHSamplingTop(byteGranularity - remainder);
+		}
+
+		TRIGGER_J9HOOK_MM_OBJECT_ALLOCATION_SAMPLING(
+			extensions->hookInterface,
+			vmThread,
+			j9time_hires_clock(),
+			J9HOOK_MM_OBJECT_ALLOCATION_SAMPLING,
+			object,
+			clazz,
+			objSize);
+	}
+	return object;
 }
 
 /* Required to check if we're going to trace or not since a java stack trace needs
@@ -241,14 +284,19 @@ traceAllocateObject(J9VMThread *vmThread, J9Class* clazz, uintptr_t objSize, uin
  * Returns true if we should trace the object
  *  */
 static bool
-traceObjectCheck(J9VMThread *vmThread)
+traceObjectCheck(J9VMThread *vmThread, bool *shouldTriggerAllocationSampling)
 {
 	MM_EnvironmentBase *env = MM_EnvironmentBase::getEnvironment(vmThread->omrVMThread);
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
+	uintptr_t byteGranularity = 0;
 
-	if(extensions->doOutOfLineAllocationTrace){
-		uintptr_t byteGranularity = extensions->oolObjectSamplingBytesGranularity;
-	
+	if (NULL != shouldTriggerAllocationSampling) {
+		byteGranularity = extensions->objectSamplingBytesGranularity;
+		*shouldTriggerAllocationSampling = (env->_traceAllocationBytes + env->getAllocatedSizeInsideTLH() - env->_traceAllocationBytesCurrentTLH) >= byteGranularity;
+	}
+
+	if (extensions->doOutOfLineAllocationTrace){
+		byteGranularity = extensions->oolObjectSamplingBytesGranularity;
 		if(env->_oolTraceAllocationBytes >= byteGranularity){
 			return true;
 		}
@@ -279,7 +327,7 @@ J9AllocateIndexableObjectNoGC(J9VMThread *vmThread, J9Class *clazz, uint32_t num
 	
 #if defined(J9VM_GC_THREAD_LOCAL_HEAP)
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
-	if (extensions->instrumentableAllocateHookEnabled ) {
+	if (extensions->instrumentableAllocateHookEnabled || !env->isInlineTLHAllocateEnabled()) {
 		/* This function is restricted to only being used for instrumentable allocates so we only need to check that one allocation hook.
 		 * Note that we can't handle hooked allocates since we might be called without a JIT resolve frame and that is required for us to
 		 * report the allocation event.
@@ -307,6 +355,15 @@ J9AllocateIndexableObjectNoGC(J9VMThread *vmThread, J9Class *clazz, uint32_t num
 				Assert_MM_true(allocatedBytes == indexableOAM.getAllocateDescription()->getContiguousBytes());
 			}
 			env->_isInNoGCAllocationCall = false;
+		}
+	}
+	/* TODO: Need to implement a more optimal path for cases where barriers are not required or where a batch barrier can be used. */ 
+	if ((NULL != objectPtr) && J9_ARE_ALL_BITS_SET(clazz->classFlags, J9ClassContainsUnflattenedFlattenables)) {
+		MM_ObjectAccessBarrierAPI objectAccessBarrier(vmThread);
+		J9Class * elementClass = ((J9ArrayClass *) clazz)->componentType; 
+		j9object_t defaultValue = elementClass->flattenedClassCache->defaultValue;
+		for (UDATA index = 0; index < numberOfIndexedFields; index++) {
+			objectAccessBarrier.inlineIndexableObjectStoreObject(vmThread, objectPtr, index, defaultValue);
 		}
 	}
 
@@ -341,12 +398,24 @@ J9AllocateObject(J9VMThread *vmThread, J9Class *clazz, uintptr_t allocateFlags)
 	Assert_MM_false(allocateFlags & OMR_GC_ALLOCATE_OBJECT_NO_GC);
 
 	J9Object *objectPtr = NULL;
+	/* Replaced classes have poisoned the totalInstanceSize such that they are not allocatable,
+	 * so inline allocate and NoGC allocate have already failed. If this allocator is reached
+	 * with a replaced class, update to the current version and allocate that.
+	 */
+	clazz = J9_CURRENT_CLASS(clazz);
 	MM_MixedObjectAllocationModel mixedOAM(env, clazz, allocateFlags);
 	if (mixedOAM.initializeAllocateDescription(env)) {
 		objectPtr = OMR_GC_AllocateObject(vmThread->omrVMThread, &mixedOAM);
 		if (NULL != objectPtr) {
 			uintptr_t allocatedBytes = env->getExtensions()->objectModel.getConsumedSizeInBytesWithHeader(objectPtr);
 			Assert_MM_true(allocatedBytes == mixedOAM.getAllocateDescription()->getContiguousBytes());
+			if (LN_HAS_LOCKWORD(vmThread, objectPtr)) {
+				j9objectmonitor_t initialLockword = VM_ObjectMonitor::getInitialLockword(vmThread->javaVM, clazz);
+				if (0 != initialLockword) {
+					j9objectmonitor_t *lockEA = J9OBJECT_MONITOR_EA(vmThread, objectPtr);
+					J9_STORE_LOCKWORD(vmThread, lockEA, initialLockword);
+				}
+			}
 		}
 	}
 
@@ -415,7 +484,7 @@ J9AllocateObject(J9VMThread *vmThread, J9Class *clazz, uintptr_t allocateFlags)
 		dumpStackFrames(vmThread);
 		TRIGGER_J9HOOK_MM_PRIVATE_OUT_OF_MEMORY(extensions->privateHookInterface, vmThread->omrVMThread, j9time_hires_clock(), J9HOOK_MM_PRIVATE_OUT_OF_MEMORY, memorySpace, memorySpace->getName());
 	} else {
-		traceAllocateObject(vmThread, clazz, sizeInBytesRequired);
+		objectPtr = traceAllocateObject(vmThread, objectPtr, clazz, sizeInBytesRequired);
 		if (extensions->isStandardGC()) {
 			if (OMR_GC_ALLOCATE_OBJECT_TENURED == (allocateFlags & OMR_GC_ALLOCATE_OBJECT_TENURED)) {
 				/* Object must be allocated in Tenure if it is requested */
@@ -424,17 +493,21 @@ J9AllocateObject(J9VMThread *vmThread, J9Class *clazz, uintptr_t allocateFlags)
 #if defined(J9VM_GC_REALTIME) 
 		} else if (extensions->isMetronomeGC()) {
 			if (env->saveObjects((omrobjectptr_t)objectPtr)) {
-				j9gc_startGCIfTimeExpired(vmThread);
+				j9gc_startGCIfTimeExpired(vmThread->omrVMThread);
 				env->restoreObjects((omrobjectptr_t*)&objectPtr);
 			}
 #endif /* defined(J9VM_GC_REALTIME) */
 		}
 	}
 
+	if ((NULL != objectPtr) && J9_ARE_ALL_BITS_SET(clazz->classFlags, J9ClassContainsUnflattenedFlattenables)) {
+		vmThread->javaVM->internalVMFunctions->defaultValueWithUnflattenedFlattenables(vmThread, clazz, objectPtr);
+	}
+
 #if defined(J9VM_GC_THREAD_LOCAL_HEAP)
-	if (extensions->fvtest_disableInlineAllocation || extensions->instrumentableAllocateHookEnabled || extensions->disableInlineCacheForAllocationThreshold) {
+	if (extensions->needDisableInlineAllocation()) {
 		env->disableInlineTLHAllocate();
-	}	
+	}
 #endif /* J9VM_GC_THREAD_LOCAL_HEAP */	
 
 	return objectPtr;
@@ -538,7 +611,7 @@ J9AllocateIndexableObject(J9VMThread *vmThread, J9Class *clazz, uint32_t numberO
 				highThreshold);
 		}
 		
-		traceAllocateObject(vmThread, clazz, sizeInBytesRequired, (uintptr_t)numberOfIndexedFields);
+		objectPtr = traceAllocateObject(vmThread, objectPtr, clazz, sizeInBytesRequired, (uintptr_t)numberOfIndexedFields);
 		if (extensions->isStandardGC()) {
 			if (OMR_GC_ALLOCATE_OBJECT_TENURED == (allocateFlags & OMR_GC_ALLOCATE_OBJECT_TENURED)) {
 				/* Object must be allocated in Tenure if it is requested */
@@ -547,7 +620,7 @@ J9AllocateIndexableObject(J9VMThread *vmThread, J9Class *clazz, uint32_t numberO
 #if defined(J9VM_GC_REALTIME)
 		} else if (extensions->isMetronomeGC()) {
 			if (env->saveObjects((omrobjectptr_t)objectPtr)) {
-				j9gc_startGCIfTimeExpired(vmThread);
+				j9gc_startGCIfTimeExpired(vmThread->omrVMThread);
 				env->restoreObjects((omrobjectptr_t*)&objectPtr);
 			}
 #endif /* defined(J9VM_GC_REALTIME) */
@@ -560,11 +633,20 @@ J9AllocateIndexableObject(J9VMThread *vmThread, J9Class *clazz, uint32_t numberO
 		dumpStackFrames(vmThread);
 		TRIGGER_J9HOOK_MM_PRIVATE_OUT_OF_MEMORY(extensions->privateHookInterface, vmThread->omrVMThread, j9time_hires_clock(), J9HOOK_MM_PRIVATE_OUT_OF_MEMORY, memorySpace, memorySpace->getName());
 	}
+	/* TODO: Need to implement a more optimal path for cases where barriers are not required or where a batch barrier can be used. */ 
+	if ((NULL != objectPtr) && J9_ARE_ALL_BITS_SET(clazz->classFlags, J9ClassContainsUnflattenedFlattenables)) {
+		MM_ObjectAccessBarrierAPI objectAccessBarrier(vmThread);
+		J9Class * elementClass = ((J9ArrayClass *) clazz)->componentType; 
+		j9object_t defaultValue = elementClass->flattenedClassCache->defaultValue;
+		for (UDATA index = 0; index < numberOfIndexedFields; index++) {
+			objectAccessBarrier.inlineIndexableObjectStoreObject(vmThread, objectPtr, index, defaultValue);
+		}
+	}
 
 #if defined(J9VM_GC_THREAD_LOCAL_HEAP)
-	if (extensions->fvtest_disableInlineAllocation || extensions->instrumentableAllocateHookEnabled || extensions->disableInlineCacheForAllocationThreshold ) {
+	if (extensions->needDisableInlineAllocation()) {
 		env->disableInlineTLHAllocate();
-	}	
+	}
 #endif /* J9VM_GC_THREAD_LOCAL_HEAP */	
 
 	return objectPtr;
@@ -607,25 +689,37 @@ memoryManagerTLHAsyncCallbackHandler(J9VMThread *vmThread, IDATA handlerKey, voi
 	
 	if (extensions->isStandardGC() || extensions->isVLHGC()) {
 #if defined(J9VM_GC_THREAD_LOCAL_HEAP)
-		if (extensions->fvtest_disableInlineAllocation || extensions->instrumentableAllocateHookEnabled || extensions->disableInlineCacheForAllocationThreshold) {
+		if (extensions->needDisableInlineAllocation()) {
 			Trc_MM_memoryManagerTLHAsyncCallbackHandler_disableInlineTLHAllocates(vmThread,extensions->lowAllocationThreshold,extensions->highAllocationThreshold,extensions->tlhMinimumSize,extensions->tlhMaximumSize);
-			if (env->isInlineTLHAllocateEnabled()) {
+			if (allocationInterface->cachedAllocationsEnabled(env)) {
 				/* BEN TODO: Collapse the env->enable/disableInlineTLHAllocate with these enable/disableCachedAllocations */
 				env->disableInlineTLHAllocate();
 				allocationInterface->disableCachedAllocations(env);
 			}
 		} else {
 			Trc_MM_memoryManagerTLHAsyncCallbackHandler_enableInlineTLHAllocates(vmThread,extensions->lowAllocationThreshold,extensions->highAllocationThreshold,extensions->tlhMinimumSize,extensions->tlhMaximumSize);
-			if (!env->isInlineTLHAllocateEnabled()) {
+			if (!allocationInterface->cachedAllocationsEnabled(env)) {
 				/* BEN TODO: Collapse the env->enable/disableInlineTLHAllocate with these enable/disableCachedAllocations */
 				env->enableInlineTLHAllocate();
 				allocationInterface->enableCachedAllocations(env);
 			}
 		}
+
+		if (allocationInterface->cachedAllocationsEnabled(env)) {
+			uintptr_t samplingBytesGranularity = extensions->objectSamplingBytesGranularity;
+			if (UDATA_MAX != extensions->objectSamplingBytesGranularity) {
+				env->_traceAllocationBytes = 0;
+				env->_traceAllocationBytesCurrentTLH = 0;
+				env->setTLHSamplingTop(samplingBytesGranularity);
+			} else if (!env->isInlineTLHAllocateEnabled()) {
+				env->resetTLHSamplingTop();
+			}
+		}
+
 #endif /* defined(J9VM_GC_THREAD_LOCAL_HEAP) */
 	} else if (extensions->isSegregatedHeap()) {
 #if defined(J9VM_GC_SEGREGATED_HEAP)
-		if (extensions->fvtest_disableInlineAllocation || extensions->instrumentableAllocateHookEnabled || extensions->disableInlineCacheForAllocationThreshold) {
+		if (extensions->needDisableInlineAllocation()) {
 			Trc_MM_memoryManagerTLHAsyncCallbackHandler_disableAllocationCache(vmThread,extensions->lowAllocationThreshold,extensions->highAllocationThreshold);
 			if (allocationInterface->cachedAllocationsEnabled(env)) {
 				allocationInterface->disableCachedAllocations(env);

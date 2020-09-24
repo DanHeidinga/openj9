@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -30,6 +30,13 @@ extern "C" {
 #include "j9comp.h"
 extern J9_CDATA char * const JavaBCNames[];
 extern J9_CDATA char * const sunJavaBCNames[];
+
+/* ************* Important Note: *************
+ * Any time these bytecode indices are changed, corresponding
+ * changes MUST be made to the JIT's `TR_J9ByteCode` bytecode
+ * enum in openj9/runtime/compiler/ilgen/J9ByteCode.hpp or the
+ * JIT will miscompile code!
+ */
 
 #define JBnop 0
 #define JBaconstnull 1
@@ -230,23 +237,21 @@ extern J9_CDATA char * const sunJavaBCNames[];
 #define JBifnonnull 199
 #define JBgotow 200
 #define JBbreakpoint 202
-#define JBiloadw 203
-#define JBlloadw 204
-#define JBfloadw 205
-#define JBdloadw 206
-#define JBaloadw 207
-#define JBistorew 208
-#define JBlstorew 209
-#define JBfstorew 210
-#define JBdstorew 211
-#define JBastorew 212
+#define JBdefaultvalue 203
+#define JBwithfield 204
 #define JBiincw 213
 #define JBaload0getfield 215
 #define JBnewdup 216
-#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
-#define JBdefaultvalue 224
-#define JBwithfield 226
-#endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
+#define JBiloadw 217
+#define JBlloadw 218
+#define JBfloadw 219
+#define JBdloadw 220
+#define JBaloadw 221
+#define JBistorew 222
+#define JBlstorew 223
+#define JBfstorew 224
+#define JBdstorew 225
+#define JBastorew 226
 #define JBreturnFromConstructor 228
 #define JBgenericReturn 229
 #define JBinvokeinterface2 231
@@ -254,6 +259,10 @@ extern J9_CDATA char * const sunJavaBCNames[];
 #define JBinvokehandlegeneric 233
 #define JBinvokestaticsplit 234
 #define JBinvokespecialsplit 235
+#define JBreturnC 236
+#define JBreturnS 237
+#define JBreturnB 238
+#define JBreturnZ 239
 #define JBretFromNative0 244
 #define JBretFromNative1 245
 #define JBretFromNativeF 246

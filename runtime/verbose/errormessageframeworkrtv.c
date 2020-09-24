@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2015, 2017 IBM Corp. and others
+ * Copyright (c) 2015, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -164,12 +164,12 @@ constructRtvMethodContextInfo(MethodContextInfo* methodInfo, J9BytecodeVerificat
 	methodInfo->className.length = J9UTF8_LENGTH((J9ROMCLASS_CLASSNAME(romClass)));
 
 	/* Method */
-	methodInfo->methodName.bytes = J9UTF8_DATA(J9ROMMETHOD_GET_NAME(romClass, romMethod));
-	methodInfo->methodName.length = J9UTF8_LENGTH((J9ROMMETHOD_GET_NAME(romClass, romMethod)));
+	methodInfo->methodName.bytes = J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod));
+	methodInfo->methodName.length = J9UTF8_LENGTH((J9ROMMETHOD_NAME(romMethod)));
 
 	/* Signature */
-	methodInfo->signature.bytes = J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod));
-	methodInfo->signature.length = J9UTF8_LENGTH((J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod)));
+	methodInfo->signature.bytes = J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod));
+	methodInfo->signature.length = J9UTF8_LENGTH((J9ROMMETHOD_SIGNATURE(romMethod)));
 
 	/* Exception handler table */
 	methodInfo->exceptionTable = NULL;
@@ -259,7 +259,7 @@ pushLiveStackToVerificationTypeBuffer(StackMapFrame* stackMapFrame, J9BytecodeVe
 	}
 
 	/* Step forward by 1 slot to point to the non-top element or the 2nd slot of long/double
-	 * as we retreat 1 step when the non-top element was defectd in the for loop.
+	 * as we retreat 1 step when the non-top element was detected in the for loop.
 	 */
 	if (nonTopFound) {
 		lastIndex += 1;
@@ -612,11 +612,11 @@ printExpectedTypeFromStackMapFrame(MessageBuffer *msgBuf, J9BytecodeVerification
 		goto exit;
 	}
 
-	/* Walk thourgh the stackmap table for the specified stackmape frame */
+	/* Walk through the stackmap table for the specified stackmap frame */
 	while (stackmapFrameIndex != errorTargetFrameIndex) {
 		stackmapFrameIndex += 1;
 		nextStackmapFrame = decodeStackmapFrameData(targetFrame, nextStackmapFrame, stackmapFrameIndex, methodInfo, verifyData);
-		/* Return FALSE if out-of-memory during allocating verification buffer for data types in the specified stackmape frame */
+		/* Return FALSE if out-of-memory during allocating verification buffer for data types in the specified stackmap frame */
 		if (NULL == nextStackmapFrame) {
 			result = FALSE;
 			goto exit;
@@ -711,11 +711,11 @@ setStackMapFrameWithIndex(J9BytecodeVerificationData *verifyData, MethodContextI
 			goto exit;
 		}
 
-		/* Walk thourgh the stackmap table for the specified stackmape frame */
+		/* Walk through the stackmap table for the specified stackmap frame */
 		while (stackmapFrameIndex != errorTargetFrameIndex) {
 			stackmapFrameIndex += 1;
 			nextStackmapFrame = decodeStackmapFrameData(targetFrame, nextStackmapFrame, stackmapFrameIndex, methodInfo, verifyData);
-			/* Return FALSE if out-of-memory during allocating verification buffer for data types in the specified stackmape frame */
+			/* Return FALSE if out-of-memory during allocating verification buffer for data types in the specified stackmap frame */
 			if (NULL == nextStackmapFrame) {
 				goto exit;
 			}
@@ -750,7 +750,7 @@ printReasonForFlagMismatch(MessageBuffer *msgBuf, J9BytecodeVerificationData *ve
 
 	/* Check the stackmap frame for flag only if the stackmap table exists in the class file */
 	if (stackMapCount > 0) {
-		I_32 stackmapFrameIndex = -1;
+		I_32 stackmapFrameIndex = 0;
 		U_8* nextStackmapFrame = NULL;
 
 		if (FALSE == prepareVerificationTypeBuffer(targetFrame, methodInfo)) {
@@ -759,9 +759,9 @@ printReasonForFlagMismatch(MessageBuffer *msgBuf, J9BytecodeVerificationData *ve
 
 		/* Walk through the stackmap table for the specified stackmap frame */
 		while (stackmapFrameIndex < (I_32)stackMapCount) {
-			stackmapFrameIndex += 1;
 			nextStackmapFrame = decodeStackmapFrameData(targetFrame, nextStackmapFrame, stackmapFrameIndex, methodInfo, verifyData);
-			/* Return FALSE if out-of-memory during allocating verification buffer for data types in the specified stackmape frame */
+			stackmapFrameIndex += 1;
+			/* Return FALSE if out-of-memory during allocating verification buffer for data types in the specified stackmap frame */
 			if (NULL == nextStackmapFrame) {
 				goto exit;
 			}
@@ -826,7 +826,7 @@ generateJ9RtvExceptionDetails(J9BytecodeVerificationData* verifyData, U_8* initM
 	if ('[' == methodInfo.signature.bytes[methodInfo.signature.length - 2]) {
 		returnType = ';';
 	} else {
-		returnType = methodInfo.signature.bytes[methodInfo.signature.length - 1];;
+		returnType = methodInfo.signature.bytes[methodInfo.signature.length - 1];
 	}
 
 	bcName = sunJavaBCNames[convertToOracleOpcodeString(methodInfo.code[errorPC], returnType)];
@@ -940,6 +940,9 @@ generateJ9RtvExceptionDetails(J9BytecodeVerificationData* verifyData, U_8* initM
 	case BCV_ERR_UNEXPECTED_EOF:
 		printMessage(&msgBuf, "Unexpected EOF is detected in the class file.");
 		break;
+	case BCV_ERR_BYTECODE_ERROR:
+		printMessage(&msgBuf, "Error exists in the bytecode.");
+		break;
 	default:
 		Assert_VRB_ShouldNeverHappen();
 		break;
@@ -956,7 +959,12 @@ generateJ9RtvExceptionDetails(J9BytecodeVerificationData* verifyData, U_8* initM
 
 	/* Stackmap Frame: */
 	if (printStackFrame) {
-		printMessage(&msgBuf, "\n%*sStackmap Frame:", INDENT(2));
+		/* Specify if the stack frame is from classfile or internal */
+		if (verifyData->createdStackMap) {
+			printMessage(&msgBuf, "\n%*sStackmap Frame (FallBack):", INDENT(2));
+		} else {
+			printMessage(&msgBuf, "\n%*sStackmap Frame:", INDENT(2));
+		}
 		printTheStackMapFrame(&msgBuf, &stackMapFrameTarget, &methodInfo);
 	}
 
@@ -969,8 +977,10 @@ generateJ9RtvExceptionDetails(J9BytecodeVerificationData* verifyData, U_8* initM
 		printExceptionTable(&msgBuf, &methodInfo);
 	}
 
-	/* Stack Map Table: */
-	if (methodInfo.stackMapCount > 0) {
+	/* Stack Map Table:
+	 * Only prints the stackmap table if it is non-empty and not internally generated
+	 */
+	if ((methodInfo.stackMapCount > 0) && (!verifyData->createdStackMap)) {
 		printMessage(&msgBuf, "\n%*sStackmap Table:", INDENT(2));
 		printSimpleStackMapTable(&msgBuf, &methodInfo);
 	}

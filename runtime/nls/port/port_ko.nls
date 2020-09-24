@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2000, 2017 IBM Corp. and others
+# Copyright (c) 2000, 2019 IBM Corp. and others
 #
 # This program and the accompanying materials are made available under
 # the terms of the Eclipse Public License 2.0 which accompanies this
@@ -31,7 +31,7 @@
 # Note to translators:
 #
 # This file uses printf style substitutions. Sequences such as %s, %.*s, %10d
-# etc. will be subsituted at runtime. The special case of %% is not a substitution.
+# etc. will be substituted at runtime. The special case of %% is not a substitution.
 # It indicates a single percent sign. Please do not modify the format specifiers, or
 # change their order. For instance, in a message like "from %d to %s", %d
 # MUST appear before %s in any translated message, or a run-time crash
@@ -107,7 +107,6 @@ J9NLS_PORT_SL_SYMBOL_RESOLUTION_FAILURE.user_response=Contact your service repre
 
 # dead, OSX
 J9NLS_PORT_SL_COULD_NOT_LOAD_MODULE=\uacf5\uc720 \ub77c\uc774\ube0c\ub7ec\ub9ac\ub97c \ub85c\ub4dc\ud560 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4.
-
 # START NON-TRANSLATABLE
 J9NLS_PORT_SL_COULD_NOT_LOAD_MODULE.explanation=NOTISSUED
 J9NLS_PORT_SL_COULD_NOT_LOAD_MODULE.system_action=

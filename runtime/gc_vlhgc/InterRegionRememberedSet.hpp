@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -41,6 +41,10 @@ class MM_CollectionStatisticsVLHGC;
 #include "HeapRegionDescriptorVLHGC.hpp"
 #include "HeapRegionManager.hpp"
 #include "RememberedSetCardList.hpp"
+#include "MarkMap.hpp"
+#include "CompressedCardTable.hpp"
+#include "SchedulingDelegate.hpp"
+
 
 /* value for MAX_LOCAL_RSCL_BUFFER_POOL_SIZE is empirically chosen to be the lowest one but still reduces most of contention on global pool lock */
 #define MAX_LOCAL_RSCL_BUFFER_POOL_SIZE 16
@@ -66,6 +70,9 @@ public:
 	UDATA _regionSize;  			/**< Cached region size */
 
 	bool _shouldFlushBuffersForDecommitedRegions;			/**< set to true at the end of a GC, if contraction occured. this is a signal for the next GC to perform flush buffers from regions contracted */
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+	bool _compressObjectReferences;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 
 	volatile UDATA _overflowedRegionCount;					/**< count of regions overflowed as full */
 	UDATA _stableRegionCount;								/**< count of regions overflowed as stable */
@@ -78,7 +85,7 @@ public:
 	UDATA _cardToRegionDisplacement;						/**< the displacement value to use against RememberedSetcards to determine the corresponding region index */
 	MM_CardTable *_cardTable;								/**< cached copy of card table */
 
-	MM_RememberedSetCardBucket *_rememberedSetCardBucketPool; /**< RS bucket pool (for all regions) for Master thread or any other thread that caused GC in absence of Master thread */
+	MM_RememberedSetCardBucket *_rememberedSetCardBucketPool; /**< RS bucket pool (for all regions) for Main thread or any other thread that caused GC in absence of Main thread */
 
 private:
 
@@ -147,13 +154,13 @@ private:
 
 	/**
 	 * Rebuild Compressed Card Table for Mark (multithreaded, by regions)
-	 * @param env current thread envirinment
+	 * @param env current thread environment
 	 */
 	void rebuildCompressedCardTableForMark(MM_EnvironmentVLHGC* env);
 
 	/**
 	 * Rebuild Compressed Card Table for Compact (multithreaded, by regions)
-	 * @param env current thread envirinment
+	 * @param env current thread environment
 	 */
 	void rebuildCompressedCardTableForCompact(MM_EnvironmentVLHGC* env);
 
@@ -182,8 +189,62 @@ private:
 	void clearFromRegionReferencesForCompactOptimized(MM_EnvironmentVLHGC* env);
 	MM_InterRegionRememberedSet(MM_HeapRegionManager *heapRegionManager);
 	
+
+	/**
+	 * Helper function isCompressedCardDirtyForPartialCollect
+	 * extended from compressedCardTable->isCompressedCardDirtyForPartialCollect(), only in case first PGC after GMP, also return as dirty if card Contains No Object.
+	 */
+	MMINLINE bool isCompressedCardDirtyForPartialCollect(MM_EnvironmentVLHGC* env, UDATA card, MM_CompressedCardTable *compressedCardTable, MM_MarkMap *markMap)
+	{
+		void* heapAddress = convertHeapAddressFromRememberedSetCard(card);
+		bool ret = compressedCardTable->isCompressedCardDirtyForPartialCollect(env, heapAddress);
+		if (!ret && (NULL != markMap)) {
+			/* TODO: consider incorporating areAnyLiveObjectsInCard info when building CompressedCard */
+			ret = !markMap->areAnyLiveObjectsInCard(heapAddress);
+		}
+		return ret;
+
+	}
 protected:
 public:
+	/**
+	 * Helper function cardMayContainObjects
+	 * if this is first PGC after GMP, check if markMap->areAnyLiveObjectsInCard()
+	 * otherwise check if region->containsObjects()
+	 */
+	MMINLINE bool cardMayContainObjects(UDATA card, MM_HeapRegionDescriptorVLHGC *fromRegion, MM_MarkMap *markMap)
+	{
+		bool ret = false;
+		if (NULL != markMap) {
+			void* heapAddress = convertHeapAddressFromRememberedSetCard(card);
+			ret = markMap->areAnyLiveObjectsInCard(heapAddress);
+		} else {
+			ret = fromRegion->containsObjects();
+		}
+		return ret;
+	}
+
+	/**
+	 * Return back true if object references are compressed
+	 * @return true, if object references are compressed
+	 */
+	MMINLINE bool
+	compressObjectReferences()
+	{
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+#if defined(OMR_GC_FULL_POINTERS)
+#if defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES)
+		return (bool)OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES;
+#else /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+		return _compressObjectReferences;
+#endif /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+#else /* defined(OMR_GC_FULL_POINTERS) */
+		return true;
+#endif /* defined(OMR_GC_FULL_POINTERS) */
+#else /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return false;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+	}
 
 	/**
 	 *	Setup for partial collect
@@ -235,6 +296,11 @@ public:
 	 * @return the number of buffers in the list being released 
 	 */
 	UDATA releaseCardBufferControlBlockList(MM_EnvironmentVLHGC* env, MM_CardBufferControlBlock *controlBlockHead, MM_CardBufferControlBlock *controlBlockTail = NULL);
+	
+	/**
+	 * release the complete list (from head to tail) of BufferControlBlocks for a given thread, and set the head and tail pointers to null.
+	 */
+	void releaseCardBufferControlBlockListForThread(MM_EnvironmentVLHGC* env, MM_EnvironmentVLHGC* threadEnv);
 
 	/**
 	 * release a BufferControlBlock list to the thread local pool.
@@ -359,7 +425,7 @@ public:
 	 * @param object the object who's remembered set card we wish to obtain
 	 * @return the card which the object belongs to
 	 */
-	MMINLINE MM_RememberedSetCard
+	MMINLINE UDATA
 	getRememberedSetCardFromJ9Object(J9Object* object)
 	{
 		void *cardAddress = (void *)((UDATA)object & ~((UDATA)CARD_SIZE - 1));
@@ -371,15 +437,13 @@ public:
 	 * @param address the heap address which we wish to convert
 	 * @return the card which refers to the address
 	 */	
-	MMINLINE MM_RememberedSetCard
+	MMINLINE UDATA
 	convertRememberedSetCardFromHeapAddress(void* address)
 	{
-		MM_RememberedSetCard card = 0;
-#if defined(J9VM_GC_COMPRESSED_POINTERS)
-		card = (MM_RememberedSetCard)((UDATA)address >> CARD_SIZE_SHIFT);
-#else
-		card = (MM_RememberedSetCard) address;	
-#endif
+		UDATA card = (UDATA)address;
+		if (compressObjectReferences()) {
+			card >>= CARD_SIZE_SHIFT;
+		}
 		return card;
 	}
 
@@ -389,14 +453,12 @@ public:
 	 * @return the heap address which the card refers to
 	 */	
 	MMINLINE void *
-	convertHeapAddressFromRememberedSetCard(MM_RememberedSetCard card)
+	convertHeapAddressFromRememberedSetCard(UDATA card)
 	{
-		void *address = NULL;
-#if defined(J9VM_GC_COMPRESSED_POINTERS)
-		address = (void *)((UDATA)card << CARD_SIZE_SHIFT);
-#else
-		address = (void *) card;
-#endif
+		void *address = (void *)card;
+		if (compressObjectReferences()) {
+			address = (void *)(card << CARD_SIZE_SHIFT);
+		}
 		return address;
 	}
 	
@@ -406,14 +468,15 @@ public:
 	 * @param card[in] The MM_RememberedSetCard we are converting
 	 * @return the Card * corresponding to the input MM_RememberedSetCard
 	 */
-	MMINLINE Card *rememberedSetCardToCardAddr(MM_EnvironmentVLHGC *env, MM_RememberedSetCard card)
+	MMINLINE Card *rememberedSetCardToCardAddr(MM_EnvironmentVLHGC *env, UDATA card)
 	{
-#if defined(J9VM_GC_COMPRESSED_POINTERS)
-		Card *virtualStart = _cardTable->getCardTableVirtualStart();
-		return virtualStart + card;
-#else
-		return _cardTable->heapAddrToCardAddr(env, (void *) card);
-#endif
+		Card *result = NULL;
+		if (compressObjectReferences()) {
+			result = _cardTable->getCardTableVirtualStart() + card;
+		} else {
+			result = _cardTable->heapAddrToCardAddr(env, (void*)card);
+		}
+		return result;
 	}
 	
 	/**
@@ -422,9 +485,9 @@ public:
 	 * @param card - the MM_RememberedSetCard we are interested in
 	 * @return the region descriptor associated with the card
 	 */
-	MMINLINE MM_HeapRegionDescriptorVLHGC *physicalTableDescriptorForRememberedSetCard(MM_RememberedSetCard card) 
+	MMINLINE MM_HeapRegionDescriptorVLHGC *physicalTableDescriptorForRememberedSetCard(UDATA card) 
 	{
-		UDATA regionIndex = ((UDATA)card-_cardToRegionDisplacement) >> _cardToRegionShift;
+		UDATA regionIndex = (card-_cardToRegionDisplacement) >> _cardToRegionShift;
 		return physicalTableDescriptorForIndex(regionIndex);
 	}
 
@@ -435,7 +498,7 @@ public:
 	 * @param card - the MM_RememberedSetCard whose region we are trying to find
 	 * @return the region descriptor for the specified card
 	 */
-	MMINLINE MM_HeapRegionDescriptorVLHGC *tableDescriptorForRememberedSetCard(MM_RememberedSetCard card) 
+	MMINLINE MM_HeapRegionDescriptorVLHGC *tableDescriptorForRememberedSetCard(UDATA card) 
 	{
 		MM_HeapRegionDescriptorVLHGC *tableDescriptor = physicalTableDescriptorForRememberedSetCard(card);
 		return (MM_HeapRegionDescriptorVLHGC *)tableDescriptor->_headOfSpan;
@@ -457,14 +520,14 @@ public:
 	/**
 	 * Clears references from Collection Set and from dirty cards
 	 * (top level dispatcher)
-	 * temporary call until opimized or not optimized version is chosen
+	 * temporary call until optimized or not optimized version is chosen
 	 */
 	void clearFromRegionReferencesForMark(MM_EnvironmentVLHGC* env);
 
 	/**
 	 * Clears references from Compaction Set and from dirty cards
 	 * (top level dispatcher)
-	 * temporary call until opimized or not optimized version is chosen
+	 * temporary call until optimized or not optimized version is chosen
 	 */
 	void clearFromRegionReferencesForCompact(MM_EnvironmentVLHGC* env);
 
@@ -525,7 +588,7 @@ public:
 
 	/**
 	 * Initialize Thread local resources for RS CardLists for all threads
-	 * @param env master GC thread
+	 * @param env main GC thread
 	 */
 	void threadLocalInitialize(MM_EnvironmentVLHGC* env);
 
@@ -545,10 +608,10 @@ public:
 	}
 	
 	/**
-	 * set RememberedSetCardBucketPool for gcMasterThread or the thread acting as gcMasterThread
+	 * set RememberedSetCardBucketPool for gcMainThread or the thread acting as gcMainThread
 	 * @param env[in] the current thread
 	 */
-	MMINLINE void setRememberedSetCardBucketPoolForMasterThread(MM_EnvironmentVLHGC *env)
+	MMINLINE void setRememberedSetCardBucketPoolForMainThread(MM_EnvironmentVLHGC *env)
 	{
 		env->_rememberedSetCardBucketPool = &_rememberedSetCardBucketPool[0];
 	}

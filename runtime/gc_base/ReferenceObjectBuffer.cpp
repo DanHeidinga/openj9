@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -70,9 +69,9 @@ MM_ReferenceObjectBuffer::flush(MM_EnvironmentBase* env)
 }
 
 UDATA
-MM_ReferenceObjectBuffer::getReferenceObjectType(j9object_t object) 
+MM_ReferenceObjectBuffer::getReferenceObjectType(MM_EnvironmentBase* env, j9object_t object) 
 { 
-	return J9CLASS_FLAGS(J9GC_J9OBJECT_CLAZZ(object)) & J9_JAVA_CLASS_REFERENCE_MASK;
+	return J9CLASS_FLAGS(J9GC_J9OBJECT_CLAZZ(object, env)) & J9AccClassReferenceMask;
 }
 
 void
@@ -80,7 +79,7 @@ MM_ReferenceObjectBuffer::add(MM_EnvironmentBase* env, j9object_t object)
 {
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
 
-	if ( (_objectCount < _maxObjectCount) && _region->isAddressInRegion(object) && (getReferenceObjectType(object) == _referenceObjectType)) {
+	if ( (_objectCount < _maxObjectCount) && _region->isAddressInRegion(object) && (getReferenceObjectType(env, object) == _referenceObjectType)) {
 		/* object is permitted in this buffer */
 		Assert_MM_true(NULL != _head);
 		Assert_MM_true(NULL != _tail);
@@ -105,7 +104,7 @@ MM_ReferenceObjectBuffer::add(MM_EnvironmentBase* env, j9object_t object)
 			Assert_MM_true(NULL != region);
 		}
 		_region = region;
-		_referenceObjectType = getReferenceObjectType(object);
+		_referenceObjectType = getReferenceObjectType(env, object);
 
 	}
 }

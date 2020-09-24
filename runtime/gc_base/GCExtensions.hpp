@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -69,7 +69,7 @@ class GC_FinalizeListManager;
 class MM_ReferenceObjectList;
 #endif /* J9VM_GC_REALTIME */
 
-#if defined(J9VM_GC_IDLE_HEAP_MANAGER)
+#if defined(OMR_GC_IDLE_HEAP_MANAGER)
 class MM_IdleGCManager;
 #endif
 
@@ -78,6 +78,8 @@ class MM_IdleGCManager;
  * @ingroup GC_Base
  */
 class MM_GCExtensions : public MM_GCExtensionsBase {
+private:
+	MM_OwnableSynchronizerObjectList* ownableSynchronizerObjectLists; /**< The global linked list of ownable synchronizer object lists. */
 public:
 	MM_StringTable* stringTable; /**< top level String Table structure (internally organized as a set of hash sub-tables */
 
@@ -138,8 +140,8 @@ public:
 	MM_ObjectAccessBarrier* accessBarrier;
 
 #if defined(J9VM_GC_FINALIZATION)
-	UDATA finalizeMasterPriority; /**< cmd line option to set finalize master thread priority */
-	UDATA finalizeSlavePriority; /**< cmd line option to set finalize slave thread priority */
+	UDATA finalizeMainPriority; /**< cmd line option to set finalize main thread priority */
+	UDATA finalizeWorkerPriority; /**< cmd line option to set finalize worker thread priority */
 #endif /* J9VM_GC_FINALIZATION */
 
 	MM_ClassLoaderManager* classLoaderManager; /**< Pointer to the gc's classloader manager to process classloaders/classes */
@@ -150,8 +152,7 @@ public:
 
 
 	MM_UnfinalizedObjectList* unfinalizedObjectLists; /**< The global linked list of unfinalized object lists. */
-	MM_OwnableSynchronizerObjectList* ownableSynchronizerObjectLists; /**< The global linked list of ownable synchronizer object lists. */
-
+	
 	UDATA objectListFragmentCount; /**< the size of Local Object Buffer(per gc thread), used by referenceObjectBuffer, UnfinalizedObjectBuffer and OwnableSynchronizerObjectBuffer */
 
 	MM_Wildcard* numaCommonThreadClassNamePatterns; /**< A linked list of thread class names which should be associated with the common context */
@@ -179,9 +180,13 @@ public:
 
 	bool _HeapManagementMXBeanBackCompatibilityEnabled;
 
-#if defined(J9VM_GC_IDLE_HEAP_MANAGER)
+#if defined(OMR_GC_IDLE_HEAP_MANAGER)
 	MM_IdleGCManager* idleGCManager; /**< Manager which registers for VM Runtime State notification & manages free heap on notification */
 #endif
+
+	double maxRAMPercent; /**< Value of -XX:MaxRAMPercentage specified by the user */
+	double initialRAMPercent; /**< Value of -XX:InitialRAMPercentage specified by the user */
+
 protected:
 private:
 protected:
@@ -191,6 +196,8 @@ protected:
 public:
 	static MM_GCExtensions* newInstance(MM_EnvironmentBase* env);
 	virtual void kill(MM_EnvironmentBase* env);
+
+	void computeDefaultMaxHeapForJava(bool enableOriginalJDK8HeapSizeCompatibilityOption);
 
 	MMINLINE J9HookInterface** getHookInterface() { return J9_HOOK_INTERFACE(hookInterface); };
 
@@ -256,12 +263,23 @@ public:
 	static MM_GCExtensions* getExtensions(MM_EnvironmentBase* env) { return getExtensions(env->getExtensions()); }
 
 	MMINLINE J9JavaVM* getJavaVM() {return static_cast<J9JavaVM*>(_omrVM->_language_vm);}
+	
+	/**
+	 * Return ownable synchronizer object lists by first ensuring that the lists are in a consistent state (e.g., during concurrent gc).
+	 * This should be used by any external consumer (non-GC consuming the list)     
+	 * @param vmThread The current J9VMThread thread (used to invoke j9gc apis if required)
+	 * @return Linked list of ownable synchronizer objects
+	 */
+	MM_OwnableSynchronizerObjectList* getOwnableSynchronizerObjectListsExternal(J9VMThread *vmThread);
+	MMINLINE MM_OwnableSynchronizerObjectList* getOwnableSynchronizerObjectLists() { return ownableSynchronizerObjectLists; }
+	MMINLINE void setOwnableSynchronizerObjectLists(MM_OwnableSynchronizerObjectList* newOwnableSynchronizerObjectLists) { ownableSynchronizerObjectLists = newOwnableSynchronizerObjectLists; }
 
 	/**
 	 * Create a GCExtensions object
 	 */
 	MM_GCExtensions()
 		: MM_GCExtensionsBase()
+		, ownableSynchronizerObjectLists(NULL)
 		, stringTable(NULL)
 		, gcchkExtensions(NULL)
 		, tgcExtensions(NULL)
@@ -280,23 +298,25 @@ public:
 		, _stringTableListToTreeThreshold(1024)
 		, maxSoftReferenceAge(32)
 #if defined(J9VM_GC_FINALIZATION)
-		, finalizeMasterPriority(J9THREAD_PRIORITY_NORMAL)
-		, finalizeSlavePriority(J9THREAD_PRIORITY_NORMAL)
+		, finalizeMainPriority(J9THREAD_PRIORITY_NORMAL)
+		, finalizeWorkerPriority(J9THREAD_PRIORITY_NORMAL)
 #endif /* J9VM_GC_FINALIZATION */
+		, classLoaderManager(NULL)
 #if defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING)
 		, deadClassLoaderCacheSize(1024 * 1024) /* default is one MiB */
 #endif /* defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING) */
 		, unfinalizedObjectLists(NULL)
-		, ownableSynchronizerObjectLists(NULL)
 		, objectListFragmentCount(0)
 		, numaCommonThreadClassNamePatterns(NULL)
 		, stringDedupPolicy(J9_JIT_STRING_DEDUP_POLICY_UNDEFINED)
 		, _asyncCallbackKey(-1)
 		, _TLHAsyncCallbackKey(-1)
 		, _HeapManagementMXBeanBackCompatibilityEnabled(false)
-#if defined(J9VM_GC_IDLE_HEAP_MANAGER)
+#if defined(OMR_GC_IDLE_HEAP_MANAGER)
 		, idleGCManager(NULL)
 #endif
+		, maxRAMPercent(0.0) /* this would get overwritten by user specified value */
+		, initialRAMPercent(0.0) /* this would get overwritten by user specified value */
 	{
 		_typeId = __FUNCTION__;
 	}

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -154,9 +154,10 @@ addRegion(J9Pool *regionPool, UDATA offset, UDATA length, UDATA type, const char
 static UDATA
 getUTF8Length(J9UTF8 *utf8)
 {
-	UDATA length = sizeof(J9UTF8) + J9UTF8_LENGTH(utf8) - sizeof(J9UTF8_DATA(utf8));
-	if (length & 1) {
-		length++;
+	UDATA length = sizeof(J9UTF8) + J9UTF8_LENGTH(utf8);
+	/* Keep UTFs aligned to 2 bytes */
+	if (0 != (length & 1)) {
+		length += 1;
 	}
 	return length;
 }
@@ -561,7 +562,7 @@ reportSuspectedPadding(J9PortLibrary *portLib, J9ROMClass *romClass, J9ROMClassG
 	} else if (nbytes > 6) {
 		nbytes = 6;
 	}
-	j9tty_printf(PORTLIB, "0x%p-0x%p [ %*.s", base + lastOffset, base + offset, 12 - 2*nbytes , "");
+	j9tty_printf(PORTLIB, "0x%p-0x%p [ %*s", base + lastOffset, base + offset, 12 - (2 * nbytes), "");
 
 	if (NULL != state->validateRangeCallback) {
 		rangeValid = state->validateRangeCallback(romClass, romBase + lastOffset, nbytes, NULL);

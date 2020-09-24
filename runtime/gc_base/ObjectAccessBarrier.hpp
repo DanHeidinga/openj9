@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -54,9 +53,12 @@ private:
 protected:
 	MM_GCExtensions *_extensions; 
 	MM_Heap *_heap;
-#if defined (J9VM_GC_COMPRESSED_POINTERS)
+#if defined (OMR_GC_COMPRESSED_POINTERS)
+#if defined (OMR_GC_FULL_POINTERS)
+	bool _compressObjectReferences;
+#endif /* OMR_GC_FULL_POINTERS */
 	UDATA _compressedPointersShift; /**< the number of bits to shift by when converting between the compressed pointers heap and real heap */
-#endif /* J9VM_GC_COMPRESSED_POINTERS */
+#endif /* OMR_GC_COMPRESSED_POINTERS */
 	UDATA _referenceLinkOffset; /** Offset within java/lang/ref/Reference of the reference link field */
 	UDATA _ownableSynchronizerLinkOffset; /** Offset within java/util/concurrent/locks/AbstractOwnableSynchronizer of the ownable synchronizer link field */
 public:
@@ -89,7 +91,7 @@ protected:
 	 */
 	MMINLINE fj9object_t* getFinalizeLinkAddress(j9object_t object)
 	{
-		J9Class *clazz = J9GC_J9OBJECT_CLAZZ(object);
+		J9Class *clazz = J9GC_J9OBJECT_CLAZZ(object, this);
 		return getFinalizeLinkAddress(object, clazz);
 	}
 
@@ -105,27 +107,26 @@ protected:
 	{
 		MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(vmThread);
 
-#if !defined(J9VM_GC_ARRAYLETS)
-		/* non-arraylet */
-		UDATA data = (UDATA)extensions->indexableObjectModel.getDataPointerForContiguous(array);
-		return (void *)(data + (elementSize * (UDATA)index));
-#else /* J9VM_GC_ARRAYLETS */
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
 		/* hybrid arraylet */
 		GC_ArrayletObjectModel::ArrayLayout layout = extensions->indexableObjectModel.getArrayLayout(array);
 		if (GC_ArrayletObjectModel::InlineContiguous == layout)	{
 			UDATA data = (UDATA)extensions->indexableObjectModel.getDataPointerForContiguous(array);
 			return (void *)(data + (elementSize * (UDATA)index));
 		}
-#endif /* J9VM_GC_HYBRID_ARRAYLETS */
+
 		/* discontiguous arraylet */
 		fj9object_t *arrayoidPointer = extensions->indexableObjectModel.getArrayoidPointer(array);
 		U_32 slotsPerArrayletLeaf = (U_32)(J9VMTHREAD_JAVAVM(vmThread)->arrayletLeafSize / elementSize);
 		U_32 arrayletIndex = (U_32)index / slotsPerArrayletLeaf;
 		U_32 arrayletOffset = (U_32)index % slotsPerArrayletLeaf;
-		UDATA arrayletLeafBase = (UDATA)convertPointerFromToken(arrayoidPointer[arrayletIndex]);
+		UDATA arrayletLeafBase = 0;
+		fj9object_t *arrayletLeafSlot = GC_SlotObject::addToSlotAddress(arrayoidPointer, arrayletIndex, compressObjectReferences());
+		if (compressObjectReferences()) {
+			arrayletLeafBase = (UDATA)convertPointerFromToken(*(U_32*)arrayletLeafSlot);
+		} else {
+			arrayletLeafBase = *(UDATA*)arrayletLeafSlot;
+		}
 		return (void *)(arrayletLeafBase + (elementSize * (UDATA)arrayletOffset));
-#endif /* J9VM_GC_ARRAYLETS */
 	}
 	
 	virtual mm_j9object_t readObjectImpl(J9VMThread *vmThread, mm_j9object_t srcObject, fj9object_t *srcAddress, bool isVolatile=false);
@@ -198,17 +199,18 @@ public:
 	virtual void indexableStoreI32(J9VMThread *vmThread, J9IndexableObject *destObject, I_32 destIndex, I_32 value, bool isVolatile=false);
 	virtual void indexableStoreU64(J9VMThread *vmThread, J9IndexableObject *destObject, I_32 destIndex, U_64 value, bool isVolatile=false);
 	virtual void indexableStoreI64(J9VMThread *vmThread, J9IndexableObject *destObject, I_32 destIndex, I_64 value, bool isVolatile=false);
+	virtual void copyObjectFieldsToFlattenedArrayElement(J9VMThread *vmThread, J9ArrayClass *arrayClazz, j9object_t srcObject, J9IndexableObject *arrayRef, I_32 index);
+	virtual void copyObjectFieldsFromFlattenedArrayElement(J9VMThread *vmThread, J9ArrayClass *arrayClazz, j9object_t destObject, J9IndexableObject *arrayRef, I_32 index);
 
-#if defined(J9VM_GC_ARRAYLETS)
 	enum {
 		ARRAY_COPY_SUCCESSFUL = -1,
 		ARRAY_COPY_NOT_DONE = -2
 	};
+
 	virtual I_32 doCopyContiguousForward(J9VMThread *vmThread, J9IndexableObject *srcObject, J9IndexableObject *destObject, I_32 srcIndex, I_32 destIndex, I_32 lengthInSlots);	
 	virtual I_32 doCopyContiguousBackward(J9VMThread *vmThread, J9IndexableObject *srcObject, J9IndexableObject *destObject, I_32 srcIndex, I_32 destIndex, I_32 lengthInSlots);	
 	virtual I_32 backwardReferenceArrayCopyIndex(J9VMThread *vmThread, J9IndexableObject *srcObject, J9IndexableObject *destObject, I_32 srcIndex, I_32 destIndex, I_32 lengthInSlots) { return -2; }
 	virtual I_32 forwardReferenceArrayCopyIndex(J9VMThread *vmThread, J9IndexableObject *srcObject, J9IndexableObject *destObject, I_32 srcIndex, I_32 destIndex, I_32 lengthInSlots) { return -2; }
-#endif	
 
 	virtual J9Object *staticReadObject(J9VMThread *vmThread, J9Class *clazz, J9Object **srcSlot, bool isVolatile=false);
 	virtual void *staticReadAddress(J9VMThread *vmThread, J9Class *clazz, void **srcSlot, bool isVolatile=false);
@@ -227,6 +229,8 @@ public:
 	virtual U_8 *getArrayObjectDataAddress(J9VMThread *vmThread, J9IndexableObject *arrayObject);
 	virtual j9objectmonitor_t *getLockwordAddress(J9VMThread *vmThread, J9Object *object);
 	virtual void cloneObject(J9VMThread *vmThread, J9Object *srcObject, J9Object *destObject);
+	virtual void copyObjectFields(J9VMThread *vmThread, J9Class *valueClass, J9Object *srcObject, UDATA srcOffset, J9Object *destObject, UDATA destOffset);
+	virtual BOOLEAN structuralCompareFlattenedObjects(J9VMThread *vmThread, J9Class *valueClass, j9object_t lhsObject, j9object_t rhsObject, UDATA startOffset);
 	virtual void cloneIndexableObject(J9VMThread *vmThread, J9IndexableObject *srcObject, J9IndexableObject *destObject);
 	virtual J9Object* asConstantPoolObject(J9VMThread *vmThread, J9Object* toConvert, UDATA allocationFlags);
 	virtual void storeObjectToInternalVMSlot(J9VMThread *vmThread, J9Object** destSlot, J9Object *value);
@@ -258,10 +262,32 @@ public:
 
 	virtual bool preObjectRead(J9VMThread *vmThread, J9Object *srcObject, fj9object_t *srcAddress);
 	virtual bool preObjectRead(J9VMThread *vmThread, J9Class *srcClass, j9object_t *srcAddress);
-	virtual bool preMonitorTableSlotRead(J9VMThread *vmThread, j9object_t *srcAddress);
-	virtual bool preMonitorTableSlotRead(J9JavaVM *vm, j9object_t *srcAddress);
+	virtual bool preWeakRootSlotRead(J9VMThread *vmThread, j9object_t *srcAddress);
+	virtual bool preWeakRootSlotRead(J9JavaVM *vm, j9object_t *srcAddress);
 	virtual bool postObjectRead(J9VMThread *vmThread, J9Object *srcObject, fj9object_t *srcAddress);
 	virtual bool postObjectRead(J9VMThread *vmThread, J9Class *srcClass, J9Object **srcAddress);
+
+	/**
+	 * Return back true if object references are compressed
+	 * @return true, if object references are compressed
+	 */
+	MMINLINE bool
+	compressObjectReferences()
+	{
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+#if defined(OMR_GC_FULL_POINTERS)
+#if defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES)
+		return (bool)OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES;
+#else /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+		return _compressObjectReferences;
+#endif /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+#else /* defined(OMR_GC_FULL_POINTERS) */
+		return true;
+#endif /* defined(OMR_GC_FULL_POINTERS) */
+#else /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return false;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+	}
 
 	/**
 	 * Special barrier for auto-remembering stack-referenced objects. This must be called 
@@ -304,11 +330,13 @@ public:
 	MMINLINE mm_j9object_t 
 	convertPointerFromToken(fj9object_t token)
 	{
-#if defined (J9VM_GC_COMPRESSED_POINTERS)
-		return (mm_j9object_t)((UDATA)token << compressedPointersShift());
-#else /* J9VM_GC_COMPRESSED_POINTERS */
-		return (mm_j9object_t)token;
-#endif /* J9VM_GC_COMPRESSED_POINTERS */
+		mm_j9object_t result = (mm_j9object_t)(uintptr_t)token;
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+		if (compressObjectReferences()) {
+			result = (mm_j9object_t)((UDATA)token << compressedPointersShift());
+		}
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return result;
 	}
 	
 	/**
@@ -320,11 +348,13 @@ public:
 	MMINLINE fj9object_t 
 	convertTokenFromPointer(mm_j9object_t pointer)
 	{
-#if defined (J9VM_GC_COMPRESSED_POINTERS)
-		return (fj9object_t)((UDATA)pointer >> compressedPointersShift());
-#else /* J9VM_GC_COMPRESSED_POINTERS */
-		return (fj9object_t)pointer;
-#endif /* J9VM_GC_COMPRESSED_POINTERS */
+		fj9object_t result = (fj9object_t)(uintptr_t)pointer;
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+		if (compressObjectReferences()) {
+			result = (fj9object_t)((UDATA)pointer >> compressedPointersShift());
+		}
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return result;
 	}
 
 	/**
@@ -336,12 +366,14 @@ public:
 	 */
 	MMINLINE UDATA 
 	compressedPointersShift()
-	{ 
-#if defined (J9VM_GC_COMPRESSED_POINTERS)
-		return _compressedPointersShift;
-#else /* J9VM_GC_COMPRESSED_POINTERS */
-		return 0;
-#endif /* J9VM_GC_COMPRESSED_POINTERS */ 
+	{
+		UDATA shift = 0;
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+		if (compressObjectReferences()) {
+			shift = _compressedPointersShift;
+		}
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return shift;
 	}
 
 	virtual UDATA compressedPointersShadowHeapBase(J9VMThread *vmThread);
@@ -375,19 +407,21 @@ public:
 	MMINLINE j9object_t getFinalizeLink(j9object_t object)
 	{
 		fj9object_t* finalizeLink = getFinalizeLinkAddress(object);
-		return convertPointerFromToken(*finalizeLink);
+		GC_SlotObject slot(_extensions->getOmrVM(), finalizeLink);		
+		return slot.readReferenceFromSlot();
 	}
 	
 	/**
 	 * Fetch the finalize link field of object.
 	 * @param object[in] the object to read
-	 * @param clazz[in] the class to read the fializeLinkOffset from
+	 * @param clazz[in] the class to read the finalizeLinkOffset from
 	 * @return the value stored in the object's finalizeLink field
 	 */
 	MMINLINE j9object_t getFinalizeLink(j9object_t object, J9Class *clazz)
 	{
 		fj9object_t* finalizeLink = getFinalizeLinkAddress(object, clazz);
-		return convertPointerFromToken(*finalizeLink);
+		GC_SlotObject slot(_extensions->getOmrVM(), finalizeLink);		
+		return slot.readReferenceFromSlot();
 	}
 
 	
@@ -407,7 +441,8 @@ public:
 	{
 		UDATA linkOffset = _referenceLinkOffset;
 		fj9object_t *referenceLink = (fj9object_t*)((UDATA)object + linkOffset);
-		return convertPointerFromToken(*referenceLink);
+		GC_SlotObject slot(_extensions->getOmrVM(), referenceLink);		
+		return slot.readReferenceFromSlot();
 	}
 
 	/**
@@ -427,7 +462,8 @@ public:
 	{
 		UDATA linkOffset = _ownableSynchronizerLinkOffset;
 		fj9object_t *ownableSynchronizerLink = (fj9object_t*)((UDATA)object + linkOffset);
-		j9object_t next = convertPointerFromToken(*ownableSynchronizerLink);
+		GC_SlotObject slot(_extensions->getOmrVM(), ownableSynchronizerLink);		
+		j9object_t next = slot.readReferenceFromSlot();
 		if (originalObject == next) {
 			/* reach end of list(last item points to itself), return NULL */
 			next = NULL;
@@ -444,7 +480,8 @@ public:
 	{
 		UDATA linkOffset = _ownableSynchronizerLinkOffset;
 		fj9object_t *ownableSynchronizerLink = (fj9object_t*)((UDATA)object + linkOffset);
-		j9object_t next = convertPointerFromToken(*ownableSynchronizerLink);
+		GC_SlotObject slot(_extensions->getOmrVM(), ownableSynchronizerLink);		
+		j9object_t next = slot.readReferenceFromSlot();
 		if (object == next) {
 			/* reach end of list(last item points to itself), return NULL */
 			next = NULL;
@@ -462,7 +499,8 @@ public:
 	{
 		UDATA linkOffset = _ownableSynchronizerLinkOffset;
 		fj9object_t *ownableSynchronizerLink = (fj9object_t*)((UDATA)object + linkOffset);
-		return convertPointerFromToken(*ownableSynchronizerLink);
+		GC_SlotObject slot(_extensions->getOmrVM(), ownableSynchronizerLink);		
+		return slot.readReferenceFromSlot();
 	}
 
 	/**
@@ -534,16 +572,19 @@ public:
 	MM_ObjectAccessBarrier(MM_EnvironmentBase *env) : MM_BaseVirtual()
 		, _extensions(NULL) 
 		, _heap(NULL)
-#if defined (J9VM_GC_COMPRESSED_POINTERS)
+#if defined (OMR_GC_COMPRESSED_POINTERS)
+#if defined (OMR_GC_FULL_POINTERS)
+		, _compressObjectReferences(false)
+#endif /* OMR_GC_FULL_POINTERS */
 		, _compressedPointersShift(0)
-#endif /* J9VM_GC_COMPRESSED_POINTERS */
+#endif /* OMR_GC_COMPRESSED_POINTERS */
 		, _referenceLinkOffset(UDATA_MAX)
 		, _ownableSynchronizerLinkOffset(UDATA_MAX)
 	{
 		_typeId = __FUNCTION__;
 	}
 
-	friend class MM_CollectorLanguageInterfaceImpl;
+	friend class MM_ScavengerDelegate;
 };
 
 #endif /* OBJECTACCESSBARRIER_HPP_ */

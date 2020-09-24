@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -51,6 +51,7 @@ public:
 	};
 	struct {
 		bool _shouldMark;	/**< true if the collector is to mark this region during the collection cycle */
+		bool _noEvacuation; /**< true if the region is set that do not copyforward, it is valid if _shouldMark is true. */
 		UDATA _dynamicMarkCost;	/**< The cost of marking this region (that is, the number of other regions (not including this one) which will need to be scanned - this value is dynamic in that converting the regions which refer to it to scan or mark reduces this number.  It is only valid during GC setup */
 		U_8 _overflowFlags;	/**< Used to denote that work packet overflow occurred for an object in this region - bits 0x1 is GMP or global while 0x2 is PGC */
 	} _markData;
@@ -65,7 +66,7 @@ public:
 		bool _initialLiveSet;  /**< true if the region was part of the live set at the start of collection */
 		bool _survivorSetAborted;  /**< true if the region was part of the survivor set at the time that an abort had occurred, false otherwise */
 		bool _evacuateSet;	/**< true if the region was part of the evacuate set at the beginning of the copy-forward (flag not changed during abort) */
-		bool _requiresPhantomReferenceProcessing; /**< Set to true by master thread if this region must be processed during parallel phantom reference processing */
+		bool _requiresPhantomReferenceProcessing; /**< Set to true by main thread if this region must be processed during parallel phantom reference processing */
 		volatile void *_survivorBase;  /**< The base pointer for storage used as survivor, which will NOT match the region base if tail filling has occurred */
 		MM_HeapRegionDescriptorVLHGC *_nextRegion;  /**< Region list link for compact group resource management during a copyforward operation */
 		MM_HeapRegionDescriptorVLHGC *_previousRegion;  /**< Region list link for compact group resource management during a copyforward operation */
@@ -82,6 +83,9 @@ public:
 	UDATA _projectedLiveBytesPreviousPGC;   /**< _projectedLiveBytes value from previous PGC; updated just before we apply decay for this PGC */
 	IDATA _projectedLiveBytesDeviation;	/**< difference between actual live bytes and projected live bytes. Note: not always update to date and can be negative. */
 	MM_HeapRegionDescriptorVLHGC *_compactDestinationQueueNext; /**< pointer to next compact destination region in the queue */
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+	J9PortVmemIdentifier _arrayletDoublemapID;	/**< Contiguous address identifier associate with double mapped region of arraylet */
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
 	bool _defragmentationTarget;		/**< indicates whether this region should be considered for defragmentation, currently this means the region has been GMPed but not collected yet */
 
 protected:
@@ -91,7 +95,7 @@ private:
 	U_64 _allocationAge; /**< allocation age (number of bytes allocated since the last attempted allocation) */
 	U_64 _lowerAgeBound; /**< lowest possible age of any object in this region */
 	U_64 _upperAgeBound; /**< highest possible age of any object in this region */
-	double _allocationAgeSizeProduct; /**< sum of (age * size) products for each object in the region. used for age merging math in surivovor regions */
+	double _allocationAgeSizeProduct; /**< sum of (age * size) products for each object in the region. used for age merging math in survivor regions */
 	UDATA _age; /**< logical allocation age (number of GC cycles since the last attempted allocation) */
 	MM_RememberedSetCardList _rememberedSetCardList; /**< remembered set card list */
 	MM_RememberedSetCard *_rsclBufferPool;			 /**< RSCL Buffer pool owned by this region (Buffers can still be shared among other regions) */
@@ -266,7 +270,7 @@ public:
 	}
 
 	/**
-	 * @return True if region is in survivor set (there is no explict flag, but info is inferred from _survivorBase being non-null
+	 * @return True if region is in survivor set (there is no explicit flag, but info is inferred from _survivorBase being non-null
 	 */
 	MMINLINE bool isSurvivorRegion() { return NULL != _copyForwardData._survivorBase; }
 

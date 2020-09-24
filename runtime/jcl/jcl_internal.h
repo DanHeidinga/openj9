@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2017 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -130,6 +130,30 @@ getFieldsHelper(JNIEnv *env, jobject cls);
 J9Class *
 fetchArrayClass(struct J9VMThread *vmThread, J9Class *elementTypeClass);
 
+/**
+ * Build an array of java.lang.reflect.RecordComponent for the record components of a record class
+ * 
+ * @param[in] env The JNI context.
+ * @param[in] cls A class.  Must be non-null.
+ * 
+ * @return jarray an array of java.lang.reflect.RecordComponent.
+ * If cls is not a record, return null.
+ * If record class has no record components, return an empty array.
+ */
+jarray
+getRecordComponentsHelper(JNIEnv *env, jobject cls);
+
+/**
+ * Build an array of java.lang.String to return names of all permitted subclasses
+ * for a sealed class.
+ * 
+ * @param[in] env The JNI context.
+ * @param[in] cls A class.  Must be non-null.
+ * 
+ * @return jarray an array of java.lang.String
+ */
+jarray
+permittedSubclassesHelper(JNIEnv *env, jobject cls);
 
 /* ---------------- sigquit.c ---------------- */
 void
@@ -143,6 +167,10 @@ initializeUnsafeMemoryTracking(J9JavaVM* vm);
 void
 freeUnsafeMemory(J9JavaVM* vm);
 
+/* ---------------- java_dyn_methodhandle.c ---------------- */
+#if defined(J9VM_OPT_JAVA_OFFLOAD_SUPPORT)
+void clearNonZAAPEligibleBit(JNIEnv *env, jclass nativeClass, const JNINativeMethod *nativeMethods, jint nativeMethodCount);
+#endif /* J9VM_OPT_JAVA_OFFLOAD_SUPPORT */
 
 #ifdef __cplusplus
 }

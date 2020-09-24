@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2017, 2018 IBM Corp. and others
+ * Copyright (c) 2017, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -45,11 +45,21 @@
 #define vendor_version_h
 
 #include "openj9_version_info.h"
+#include "j9cfg.h"
 
 #define VENDOR_SHORT_NAME "OpenJ9"
 
+#define JAVA_VM_VENDOR "Eclipse OpenJ9"
+#define JAVA_VM_NAME "Eclipse OpenJ9 VM"
+
+#if JAVA_SPEC_VERSION < 12
+/* Pre-JDK12 versions use following defines to set system properties
+ * java.vendor and java.vendor.url within vmprop.c:initializeSystemProperties(vm).
+ * JDK12 (assuming future versions as well) sets these properties via java.lang.VersionProps.init(systemProperties) 
+ * and following settings within System.ensureProperties().
+ */
 #define JAVA_VENDOR "Eclipse OpenJ9"
 #define JAVA_VENDOR_URL "http://www.eclipse.org/openj9"
-#define JAVA_VM_NAME "Eclipse OpenJ9 VM"
+#endif /* JAVA_SPEC_VERSION < 12 */
 
 #endif     /* vendor_version_h */

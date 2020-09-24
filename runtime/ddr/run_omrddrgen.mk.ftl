@@ -1,5 +1,5 @@
 ###############################################################################
-# Copyright (c) 2017, 2018 IBM Corp. and others
+# Copyright (c) 2017, 2020 IBM Corp. and others
 #
 # This program and the accompanying materials are made available under
 # the terms of the Eclipse Public License 2.0 which accompanies this
@@ -20,40 +20,79 @@
 # SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
 ###############################################################################
 
-TOP_DIR := ../
+TOP_DIR := ..
 
-include $(TOP_DIR)makelib/mkconstants.mk
-include $(TOP_DIR)makelib/uma_macros.mk
+include $(TOP_DIR)/makelib/mkconstants.mk
+include $(TOP_DIR)/makelib/uma_macros.mk
 
-ifeq (8,$(VERSION_MAJOR))
-  DDR_JCL_MODULE := jclse7b_
-else ifneq (,$(filter 9 10 11,$(VERSION_MAJOR)))
-  DDR_JCL_MODULE := jclse$(VERSION_MAJOR)_
-else
-  $(error Unsupported version: '$(VERSION_MAJOR)')
-endif
+# recursively find files in directory $1 matching the pattern $2
+FindAllFiles = \
+	$(wildcard $1/$2) \
+	$(foreach i,$(wildcard $1/*),$(call FindAllFiles,$i,$2))
 
-DDR_INPUT_MODULES := j9ddr_misc j9gc j9jvmti j9prt j9shr j9thr j9trc j9vm $(DDR_JCL_MODULE)
-DDR_INPUT_DEPENDS := $(addprefix $(TOP_DIR),$(foreach module,$(DDR_INPUT_MODULES),$($(module)_depend)))
+# check that $1 is exactly one word or fail with $2 as the error message
+OneWordOrFail = $(if $(filter 1,$(words $1)),$1,$(error $2))
+
+# return the unique path matching the patterns in $1 or fail
+UniqueExistingFile = $(call OneWordOrFail,$(wildcard $1),Exactly one of these files must exist: $1)
+
+DDR_INPUT_MODULES := j9ddr_misc j9gc j9jvmti j9prt j9shr j9thr j9trc j9vm j9vrb jclse
+DDR_INPUT_DEPENDS := $(addprefix $(TOP_DIR)/,$(foreach module,$(DDR_INPUT_MODULES),$($(module)_depend)))
 
 <#if uma.spec.type.windows>
-DDR_INPUT_FILES := $(addprefix $(TOP_DIR),$(foreach module,$(DDR_INPUT_MODULES),$($(module)_pdb)))
+DDR_INPUT_FILES := $(addprefix $(TOP_DIR)/,$(foreach module,$(DDR_INPUT_MODULES),$($(module)_pdb)))
+<#elseif uma.spec.type.zos>
+
+# Exclude debug information that is only relevant to tools or test code.
+DDR_EXCLUDED_FOLDERS := $(addsuffix /%, $(addprefix $(TOP_DIR)/, \
+	bcutil/test \
+	gc_tests \
+	jilgen \
+	omr/ddr \
+	omr/third_party \
+	omr/tools \
+	runtimetools \
+	tests \
+	))
+
+DDR_INPUT_FILES := $(sort $(filter-out $(DDR_EXCLUDED_FOLDERS), $(call FindAllFiles,$(TOP_DIR),*.dbg)))
+
 <#elseif uma.spec.flags.uma_gnuDebugSymbols.enabled>
-DDR_INPUT_FILES := $(addsuffix .dbg,$(DDR_INPUT_DEPENDS))
+<#if uma.spec.type.osx>
+# temporarily accept .dylib.dbg files built by OMR make rules
+DDR_INPUT_FILES := \
+	$(foreach path,$(DDR_INPUT_DEPENDS), \
+		$(call UniqueExistingFile, $(path).dSYM/Contents/Resources/DWARF/* $(path).dbg))
+# workaround for OSX not keeping anonymous enum symbols in shared library
+# so get it directly from object file instead
+DDR_INPUT_FILES += $(TOP_DIR)/omr/gc/base/standard/CompactScheme$(UMA_DOT_O)
+<#else>
+# temporarily accept .so.dbg files built by OMR make rules
+DDR_INPUT_FILES := \
+	$(foreach path,$(DDR_INPUT_DEPENDS), \
+		$(call UniqueExistingFile, $(path:$(UMA_DOT_DLL)=.debuginfo) $(path).dbg))
+</#if>
+</#if>
+
+# help ddrgen find required libraries
+<#if uma.spec.type.aix || uma.spec.type.zos>
+DDR_LIB_PATH := LIBPATH=$(TOP_DIR)$(if $(LIBPATH),:$(LIBPATH))
+<#else>
+DDR_LIB_PATH :=
 </#if>
 
 # The primary goals of this makefile.
-DDR_BLOB := $(TOP_DIR)j9ddr.dat
-DDR_SUPERSET_FILE := $(TOP_DIR)superset.dat
+DDR_BLOB := $(TOP_DIR)/j9ddr.dat
+DDR_SUPERSET_FILE := $(TOP_DIR)/superset.dat
 
 # Intermediate artifacts produced by this makefile.
-DDR_MACRO_LIST := $(TOP_DIR)macroList
+DDR_MACRO_LIST := $(TOP_DIR)/macroList
 
 # Command-line options for ddrgen.
 DDR_OPTIONS := \
 	--blob $(DDR_BLOB) \
 	--superset $(DDR_SUPERSET_FILE) \
-	--blacklist blacklist \
+	--excludes excludes \
 	--macrolist $(DDR_MACRO_LIST) \
 	--overrides overrides \
 	--show-empty \
@@ -73,11 +112,20 @@ all : $(DDR_BLOB)
 clean :
 	rm -f $(DDR_PRODUCTS)
 
-$(DDR_BLOB) : $(TOP_DIR)ddrgen $(DDR_MACRO_LIST)
-	$(TOP_DIR)ddrgen $(DDR_OPTIONS) \
+$(DDR_BLOB) : $(TOP_DIR)/ddrgen$(UMA_DOT_EXE) $(DDR_MACRO_LIST) excludes $(wildcard overrides*)
+	@echo "Running ddrgen to generate $(notdir $@) and $(notdir $(DDR_SUPERSET_FILE))"
+	@$(DDR_LIB_PATH) $(TOP_DIR)/ddrgen $(DDR_OPTIONS) \
 		$(DDR_INPUT_FILES)
+<#if uma.spec.type.zos>
+	chtag -t -c ISO8859-1 $(DDR_SUPERSET_FILE)
+</#if>
 
 $(DDR_MACRO_LIST) : $(DDR_INPUT_DEPENDS)
 	@echo Running getmacros for constant discovery
 	@rm -f $@
-	bash $(TOP_DIR)omr/ddr/tools/getmacros $(TOP_DIR)
+	bash $(TOP_DIR)/omr/ddr/tools/getmacros $(TOP_DIR)
+<#if uma.spec.type.zos>
+	iconv -f ISO8859-1 -t IBM-1047 $@ > $@.tmp
+	mv -f $@.tmp $@
+	chtag -t -c IBM-1047 $@
+</#if>

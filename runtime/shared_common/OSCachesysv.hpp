@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2018 IBM Corp. and others
+ * Copyright (c) 2001, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -105,10 +105,10 @@ class SH_OSCachesysv : public SH_OSCache
 {
 public:
 	SH_OSCachesysv(J9PortLibrary* portlib, J9JavaVM* vm, const char* cachedirname, const char* cacheName, J9SharedClassPreinitConfig* piconfig_, IDATA numLocks, UDATA createFlag,
-			UDATA verboseFlags, U_64 runtimeFlags, I_32 openMode, J9PortShcVersion* versionData, SH_OSCache::SH_OSCacheInitialiser* initialiser);
+			UDATA verboseFlags, U_64 runtimeFlags, I_32 openMode, J9PortShcVersion* versionData, SH_OSCache::SH_OSCacheInitializer* initializer);
 
 	virtual bool startup(J9JavaVM* vm, const char* ctrlDirName, UDATA cacheDirPerm, const char* cacheName, J9SharedClassPreinitConfig* piconfig_, IDATA numLocks, UDATA createFlag,
-			UDATA verboseFlags, U_64 runtimeFlags, I_32 openMode, UDATA storageKeyTesting, J9PortShcVersion* versionData, SH_OSCache::SH_OSCacheInitialiser* i, UDATA reason);
+			UDATA verboseFlags, U_64 runtimeFlags, I_32 openMode, UDATA storageKeyTesting, J9PortShcVersion* versionData, SH_OSCache::SH_OSCacheInitializer* i, UDATA reason);
 
 	/**
 	 * Override new operator
@@ -131,10 +131,15 @@ public:
 	IDATA getReadWriteLockID(void);
 	IDATA acquireWriteLock(UDATA lockID);
 	IDATA releaseWriteLock(UDATA lockID);
+	U_64 getCreateTime(void);
   	
-	static IDATA getCacheStats(J9JavaVM* vm, const char* ctrlDirName, UDATA groupPerm, const char* filePath, SH_OSCache_Info* cacheInfo, UDATA reason);
+	static IDATA getCacheStats(J9JavaVM* vm, const char* ctrlDirName, UDATA groupPerm, const char* cacheNameWithVGen, SH_OSCache_Info* cacheInfo, UDATA reason, J9Pool** lowerLayerList);
+	
+	static IDATA getNonTopLayerCacheInfo(J9JavaVM* vm, const char* ctrlDirName, UDATA groupPerm, const char *cacheNameWithVGen, SH_OSCache_Info *cacheInfo, UDATA reason, SH_OSCachesysv* oscache);
 	
 	void *attach(J9VMThread *currentThread, J9PortShcVersion* expectedVersionData);
+	
+	virtual IDATA detach(void);
 	
 #if defined (J9SHR_MSYNC_SUPPORT)
 	IDATA syncUpdates(void* start, UDATA length, U_32 flags); 
@@ -168,12 +173,12 @@ public:
 
 	SH_CacheAccess isCacheAccessible(void) const;
 
-	IDATA restoreFromSnapshot(J9JavaVM* vm, const char* snapshotName, UDATA numLocks, SH_OSCache::SH_OSCacheInitialiser* i, bool* cacheExist);
+	IDATA restoreFromSnapshot(J9JavaVM* vm, const char* snapshotName, UDATA numLocks, SH_OSCache::SH_OSCacheInitializer* i, bool* cacheExist);
 
 /* protected: */
 	/*This constructor should only be used by this class and parent*/
 	SH_OSCachesysv() {};
-	virtual void initialize(J9PortLibrary* portLib_, char* memForConstructor, UDATA generation);
+	virtual void initialize(J9PortLibrary* portLib_, char* memForConstructor, UDATA generation, I_8 layer);
 
 protected :
 	
@@ -197,7 +202,7 @@ private:
 
 	const J9SharedClassPreinitConfig* config;
 
-	SH_OSCache::SH_OSCacheInitialiser* _initialiser;
+	SH_OSCache::SH_OSCacheInitializer* _initializer;
 	UDATA _groupPerm;
 
 	I_32 _semid;
@@ -206,8 +211,6 @@ private:
 	SH_SysvShmAccess _shmAccess;
 
 	J9ControlFileStatus _controlFileStatus;
-
-	IDATA detach(void);
 
 	IDATA openCache(const char* ctrlDirName, J9PortShcVersion* versionData, bool semCreated);
 

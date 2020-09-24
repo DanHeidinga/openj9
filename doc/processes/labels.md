@@ -1,5 +1,5 @@
 <!--
-Copyright (c) 2018, 2018 IBM Corp. and others
+Copyright (c) 2018, 2019 IBM Corp. and others
 
 This program and the accompanying materials are made available under
 the terms of the Eclipse Public License 2.0 which accompanies this
@@ -31,7 +31,7 @@ Priority
 Describe the priority of the particular issue.
 
 * `pri:high`
-* `pri:medium` 
+* `pri:medium`
 * `pri:low`
 
 
@@ -40,9 +40,10 @@ JDK
 Indicate if this issue is specific for a given JDK level, such as JDK8.
 
 * `jdk8`
-* `jdk9` 
+* `jdk9`
 * `jdk10`
 * `jdk11`
+* `jdk12`
 
 
 Component
@@ -57,18 +58,19 @@ contributors for a particular area to the relevant items.
 * `comp:doc`
 * `comp:gc`
 * `comp:build`
-* `comp:port` 
+* `comp:port`
+* `comp:infra`
 
 
 Dependencies
 ---
 OpenJ9 builds with several other projects: 'Eclipse OMR' & an 'OpenJDK
-extensions for OpenJ9' repo for each JDK level.  These labels help to 
+extensions for OpenJ9' repo for each JDK level.  These labels help to
 identify dependent changes to ensure they are merged together or in the
 correct order:
 
 * `depends:omr`
-* `depends:openjdk(8, 9, 10, 11)`
+* `depends:openjdk(8, 9, 10, 11, 12)`
 * `depends:EclipseCQ`: Indicate a change needs a Contributor Questionnaire
 
 OpenJDK projects
@@ -86,17 +88,19 @@ Labels for issues that affect performance or footprint.
 * `perf`
 * `footprint`
 
-Documentation
+External documentation
 ---
-Labels to indicate a PR or issues should be tagged in the release notes
-or the What's New documentation.
+Label to indicate that a PR or issue requires external documentation (new feature / change in
+  behavior / limitation).
 
-* `doc:releasenote`
-* `doc:whatsnew`
+* `doc:externals`
+
+**Note:** When you use this label, you must open an [issue](https://github.com/eclipse/openj9-docs/issues/new?template=new-documentation-change.md) in the OpenJ9 documentation repo.
 
 End User issues
 ---
 To indicate an issue has been raised by an end user or affects the User-experience rather than being a developer-centric issue.
 
 * `userRaised`
+* `svtRaised`: Indicate an issue was raised for an AdoptOpenJDK 3rd party issue or the OpenJ9 system verification test (svt).
 

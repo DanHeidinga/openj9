@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -34,12 +34,11 @@
 #include "CardTable.hpp"
 #include "ClassLoaderRememberedSet.hpp"
 #include "CollectionStatisticsVLHGC.hpp"
-#include "CompressedCardTable.hpp"
 #include "CycleState.hpp"
-#include "Dispatcher.hpp"
 #include "EnvironmentVLHGC.hpp"
 #include "HeapRegionIteratorVLHGC.hpp"
 #include "MixedObjectIterator.hpp"
+#include "ParallelDispatcher.hpp"
 #include "PointerArrayIterator.hpp"
 #include "RememberedSetCardListBufferIterator.hpp"
 #include "RememberedSetCardListCardIterator.hpp"
@@ -57,6 +56,9 @@ MM_InterRegionRememberedSet::MM_InterRegionRememberedSet(MM_HeapRegionManager *h
 	, _overflowedListTail(NULL)
 	, _regionSize(0)
 	, _shouldFlushBuffersForDecommitedRegions(false)
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+	, _compressObjectReferences(false)
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 	, _overflowedRegionCount(0)
 	, _stableRegionCount(0)
 	, _beingRebuiltRegionCount(0)
@@ -89,10 +91,11 @@ MM_InterRegionRememberedSet::newInstance(MM_EnvironmentVLHGC* env, MM_HeapRegion
 void
 MM_InterRegionRememberedSet::exportStats(MM_EnvironmentVLHGC* env, MM_CollectionStatisticsVLHGC *stats)
 {
+	uintptr_t const cardSize = MM_RememberedSetCard::cardSize(env->compressObjectReferences());
 	/* TODO: this formula for _rememberedSetCount is an overstatement - try to be more accurate */
 	stats->_rememberedSetCount = (_bufferCountTotal - _freeBufferCount) * MM_RememberedSetCardBucket::MAX_BUFFER_SIZE;
-	stats->_rememberedSetBytesFree = _freeBufferCount * MM_RememberedSetCardBucket::MAX_BUFFER_SIZE * sizeof(MM_RememberedSetCard);
-	stats->_rememberedSetBytesTotal = _bufferCountTotal * MM_RememberedSetCardBucket::MAX_BUFFER_SIZE * sizeof(MM_RememberedSetCard);
+	stats->_rememberedSetBytesFree = _freeBufferCount * MM_RememberedSetCardBucket::MAX_BUFFER_SIZE * cardSize;
+	stats->_rememberedSetBytesTotal = _bufferCountTotal * MM_RememberedSetCardBucket::MAX_BUFFER_SIZE * cardSize;
 	stats->_rememberedSetOverflowedRegionCount = _overflowedRegionCount;
 	stats->_rememberedSetStableRegionCount = _stableRegionCount;
 	stats->_rememberedSetBeingRebuiltRegionCount = _beingRebuiltRegionCount;
@@ -124,7 +127,7 @@ MM_InterRegionRememberedSet::flushBuffersForDecommitedRegions(MM_EnvironmentVLHG
 
 		/* At this point there should be no non-empty buffers used by decommitted regions.
 		 * Now, walk the global pool of free buffers, and remove them from the list if they are owned by decommitted region.
-		 * Before that, move all free buffes from thread local pools to the global
+		 * Before that, move all free buffers from thread local pools to the global
 		 */
 
 		releaseCardBufferControlBlockLocalPools(env);
@@ -179,8 +182,9 @@ MM_InterRegionRememberedSet::allocateRegionBuffers(MM_EnvironmentVLHGC* env, MM_
 		success = true;
 	} else {
 		MM_GCExtensions *ext = MM_GCExtensions::getExtensions(env);
-
-		UDATA bufferSize = MM_RememberedSetCardBucket::MAX_BUFFER_SIZE * sizeof(MM_RememberedSetCard);
+		bool const compressed = env->compressObjectReferences();
+		uintptr_t const cardSize = MM_RememberedSetCard::cardSize(compressed);
+		UDATA bufferSize = MM_RememberedSetCardBucket::MAX_BUFFER_SIZE * cardSize;
 		UDATA bufferCount = ext->tarokRememberedSetCardListSize / MM_RememberedSetCardBucket::MAX_BUFFER_SIZE;
 
 		/* the pool of buffers have to be bufferSize aligned */
@@ -199,7 +203,7 @@ MM_InterRegionRememberedSet::allocateRegionBuffers(MM_EnvironmentVLHGC* env, MM_
 			UDATA lastBufferControlBlockIndex = firstBufferControlBlockIndex + bufferControlBlockCountPerRegion;
 			/* link buffers among themselves */
 			for (UDATA i = firstBufferControlBlockIndex; i < lastBufferControlBlockIndex; i++) {
-				_rsclBufferControlBlockPool[i]._card = &rsclBufferPoolAligned[(i - firstBufferControlBlockIndex) * MM_RememberedSetCardBucket::MAX_BUFFER_SIZE];
+				_rsclBufferControlBlockPool[i]._card = MM_RememberedSetCard::addToCardAddress(rsclBufferPoolAligned, (i - firstBufferControlBlockIndex) * MM_RememberedSetCardBucket::MAX_BUFFER_SIZE, compressed);
 				_rsclBufferControlBlockPool[i]._next = &_rsclBufferControlBlockPool[i + 1];
 			}
 
@@ -247,7 +251,8 @@ MM_InterRegionRememberedSet::initialize(MM_EnvironmentVLHGC* env)
 	UDATA totalBufferControlBlockCount = _bufferControlBlockCountPerRegion * _heapRegionManager->getTableRegionCount();
 	UDATA rsclBufferControlBlockPoolSize = totalBufferControlBlockCount * sizeof(MM_CardBufferControlBlock);
 	/* buffer size has to be a power of 2 */
-	UDATA bufferSize = MM_RememberedSetCardBucket::MAX_BUFFER_SIZE * sizeof(MM_RememberedSetCard);
+	uintptr_t const cardSize = MM_RememberedSetCard::cardSize(env->compressObjectReferences());
+	UDATA bufferSize = MM_RememberedSetCardBucket::MAX_BUFFER_SIZE * cardSize;
 	Assert_MM_true(((UDATA)1 << MM_Bits::leadingZeroes(bufferSize)) == bufferSize);
 
 	/* All Buffer Control Block are pre-allocated on startup. Buffers themselves are allocated as regions are commited */
@@ -265,13 +270,19 @@ MM_InterRegionRememberedSet::initialize(MM_EnvironmentVLHGC* env)
 	_regionTable = _heapRegionManager->_regionTable;
 	_tableDescriptorSize = _heapRegionManager->_tableDescriptorSize;
 	UDATA baseOfHeap = (UDATA) (_heapRegionManager->_regionTable)->getLowAddress();
-#if defined(J9VM_GC_COMPRESSED_POINTERS)
-	_cardToRegionShift = _heapRegionManager->_regionShift - CARD_SIZE_SHIFT;
-	_cardToRegionDisplacement = baseOfHeap >> CARD_SIZE_SHIFT;
-#else
-	_cardToRegionShift = _heapRegionManager->_regionShift;
-	_cardToRegionDisplacement = baseOfHeap;
-#endif
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+	if (env->compressObjectReferences()) {
+#if defined(OMR_GC_FULL_POINTERS)
+		_compressObjectReferences = true;
+#endif /* defined(OMR_GC_FULL_POINTERS) */
+		_cardToRegionShift = _heapRegionManager->_regionShift - CARD_SIZE_SHIFT;
+		_cardToRegionDisplacement = baseOfHeap >> CARD_SIZE_SHIFT;
+	} else
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+	{
+		_cardToRegionShift = _heapRegionManager->_regionShift;
+		_cardToRegionDisplacement = baseOfHeap;
+	}
 	_cardTable = ext->cardTable;
 
 	return true;
@@ -424,29 +435,31 @@ MM_InterRegionRememberedSet::releaseCardBufferControlBlockList(MM_EnvironmentVLH
 }
 
 void
+MM_InterRegionRememberedSet::releaseCardBufferControlBlockListForThread(MM_EnvironmentVLHGC* env, MM_EnvironmentVLHGC* threadEnv)
+{
+	threadEnv->_rsclBufferControlBlockCount -= releaseCardBufferControlBlockList(env, threadEnv->_rsclBufferControlBlockHead, threadEnv->_rsclBufferControlBlockTail);
+	Assert_MM_true(0 == threadEnv->_rsclBufferControlBlockCount);
+	threadEnv->_rsclBufferControlBlockHead = NULL;
+	threadEnv->_rsclBufferControlBlockTail = NULL;
+	threadEnv->_lastOverflowedRsclWithReleasedBuffers = NULL;
+}
+
+void
 MM_InterRegionRememberedSet::releaseCardBufferControlBlockLocalPools(MM_EnvironmentVLHGC* env)
 {
 	GC_VMThreadListIterator vmThreadListIterator((J9JavaVM *)env->getLanguageVM());
 	J9VMThread *aThread;
 
-	/* release all slave-GC-thread local buffers */
+	/* release all worker-GC-thread local buffers */
 	while((aThread = vmThreadListIterator.nextVMThread()) != NULL) {
 		MM_EnvironmentVLHGC *threadEnvironment = MM_EnvironmentVLHGC::getEnvironment(aThread);
-		if (GC_SLAVE_THREAD == threadEnvironment->getThreadType()) {
-			threadEnvironment->_rsclBufferControlBlockCount -= releaseCardBufferControlBlockList(env, threadEnvironment->_rsclBufferControlBlockHead, threadEnvironment->_rsclBufferControlBlockTail);
-			Assert_MM_true(0 == threadEnvironment->_rsclBufferControlBlockCount);
-			threadEnvironment->_rsclBufferControlBlockHead = NULL;
-			threadEnvironment->_rsclBufferControlBlockTail = NULL;
-			threadEnvironment->_lastOverflowedRsclWithReleasedBuffers = NULL;
+		if (GC_WORKER_THREAD == threadEnvironment->getThreadType()) {
+			releaseCardBufferControlBlockListForThread(env, threadEnvironment);
 		}
 	}
 
-	/* do the same for master-GC-thread */
-	env->_rsclBufferControlBlockCount -= releaseCardBufferControlBlockList(env, env->_rsclBufferControlBlockHead, env->_rsclBufferControlBlockTail);
-	Assert_MM_true(0 == env->_rsclBufferControlBlockCount);
-	env->_rsclBufferControlBlockHead = NULL;
-	env->_rsclBufferControlBlockTail = NULL;
-	env->_lastOverflowedRsclWithReleasedBuffers = NULL;
+	/* do the same for main-GC-thread */
+	releaseCardBufferControlBlockListForThread(env, env);
 
 	_overflowedListHead = NULL;
 	_overflowedListTail = NULL;
@@ -743,10 +756,7 @@ MM_InterRegionRememberedSet::clearFromRegionReferencesForCompact(MM_EnvironmentV
 		clearFromRegionReferencesForCompactDirect(env);
 	}
 
-	env->_rsclBufferControlBlockCount -= releaseCardBufferControlBlockList(env, env->_rsclBufferControlBlockHead, env->_rsclBufferControlBlockTail);
-	Assert_MM_true(0 == env->_rsclBufferControlBlockCount);
-	env->_rsclBufferControlBlockHead = NULL;
-	env->_rsclBufferControlBlockTail = NULL;
+	releaseCardBufferControlBlockListForThread(env, env);
 }
 
 void
@@ -765,7 +775,7 @@ MM_InterRegionRememberedSet::clearFromRegionReferencesForCompactDirect(MM_Enviro
 	while (NULL != (region = regionIterator.nextRegion())) {
 		if(J9MODRON_HANDLE_NEXT_WORK_UNIT(env)) {
 			if (!region->getRememberedSetCardList()->isOverflowed()) {
-				MM_RememberedSetCard card = 0;
+				UDATA card = 0;
 				UDATA toRemoveCount = 0;
 				UDATA totalCountBefore = 0;
 				GC_RememberedSetCardListCardIterator rsclCardIterator(region->getRememberedSetCardList());
@@ -775,7 +785,7 @@ MM_InterRegionRememberedSet::clearFromRegionReferencesForCompactDirect(MM_Enviro
 					Card * cardAddress = rememberedSetCardToCardAddr(env, card);
 					if (fromRegion->_compactData._shouldCompact || !fromRegion->containsObjects() || isDirtyCardForPartialCollect(env, cardTable, cardAddress)) {
 						toRemoveCount += 1;
-						rsclCardIterator.removeCurrentCard();
+						rsclCardIterator.removeCurrentCard(env);
 					}
 					totalCountBefore +=1;
 				}
@@ -827,7 +837,7 @@ MM_InterRegionRememberedSet::clearFromRegionReferencesForCompactOptimized(MM_Env
 	while (NULL != (region = regionIterator.nextRegion())) {
 		if(J9MODRON_HANDLE_NEXT_WORK_UNIT(env)) {
 			if (!region->getRememberedSetCardList()->isOverflowed()) {
-				MM_RememberedSetCard card = 0;
+				UDATA card = 0;
 				UDATA toRemoveCount = 0;
 				UDATA totalCountBefore = 0;
 				GC_RememberedSetCardListCardIterator rsclCardIterator(region->getRememberedSetCardList());
@@ -853,7 +863,7 @@ MM_InterRegionRememberedSet::clearFromRegionReferencesForCompactOptimized(MM_Env
 
 					if (remove) {
 						toRemoveCount += 1;
-						rsclCardIterator.removeCurrentCard();
+						rsclCardIterator.removeCurrentCard(env);
 					}
 					totalCountBefore +=1;
 				}
@@ -896,17 +906,19 @@ MM_InterRegionRememberedSet::clearFromRegionReferencesForMark(MM_EnvironmentVLHG
 		clearFromRegionReferencesForMarkDirect(env);
 	}
 
-	env->_rsclBufferControlBlockCount -= releaseCardBufferControlBlockList(env, env->_rsclBufferControlBlockHead, env->_rsclBufferControlBlockTail);
-	Assert_MM_true(0 == env->_rsclBufferControlBlockCount);
-	env->_rsclBufferControlBlockHead = NULL;
-	env->_rsclBufferControlBlockTail = NULL;
+	releaseCardBufferControlBlockListForThread(env, env);
 }
 
 void
 MM_InterRegionRememberedSet::clearFromRegionReferencesForMarkDirect(MM_EnvironmentVLHGC* env)
 {
 	PORT_ACCESS_FROM_ENVIRONMENT(env);
-	MM_CardTable *cardTable = MM_GCExtensions::getExtensions(env)->cardTable;
+	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
+	MM_CardTable *cardTable = extensions->cardTable;
+	MM_MarkMap *markMap = NULL;
+	if (static_cast<MM_CycleStateVLHGC*>(env->_cycleState)->_schedulingDelegate->isFirstPGCAfterGMP()) {
+		markMap = env->_cycleState->_markMap;
+	}
 	U_64 startTime = j9time_hires_clock();
 
 	GC_HeapRegionIteratorVLHGC regionIterator(_heapRegionManager);
@@ -918,18 +930,19 @@ MM_InterRegionRememberedSet::clearFromRegionReferencesForMarkDirect(MM_Environme
 	while (NULL != (region = regionIterator.nextRegion())) {
 		if(J9MODRON_HANDLE_NEXT_WORK_UNIT(env)) {
 			if (!region->getRememberedSetCardList()->isOverflowed()) {
-				MM_RememberedSetCard card = 0;
+				UDATA card = 0;
 				UDATA toRemoveCount = 0;
 				UDATA totalCountBefore = 0;
 				GC_RememberedSetCardListCardIterator rsclCardIterator(region->getRememberedSetCardList());
 				while(0 != (card = rsclCardIterator.nextReferencingCard(env))) {
 					MM_HeapRegionDescriptorVLHGC *fromRegion = tableDescriptorForRememberedSetCard(card);
 					Card * cardAddress = rememberedSetCardToCardAddr(env, card);
-					/* Regions that are completely swept after a GMP, might still have outgoing references (thus we consider empty regions too) */
-					if (fromRegion->_markData._shouldMark  || !fromRegion->containsObjects() || isDirtyCardForPartialCollect(env, cardTable, cardAddress)) {
+					/* Regions that are completely swept or parts of regions that are partially swept after a GMP might still have outgoing references. If they do, cards should be removed. */
+					if (fromRegion->_markData._shouldMark  || !cardMayContainObjects(card, fromRegion, markMap) || isDirtyCardForPartialCollect(env, cardTable, cardAddress)) {
 						toRemoveCount += 1;
-						rsclCardIterator.removeCurrentCard();
+						rsclCardIterator.removeCurrentCard(env);
 					}
+
 					totalCountBefore +=1;
 				}
 
@@ -961,8 +974,13 @@ void
 MM_InterRegionRememberedSet::clearFromRegionReferencesForMarkOptimized(MM_EnvironmentVLHGC* env)
 {
 	PORT_ACCESS_FROM_ENVIRONMENT(env);
-	MM_CardTable *cardTable = MM_GCExtensions::getExtensions(env)->cardTable;
-	MM_CompressedCardTable *compressedCardTable = MM_GCExtensions::getExtensions(env)->compressedCardTable;
+	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
+	MM_CardTable *cardTable = extensions->cardTable;
+	MM_CompressedCardTable *compressedCardTable = extensions->compressedCardTable;
+	MM_MarkMap *markMap = NULL;
+	if (static_cast<MM_CycleStateVLHGC*>(env->_cycleState)->_schedulingDelegate->isFirstPGCAfterGMP()) {
+		markMap = env->_cycleState->_markMap;
+	}
 	U_64 startTime = j9time_hires_clock();
 
 	rebuildCompressedCardTableForMark(env);
@@ -979,7 +997,7 @@ MM_InterRegionRememberedSet::clearFromRegionReferencesForMarkOptimized(MM_Enviro
 	while (NULL != (region = regionIterator.nextRegion())) {
 		if(J9MODRON_HANDLE_NEXT_WORK_UNIT(env)) {
 			if (!region->getRememberedSetCardList()->isOverflowed()) {
-				MM_RememberedSetCard card = 0;
+				UDATA card = 0;
 				UDATA toRemoveCount = 0;
 				UDATA totalCountBefore = 0;
 				GC_RememberedSetCardListCardIterator rsclCardIterator(region->getRememberedSetCardList());
@@ -988,16 +1006,16 @@ MM_InterRegionRememberedSet::clearFromRegionReferencesForMarkOptimized(MM_Enviro
 					bool remove = true;
 					if (tableIsReady) {
 						/* Rebuild of Compressed Card Table has been completed - use it */
-						remove = compressedCardTable->isCompressedCardDirtyForPartialCollect(env, convertHeapAddressFromRememberedSetCard(card));
+						remove = isCompressedCardDirtyForPartialCollect(env, card, compressedCardTable, markMap);
 					} else {
 						if (compressedCardTable->isReady()) {
 							tableIsReady = true;
 							/* Rebuild of Compressed Card Table has been completed - use it for first time */
-							remove = compressedCardTable->isCompressedCardDirtyForPartialCollect(env, convertHeapAddressFromRememberedSetCard(card));
+							remove = isCompressedCardDirtyForPartialCollect(env, card, compressedCardTable, markMap);
 						} else {
 							/* rebuild is not complete - look at the region PGC selection and card itself directly */
 							MM_HeapRegionDescriptorVLHGC *fromRegion = tableDescriptorForRememberedSetCard(card);
-							if (fromRegion->containsObjects() && !fromRegion->_markData._shouldMark) {
+							if (cardMayContainObjects(card, fromRegion, markMap) && !fromRegion->_markData._shouldMark) {
 								Card * cardAddress = rememberedSetCardToCardAddr(env, card);
 								remove = isDirtyCardForPartialCollect(env, cardTable, cardAddress);
 							}
@@ -1006,7 +1024,7 @@ MM_InterRegionRememberedSet::clearFromRegionReferencesForMarkOptimized(MM_Enviro
 
 					if (remove) {
 						toRemoveCount += 1;
-						rsclCardIterator.removeCurrentCard();
+						rsclCardIterator.removeCurrentCard(env);
 					}
 					totalCountBefore +=1;
 				}

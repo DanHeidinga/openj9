@@ -1,5 +1,5 @@
 <!--
-Copyright (c) 2017, 2018 IBM Corp. and others
+Copyright (c) 2017, 2020 IBM Corp. and others
 
 This program and the accompanying materials are made available under
 the terms of the Eclipse Public License 2.0 which accompanies this
@@ -70,11 +70,11 @@ provider of memory.
 --------------------------------------------------------------------
 
 
-                +---------------------+
-                |                     |
-                | J9::SegmentProvider |
-                |                     |
-                +-----+-----------+---+
+                +-----------------------+
+                |                       |
+                | J9::J9SegmentProvider |
+                |                       |
+                +-----+-----------+-----+
                       ^           ^
                       |           |
                       |           |
@@ -89,7 +89,7 @@ provider of memory.
 
 #### J9::SystemSegmentProvider
 `J9::SystemSegmentProvider` implements `TR::SegmentAllocator`. 
-It uses `J9::SegmentProvider` (see below) in order to allocate 
+It uses `J9::J9SegmentProvider` (see below) in order to allocate 
 `TR::MemorySegment`s and uses `TR::RawAllocator` for all its 
 internal memory management requirements. As part of its initialization, it
 preallocates a segment of memory. This is the default Low 
@@ -102,8 +102,8 @@ when the `TR_EnableScratchMemoryDebugging` option is enabled.
 This object exists specifically for the Debugger Extensions. It
 uses `dbgMalloc`/`dbgFree` to allocate and free memory.
 
-#### J9::SegmentProvider
-`J9::SegmentProvider` is a pure virtual class which provides
+#### J9::J9SegmentProvider
+`J9::J9SegmentProvider` is a pure virtual class which provides
 APIs to
 * Request Memory
 * Release Memory
@@ -116,17 +116,17 @@ segments show up in the `Internal Memory` section of a javacore. They
 allow the Compiler to minimize the number of times it needs to request
 memory from the Port Library (an expensive operation for the allocation
 patterns exhibited by the Compiler). Therefore, in some sense, 
-`J9::SegmentProvider` is the truest allocator of segments as defined by
+`J9::J9SegmentProvider` is the truest allocator of segments as defined by
 the Port Library. It should only be used as the backing provider of
 other Allocators.
 
 #### J9::SegmentAllocator
-`J9::SegmentAllocator` implements `J9::SegmentProvider`. It uses the
+`J9::SegmentAllocator` implements `J9::J9SegmentProvider`. It uses the
 `allocateMemorySegment` and `freeMemorySegment` APIs accessed via
 `javaVM->internalVMFunctions`.
 
 #### J9::SegmentCache
-`J9::SegmentCache` implements `J9::SegmentProvider`. It requires a
+`J9::SegmentCache` implements `J9::J9SegmentProvider`. It requires a
 `J9::SegmentAllocator` instantiated to use as its backing provider. As part
 of its initialization, it preallocates a segment. This class exists
 as an optimization to minimize the churn of memory allocation and
@@ -167,7 +167,7 @@ be compiled, it initializes a `J9::SegmentCache` local object. As stated
 above, this will preallocate a segment. Then, it goes through the list. 
 At the start of a compilation, it initializes a `J9::SystemSegmentProvider`, 
 passing in the `J9::SegmentCache` as the backing provider (technically it is 
-passed a reference to a `J9::SegmentProvider`, the reason for which is described
+passed a reference to a `J9::J9SegmentProvider`, the reason for which is described
 below). As stated above, `J9::SystemSegmentProvider` will allocate a
 segment as part of its initialization. However, the size of the segment it
 allocates is the same as the size of the segment preallocated by
@@ -191,7 +191,7 @@ instantiated in, causing it to be destroyed and finally releasing all of its
 memory.
 
 The reason why `J9::SystemSegmentProvider` is passed in a reference to
-`J9::SegmentProvider` and not `J9::SegmentCache` is because the code that
+`J9::J9SegmentProvider` and not `J9::SegmentCache` is because the code that
 instantiates `J9::SystemSegmentProvider` is common for both compilations on 
 Compilation Threads AND compilations on Application Threads. When a compilation 
 occurs on an Application Thread, `J9::SegmentAllocator` is instantiated instead.
@@ -224,3 +224,20 @@ calling it `TR::PersistentSegmentProvider`, and have it use
 `TR::PersistentAllocator`. The `TR::Region` would then be provided this 
 `TR::PersistentSegmentProvider` object.
 
+The mechanism for limiting the memory usage during compilation can be summarized as:
+
+Default size of system segments allocatd by `J9::SystemSegmentProvider` is 16 MB. 
+These system segments are then carved into smaller segments based on the size requested
+which is rounded up to 64 KB. The cumulative memory usage of these system segments is limited 
+by the value of the option `scratchSpaceLimit`. When the scratch space limit is not a multiple
+of system segment size, it is possible that the total memory allocated using system segments
+would go beyond the scratch space limit. However, the logic in `J9::SystemSegmentProvider::request`
+would ensures that the compiler does not touch memory beyond the scratch space limit.
+So the physical memory usage due to scratch space stays with the limit specified. 
+If a request is made that would cause physical memory usage to go beyond the limit,
+then `J9::SystemSegmentProvider::request` would throw `std::bad_alloc`.
+
+When allocating a new system segment `J9::SegmentAllocator::allocate` also checks that the system
+has enough free physical memory. This is done by verifying that the free physical memory is more
+than the system segment size (=16 MB) plus an additional buffer, which is governed by the 
+option `safeReservePhysicalMemoryValue`. If this condition fails, then the compilation thread is suspended.

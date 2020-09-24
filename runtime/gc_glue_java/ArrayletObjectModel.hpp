@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -34,8 +33,6 @@
 #include "modron.h"
 #include "modronopt.h"
 
-#if defined(J9VM_GC_ARRAYLETS)
-
 #include "ArrayletObjectModelBase.hpp"
 #include "Bits.hpp"
 #include "Math.hpp"
@@ -54,6 +51,7 @@ public:
 * Function members
 */
 private:
+	void AssertBadElementSize();
 protected:
 	/* forward declare methods from parent class to avoid namespace issues */
 	MMINLINE UDATA
@@ -72,6 +70,26 @@ public:
 	numArraylets(UDATA unadjustedDataSizeInBytes)
 	{
 		return GC_ArrayletObjectModelBase::numArraylets(unadjustedDataSizeInBytes);
+	}
+
+	/**
+	 * Get the header size for contiguous arrays
+	 * @return header size
+	 */
+	MMINLINE UDATA
+	contiguousHeaderSize()
+	{
+		return compressObjectReferences() ? sizeof(J9IndexableObjectContiguousCompressed) : sizeof(J9IndexableObjectContiguousFull);
+	}
+
+	/**
+	 * Get the header size for discontiguous arrays
+	 * @return header size
+	 */
+	MMINLINE UDATA
+	discontiguousHeaderSize()
+	{
+		return compressObjectReferences() ? sizeof(J9IndexableObjectDiscontiguousCompressed) : sizeof(J9IndexableObjectDiscontiguousFull);
 	}
 
 	/**
@@ -126,7 +144,7 @@ public:
 	}
 
 	/**
-	 * Get the number of discontinous arraylets for the given indexable object
+	 * Get the number of discontiguous arraylets for the given indexable object
 	 * @param objPtr Pointer to an array object
 	 * @return the number of arraylets stored external to the spine.
 	 */
@@ -143,10 +161,8 @@ public:
 			/* last arrayoid pointer points into spine (remainder data is contiguous with header) */
 			numberArraylets -= 1;
 		} else if (layout == Discontiguous) {
-			/* last arrayoid pointer is NULL if data fits exactly within a whole number of arraylets */
-			if (0 == (getDataSizeInBytes(objPtr) & (_omrVM->_arrayletLeafSize - 1))) {
-				numberArraylets -= 1;
-			}
+			/* Data fits exactly within a whole number of arraylets */
+			AssertArrayletIsDiscontiguous(objPtr);
 		}
 
 		return numberArraylets;
@@ -174,12 +190,8 @@ public:
 	MMINLINE bool
 	hasArrayletLeafPointers(J9IndexableObject *objPtr)
 	{
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
 		/* Contiguous arraylet has no implicit leaf pointer */
 		return !isInlineContiguousArraylet(objPtr);
-#else /* J9VM_GC_HYBRID_ARRAYLETS */
-		return true;
-#endif /* J9VM_GC_HYBRID_ARRAYLETS */
 	}
 
 
@@ -207,7 +219,7 @@ public:
 	MMINLINE UDATA
 	getSpineSize(J9IndexableObject* objPtr, ArrayLayout layout)
 	{
-		return getSpineSize(J9GC_J9OBJECT_CLAZZ(objPtr), layout, getSizeInElements(objPtr));
+		return getSpineSize(J9GC_J9OBJECT_CLAZZ(objPtr, this), layout, getSizeInElements(objPtr));
 	}
 
 	/**
@@ -241,10 +253,63 @@ public:
 		return getSpineSizeWithoutHeader(layout, numberArraylets, dataSize, alignData);
 	}
 
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+	/**
+	 * Checks if arraylet falls into corner case of discontigous data
+	 * Arraylet possible cases:
+	 * 0: Empty arraylets, in this case the array is represented as
+	 *		an arraylet however it does not contain any data, but it
+	 *		does contain an arrayoid (leaf pointer) that points to NULL.
+	 *		Even though this case is represented as a discontiguous arraylet
+	 *		internally due to its implementation, it is actually a contiguous
+	 *		array with length zero.
+	 * 1: The total data size in arraylet is between 0 and region
+	 *		size. Small enough to make the arraylet layout contiguous,
+	 *		in which case this function is unreachable.
+	 * 2: The total data size in arraylet is exacly the same size
+	 *		of a region. In this case we do not need to double
+	 *		map since we already have a contiguous representation of the
+	 *		data at first leaf.
+	 * 3: Similar to first case, the data portion is slightly smaller than
+	 *		a region size, however not small enough to include header and data
+	 *		at the same region to make it contiguous. In which case we would
+	 *		have one leaf, where we also do not need to double map.
+	 * 4: The total data size in arraylet is stricly greater than one region;
+	 *		however, not multiple of region size. Since with enabled double map
+	 *		layout is always discontiguous, we would have 2 or more arraylet leaves
+	 *		therefore we always double map.
+	 * 5: The total data size in arraylet is stricly greater than one region and
+	 *		multiple of region size. Here we would have 2 or more arraylet leaves
+	 *		containing data. We always double map in this case.
+	 *
+	 * @param spine Pointer to an array indexable object spine
+	 * @return false in case corner cases 0, 2 or 3 are valid. On the other hand,
+	 *		if cases 4 or 5 are true, the function returns true.
+	 */
+	MMINLINE bool
+	isArrayletDataDiscontiguous(J9IndexableObject *spine)
+	{
+		return numArraylets(spine) > 1;
+	}
+
+	/**
+	 * Checks if arraylet falls into corner case of contiguous data
+	 * 
+	 * @param spine Pointer to an array indexable object spine
+	 * @return true in case corner cases 2 or 3 are valid. On the other hand,
+	 * 		if cases 0, 4 or 5 are true, the function returns false.
+	 */
+	MMINLINE bool
+	isArrayletDataContiguous(J9IndexableObject *spine)
+	{
+		return (1 == numArraylets(spine)) && (getSizeInElements(spine) > 0);
+	}
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
+
 	/**
 	 * We can't use memcpy because it may be not atomic for pointers, use this function instead
 	 * Copy data in UDATA words
-	 * If lenght is not times of UDATA one more word is copied
+	 * If length is not times of UDATA one more word is copied
 	 * @param destAddr address copy to
 	 * @param sourceAddr address copy from
 	 * @param lengthInBytes requested size in bytes
@@ -268,14 +333,10 @@ public:
 	MMINLINE UDATA
 	getHeaderSize(J9Class *clazzPtr, ArrayLayout layout)
 	{
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
-		UDATA headerSize = sizeof(J9IndexableObjectContiguous);
+		UDATA headerSize = contiguousHeaderSize();
 		if (layout != InlineContiguous) {
-			headerSize = sizeof(J9IndexableObjectDiscontiguous);
+			headerSize = discontiguousHeaderSize();
 		}
-#else
-		UDATA headerSize = sizeof(J9IndexableObjectDiscontiguous);
-#endif
 		return headerSize;
 	}
 
@@ -288,7 +349,7 @@ public:
 	MMINLINE UDATA
 	getDataSizeInBytes(J9IndexableObject *arrayPtr)
 	{
-		return getDataSizeInBytes(J9GC_J9OBJECT_CLAZZ(arrayPtr), getSizeInElements(arrayPtr));
+		return getDataSizeInBytes(J9GC_J9OBJECT_CLAZZ(arrayPtr, this), getSizeInElements(arrayPtr));
 	}
 
 	/**
@@ -300,18 +361,30 @@ public:
 	 */
 	MMINLINE UDATA
 	getDataSizeInBytes(J9Class *clazzPtr, UDATA numberOfElements)
-	{
+	{	
+		UDATA stride = J9ARRAYCLASS_GET_STRIDE(clazzPtr);
+		UDATA size = numberOfElements * stride;
 		UDATA alignedSize = UDATA_MAX;
-		J9ROMArrayClass *romArrayClass = (J9ROMArrayClass *)clazzPtr->romClass;
-		UDATA shift = romArrayClass->arrayShape & 0x0000FFFF;
-		UDATA size = numberOfElements << shift;
-		if ((size >> shift) == numberOfElements) {
+		if ((size / stride) == numberOfElements) {
 			alignedSize = MM_Math::roundToSizeofUDATA(size);
 			if (alignedSize < size) {
 				alignedSize = UDATA_MAX;
 			}
 		}
 		return alignedSize;
+	}
+
+	/**
+	 * Get the size from the header for the given indexable object
+	 * @param objPtr Pointer to an array object
+	 * @return the size
+	 */
+	MMINLINE UDATA
+	getArraySize(J9IndexableObject *objPtr)
+	{
+		return compressObjectReferences()
+			? ((J9IndexableObjectContiguousCompressed*)objPtr)->size
+			: ((J9IndexableObjectContiguousFull*)objPtr)->size;
 	}
 
 	/**
@@ -323,17 +396,15 @@ public:
 	getArrayLayout(J9IndexableObject *objPtr)
 	{
 		GC_ArrayletObjectModel::ArrayLayout layout = GC_ArrayletObjectModel::InlineContiguous;
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
 		/* Trivial check for InlineContiguous. */
-		if (0 != ((J9IndexableObjectContiguous*)objPtr)->size) {
+		if (0 != getArraySize(objPtr)) {
 			return GC_ArrayletObjectModel::InlineContiguous;
 		}
-#endif /* J9VM_GC_HYBRID_ARRAYLETS */
 
 		/* Check if the objPtr is in the allowed arraylet range. */
 		if (((UDATA)objPtr >= (UDATA)_arrayletRangeBase) && ((UDATA)objPtr < (UDATA)_arrayletRangeTop)) {
 			UDATA dataSizeInBytes = getDataSizeInBytes(objPtr);
-			J9Class* clazz = J9GC_J9OBJECT_CLAZZ(objPtr);
+			J9Class* clazz = J9GC_J9OBJECT_CLAZZ(objPtr, this);
 			layout = getArrayletLayout(clazz, dataSizeInBytes);
 		}
 		return layout;
@@ -360,22 +431,20 @@ public:
 	MMINLINE void
 	memcpyArray(J9IndexableObject *destObject, J9IndexableObject *srcObject)
 	{
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
 		if (InlineContiguous == getArrayLayout(srcObject)) {
 			/* assume that destObject must have the same shape! */
 			UDATA sizeInBytes = getSizeInBytesWithoutHeader(srcObject);
 			UDATA* srcData = (UDATA*)getDataPointerForContiguous(srcObject);
 			UDATA* destData = (UDATA*)getDataPointerForContiguous(destObject);
 			copyInWords(destData, srcData, sizeInBytes);
-		} else
-#endif /* J9VM_GC_HYBRID_ARRAYLETS */
-		{
+		} else {
+			bool const compressed = compressObjectReferences();
 			UDATA arrayletCount = numArraylets(srcObject);
 			fj9object_t *srcArraylets = getArrayoidPointer(srcObject);
 			fj9object_t *destArraylets = getArrayoidPointer(destObject);
 			for (UDATA i = 0; i < arrayletCount; i++) {
-				GC_SlotObject srcSlotObject(_omrVM, &srcArraylets[i]);
-				GC_SlotObject destSlotObject(_omrVM, &destArraylets[i]);
+				GC_SlotObject srcSlotObject(_omrVM, GC_SlotObject::addToSlotAddress(srcArraylets, i, compressed));
+				GC_SlotObject destSlotObject(_omrVM, GC_SlotObject::addToSlotAddress(destArraylets, i, compressed));
 				void* srcLeafAddress = srcSlotObject.readReferenceFromSlot();
 				void* destLeafAddress = destSlotObject.readReferenceFromSlot();
 				
@@ -402,14 +471,13 @@ public:
 	/*MMINLINE*/ void
 	memcpyFromArray(void *destData, J9IndexableObject *srcObject, I_32 elementIndex, I_32 elementCount)
 	{
-		J9ROMArrayClass *romArrayClass = (J9ROMArrayClass*)J9GC_J9OBJECT_CLAZZ(srcObject)->romClass;
-		UDATA elementScale = romArrayClass->arrayShape & 0x0000FFFF;
+		UDATA elementSize = J9ARRAYCLASS_GET_STRIDE(J9GC_J9OBJECT_CLAZZ(srcObject, this));
 		if (isInlineContiguousArraylet(srcObject)) {
 			// If the data is stored contiguously, then a simple copy is sufficient.
 			void* srcData = getDataPointerForContiguous(srcObject);
-			switch(elementScale)
+			switch(elementSize)
 			{
-			case 0:
+			case 1:
 				// byte/boolean
 				{
 					U_8* srcCursor = ((U_8*)srcData) + elementIndex;
@@ -421,7 +489,7 @@ public:
 				}
 				break;
 
-			case 1:
+			case 2:
 				// short/char
 				{
 					U_16* srcCursor = ((U_16*)srcData) + elementIndex;
@@ -433,7 +501,7 @@ public:
 				}
 				break;
 
-			case 2:
+			case 4:
 				// int/float
 				{
 					U_32* srcCursor = ((U_32*)srcData) + elementIndex;
@@ -445,7 +513,7 @@ public:
 				}
 				break;
 
-			case 3:
+			case 8:
 				// long/double
 				{
 					U_64* srcCursor = ((U_64*)srcData) + elementIndex;
@@ -456,16 +524,24 @@ public:
 					}
 				}
 				break;
+				
+			default :
+				// unreachable since we currently do not expect anything other than primitive arrays to be using them.
+				{
+					AssertBadElementSize();
+				}
+				break;
 			}
 		} else {
+			bool const compressed = compressObjectReferences();
 			fj9object_t *srcArraylets = getArrayoidPointer(srcObject);
 			void *outerDestCursor = destData;
 			U_32 outerCount = elementCount;
-			UDATA arrayletLeafElements = _omrVM->_arrayletLeafSize >> elementScale;
+			UDATA arrayletLeafElements = _omrVM->_arrayletLeafSize / elementSize;
 			UDATA arrayletIndex = elementIndex / arrayletLeafElements;
 			UDATA arrayletElementOffset = elementIndex % arrayletLeafElements;
 			while(outerCount > 0) {
-				GC_SlotObject srcSlotObject(_omrVM, &srcArraylets[arrayletIndex++]);
+				GC_SlotObject srcSlotObject(_omrVM, GC_SlotObject::addToSlotAddress(srcArraylets, arrayletIndex++, compressed));
 				void* srcLeafAddress = srcSlotObject.readReferenceFromSlot();
 				U_32 innerCount = outerCount;
 				// Can we fulfill the remainder of the copy from this page?
@@ -473,9 +549,9 @@ public:
 					// Copy as much as we can
 					innerCount = (U_32)(arrayletLeafElements - arrayletElementOffset);
 				}
-				switch(elementScale)
+				switch(elementSize)
 				{
-				case 0:
+				case 1:
 					// byte/boolean
 					{
 						U_8* srcCursor = ((U_8*)srcLeafAddress) + arrayletElementOffset;
@@ -489,7 +565,7 @@ public:
 					}
 					break;
 
-				case 1:
+				case 2:
 					// short/char
 					{
 						U_16* srcCursor = ((U_16*)srcLeafAddress) + arrayletElementOffset;
@@ -503,7 +579,7 @@ public:
 					}
 					break;
 
-				case 2:
+				case 4:
 					// int/float
 					{
 						U_32* srcCursor = ((U_32*)srcLeafAddress) + arrayletElementOffset;
@@ -517,7 +593,7 @@ public:
 					}
 					break;
 
-				case 3:
+				case 8:
 					// long/double
 					{
 						U_64* srcCursor = ((U_64*)srcLeafAddress) + arrayletElementOffset;
@@ -528,6 +604,13 @@ public:
 						}
 						outerDestCursor = (void*)destCursor;
 						arrayletElementOffset = 0;
+					}
+					break;
+
+				default :
+					// unreachable since we currently do not expect anything other than primitive arrays to be using them.
+					{
+						AssertBadElementSize();
 					}
 					break;
 				}
@@ -547,14 +630,13 @@ public:
 	MMINLINE void
 	memcpyToArray(J9IndexableObject *destObject, I_32 elementIndex, I_32 elementCount, void *srcData)
 	{
-		J9ROMArrayClass *romArrayClass = (J9ROMArrayClass*)J9GC_J9OBJECT_CLAZZ(destObject)->romClass;
-		UDATA elementScale = romArrayClass->arrayShape & 0x0000FFFF;
+		UDATA elementSize = J9ARRAYCLASS_GET_STRIDE(J9GC_J9OBJECT_CLAZZ(destObject, this));
 		if (isInlineContiguousArraylet(destObject)) {
 			// If the data is stored contiguously, then a simple copy is sufficient.
 			void* destData = getDataPointerForContiguous(destObject);
-			switch(elementScale)
+			switch(elementSize)
 			{
-			case 0:
+			case 1:
 				// byte/boolean
 				{
 					U_8* srcCursor = (U_8*)srcData;
@@ -566,7 +648,7 @@ public:
 				}
 				break;
 
-			case 1:
+			case 2:
 				// short/char
 				{
 					U_16* srcCursor = (U_16*)srcData;
@@ -578,7 +660,7 @@ public:
 				}
 				break;
 
-			case 2:
+			case 4:
 				// int/float
 				{
 					U_32* srcCursor = (U_32*)srcData;
@@ -590,7 +672,7 @@ public:
 				}
 				break;
 
-			case 3:
+			case 8:
 				// long/double
 				{
 					U_64* srcCursor = (U_64*)srcData;
@@ -601,16 +683,24 @@ public:
 					}
 				}
 				break;
+
+			default :
+				// unreachable since we currently do not expect anything other than primitive arrays to be using them.
+				{
+					AssertBadElementSize();
+				}
+				break;
 			}
 		} else {
+			bool const compressed = compressObjectReferences();
 			fj9object_t *destArraylets = getArrayoidPointer(destObject);
 			void *outerSrcCursor = srcData;
 			U_32 outerCount = elementCount;
-			UDATA arrayletLeafElements = _omrVM->_arrayletLeafSize >> elementScale;
+			UDATA arrayletLeafElements = _omrVM->_arrayletLeafSize / elementSize;
 			UDATA arrayletIndex = elementIndex / arrayletLeafElements;
 			UDATA arrayletElementOffset = elementIndex % arrayletLeafElements;
 			while(outerCount > 0) {
-				GC_SlotObject destSlotObject(_omrVM, &destArraylets[arrayletIndex++]);
+				GC_SlotObject destSlotObject(_omrVM, GC_SlotObject::addToSlotAddress(destArraylets, arrayletIndex++, compressed));
 				void* destLeafAddress = destSlotObject.readReferenceFromSlot();
 				U_32 innerCount = outerCount;
 				// Can we fulfill the remainder of the copy from this page?
@@ -618,9 +708,9 @@ public:
 					// Copy as much as we can
 					innerCount = (U_32)(arrayletLeafElements - arrayletElementOffset);
 				}
-				switch(elementScale)
+				switch(elementSize)
 				{
-				case 0:
+				case 1:
 					// byte/boolean
 					{
 						U_8* srcCursor = (U_8*)outerSrcCursor;
@@ -634,7 +724,7 @@ public:
 					}
 					break;
 
-				case 1:
+				case 2:
 					// short/char
 					{
 						U_16* srcCursor = (U_16*)outerSrcCursor;
@@ -648,7 +738,7 @@ public:
 					}
 					break;
 
-				case 2:
+				case 4:
 					// int/float
 					{
 						U_32* srcCursor = (U_32*)outerSrcCursor;
@@ -662,7 +752,7 @@ public:
 					}
 					break;
 
-				case 3:
+				case 8:
 					// long/double
 					{
 						U_64* srcCursor = (U_64*)outerSrcCursor;
@@ -673,6 +763,13 @@ public:
 						}
 						outerSrcCursor = (void*)srcCursor;
 						arrayletElementOffset = 0;
+					}
+					break;
+					
+				default :
+					// unreachable since we currently do not expect anything other than primitive arrays to be using them.
+					{
+						AssertBadElementSize();
 					}
 					break;
 				}
@@ -689,7 +786,7 @@ public:
 	getSizeInBytesWithoutHeader(J9IndexableObject *arrayPtr)
 	{
 		ArrayLayout layout = getArrayLayout(arrayPtr);
-		return getSpineSizeWithoutHeader(J9GC_J9OBJECT_CLAZZ(arrayPtr), layout, getSizeInElements(arrayPtr));
+		return getSpineSizeWithoutHeader(J9GC_J9OBJECT_CLAZZ(arrayPtr, this), layout, getSizeInElements(arrayPtr));
 	}
 
 	/**
@@ -703,11 +800,9 @@ public:
 	getSizeInBytesWithHeader(J9Class *clazz, UDATA numberOfElements)
 	{
 		ArrayLayout layout = InlineContiguous; 
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
 		if(0 == numberOfElements) {
 			layout = Discontiguous;
 		}
-#endif /* defined(J9VM_GC_HYBRID_ARRAYLETS) */
 		return getSizeInBytesWithHeader(clazz, layout, numberOfElements);
 	}
 
@@ -733,7 +828,7 @@ public:
 	getSizeInBytesWithHeader(J9IndexableObject *arrayPtr)
 	{
 		ArrayLayout layout = getArrayLayout(arrayPtr);
-		return getSpineSize(J9GC_J9OBJECT_CLAZZ(arrayPtr), layout, getSizeInElements(arrayPtr));
+		return getSpineSize(J9GC_J9OBJECT_CLAZZ(arrayPtr, this), layout, getSizeInElements(arrayPtr));
 	}
 
 	/**
@@ -744,15 +839,20 @@ public:
 	MMINLINE UDATA
 	getHeaderSize(J9IndexableObject *arrayPtr)
 	{
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
-		UDATA size = ((J9IndexableObjectContiguous *)arrayPtr)->size;
-		UDATA headerSize = sizeof(J9IndexableObjectContiguous);
-		if (0 == size) {
-			headerSize = sizeof(J9IndexableObjectDiscontiguous);
+		UDATA headerSize = 0;
+		if (compressObjectReferences()) {
+			UDATA size = ((J9IndexableObjectContiguousCompressed *)arrayPtr)->size;
+			headerSize = sizeof(J9IndexableObjectContiguousCompressed);
+			if (0 == size) {
+				headerSize = sizeof(J9IndexableObjectDiscontiguousCompressed);
+			}
+		} else {
+			UDATA size = ((J9IndexableObjectContiguousFull *)arrayPtr)->size;
+			headerSize = sizeof(J9IndexableObjectContiguousFull);
+			if (0 == size) {
+				headerSize = sizeof(J9IndexableObjectDiscontiguousFull);
+			}
 		}
-#else
-		UDATA headerSize = sizeof(J9IndexableObjectDiscontiguous);
-#endif
 		return headerSize;
 	}
 
@@ -764,7 +864,7 @@ public:
 	MMINLINE fj9object_t *
 	getArrayoidPointer(J9IndexableObject *arrayPtr)
 	{
-		return (fj9object_t *)((UDATA)arrayPtr + sizeof(J9IndexableObjectDiscontiguous));
+		return (fj9object_t *)((UDATA)arrayPtr + (compressObjectReferences() ? sizeof(J9IndexableObjectDiscontiguousCompressed) : sizeof(J9IndexableObjectDiscontiguousFull)));
 	}
 
 	/**
@@ -775,13 +875,7 @@ public:
 	MMINLINE void *
 	getDataPointerForContiguous(J9IndexableObject *arrayPtr)
 	{
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
-		return (void *)((UDATA)arrayPtr + sizeof(J9IndexableObjectContiguous));
-#else /* J9VM_GC_HYBRID_ARRAYLETS */
-		fj9object_t* arrayoidPointer = getArrayoidPointer(arrayPtr);
-		fj9object_t firstArrayletLeaf = arrayoidPointer[0];
-		return mmPointerFromToken((J9JavaVM*)_omrVM->_language_vm, firstArrayletLeaf);
-#endif /* J9VM_GC_HYBRID_ARRAYLETS */
+		return (void *)((UDATA)arrayPtr + contiguousHeaderSize());
 	}
 
 
@@ -796,11 +890,9 @@ public:
 	getHashcodeOffset(J9Class *clazzPtr, UDATA numberOfElements)
 	{
 		ArrayLayout layout = InlineContiguous; 
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
 		if(0 == numberOfElements) {
 			layout = Discontiguous;
 		}
-#endif /* defined(J9VM_GC_HYBRID_ARRAYLETS) */
 		return getHashcodeOffset(clazzPtr, layout, numberOfElements);
 	}
 
@@ -815,8 +907,7 @@ public:
 	getHashcodeOffset(J9Class *clazzPtr, ArrayLayout layout, UDATA numberOfElements)
 	{
 		/* Don't call getDataSizeInBytes() since that rounds up to UDATA. */
-		J9ROMArrayClass *romArrayClass = (J9ROMArrayClass *)clazzPtr->romClass;
-		UDATA dataSize = numberOfElements << (romArrayClass->arrayShape & 0x0000FFFF);
+		UDATA dataSize = numberOfElements * J9ARRAYCLASS_GET_STRIDE(clazzPtr);
 		UDATA numberOfArraylets = numArraylets(dataSize);
 		bool alignData = shouldAlignSpineDataSection(clazzPtr);
 		UDATA spineSize = getSpineSize(clazzPtr, layout, numberOfArraylets, dataSize, alignData);
@@ -832,7 +923,7 @@ public:
 	getHashcodeOffset(J9IndexableObject *arrayPtr)
 	{
 		ArrayLayout layout = getArrayLayout(arrayPtr);
-		return getHashcodeOffset(J9GC_J9OBJECT_CLAZZ(arrayPtr), layout, getSizeInElements(arrayPtr));
+		return getHashcodeOffset(J9GC_J9OBJECT_CLAZZ(arrayPtr, this), layout, getSizeInElements(arrayPtr));
 	}
 	
 	MMINLINE void
@@ -852,7 +943,10 @@ public:
 	 * Tear down the receiver
 	 */
 	void tearDown(MM_GCExtensionsBase *extensions);
-};
 
-#endif /*J9VM_GC_ARRAYLETS */
+	/**
+	 * Asserts that an Arraylet has indeed discontiguous layout
+	 */
+	void AssertArrayletIsDiscontiguous(J9IndexableObject *objPtr);
+};
 #endif /* ARRAYLETOBJECTMODEL_ */

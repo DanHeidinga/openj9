@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -43,8 +43,6 @@
 #define _UTE_STATIC_
 #include "ut_j9dmp.h"
 #undef _UTE_STATIC_
-
-#define VMOPT_XDUMP  "-Xdump"
 
 /* Abort data */
 static J9JavaVM *cachedVM = NULL;
@@ -112,9 +110,9 @@ static void abortHandler (int sig);
 static void initRasDumpGlobalStorage(J9JavaVM *vm);
 static void freeRasDumpGlobalStorage(J9JavaVM *vm);
 static void hookVmInitialized PROTOTYPE((J9HookInterface** hook, UDATA eventNum, void* eventData, void* userData));
-#ifdef LINUX
+#if defined(LINUX)
 static void appendSystemInfoFromFile(J9JavaVM *vm, U_32 key, const char *fileName );
-#endif
+#endif /* defined(LINUX) */
 #ifdef J9ZOS390
 static IDATA processZOSDumpOptions(J9JavaVM *vm, J9RASdumpOption* agentOpts, int optIndex);
 static void triggerAbend(void);
@@ -423,6 +421,13 @@ configureDumpAgents(J9JavaVM *vm)
 	IDATA kind = 0;
 	char *optionString = NULL;
 
+	/*
+	 * -XX:[+-]HeapDumpOnOutOfMemoryError.
+	 */
+	IDATA heapDumpIndex = -1; /* index of the rightmost HeapDumpOnOutOfMemoryError option */
+	BOOLEAN processXXHeapDump = FALSE;  /* either -XX:[+-]HeapDumpOnOutOfMemoryError is specified */
+	BOOLEAN enableXXHeapDump = FALSE; /* -XX:+HeapDumpOnOutOfMemoryError is selected */
+
 	/* -Xdump:help */
 	if ( FIND_AND_CONSUME_ARG(EXACT_MATCH, VMOPT_XDUMP ":help", NULL) >= 0 )
 	{
@@ -534,13 +539,82 @@ configureDumpAgents(J9JavaVM *vm)
 	/* Process IBM_XE_COE_NAME */
 	mapDumpSettings(vm, agentOpts, &agentNum);
 	
-	/* Process -Xdump command-line options (L..R)*/
+
+	/*
+	 * Process -XX:[+-]HeapDumpOnOutOfMemoryError.
+	 * Set heapDumpIndex to the index of the rightmost option
+	 * and indicate whether enable or disable wins.
+	 */
+	heapDumpIndex = FIND_AND_CONSUME_ARG(EXACT_MATCH, VMOPT_XXNOHEAPDUMPONOOM, NULL);
+	xdumpIndex = FIND_AND_CONSUME_ARG(EXACT_MATCH, VMOPT_XXHEAPDUMPONOOM, NULL);
+	processXXHeapDump = ((xdumpIndex >= 0) || (heapDumpIndex >= 0));
+	if (xdumpIndex > heapDumpIndex) {
+		enableXXHeapDump = TRUE;
+		heapDumpIndex = xdumpIndex;
+	}
+
+	/*
+	 * Process -Xdump command-line options (L..R).
+	 * Treat -XX:[+-]HeapDumpOnOutOfMemoryError as an alias of -Xdump.
+	 */
+
 	xdumpIndex = FIND_ARG_IN_VMARGS_FORWARD(OPTIONAL_LIST_MATCH, VMOPT_XDUMP, NULL);
-	while ( xdumpIndex >= 0 )
+	while (xdumpIndex >= 0)
 	{
+		if (agentNum >= MAX_DUMP_OPTS) {
+			j9nls_printf(PORTLIB, J9NLS_ERROR | J9NLS_STDERR, J9NLS_DMP_TOO_MANY_DUMP_OPTIONS, MAX_DUMP_OPTS);
+			return J9VMDLLMAIN_FAILED;
+		}
+		/* HeapDumpOnOutOfMemoryError before current -Xdump. */
+		if (processXXHeapDump && (heapDumpIndex < xdumpIndex)) {
+			/* process the -XX:[+-]HeapDumpOnOutOfMemoryError option first */
+			if (enableXXHeapDump) {
+				enableDumpOnOutOfMemoryError(agentOpts, &agentNum);
+			} else {
+				disableDumpOnOutOfMemoryError(agentOpts, agentNum);
+			}
+			processXXHeapDump = FALSE;
+		}
 		if ( IS_CONSUMABLE(j9vm_args, xdumpIndex) && !IS_CONSUMED(j9vm_args, xdumpIndex) )
 		{
-			GET_OPTION_VALUE(xdumpIndex, ':', &optionString);
+			BOOLEAN isMappedToolDump = FALSE;
+			/* Handle mapped tool dump options */
+			if (HAS_MAPPING(j9vm_args, xdumpIndex)) {
+				char *mappingJ9Name = MAPPING_J9NAME(j9vm_args, xdumpIndex);
+				char *toolString = ":tool:";
+				char *toolCursor = strstr(mappingJ9Name, toolString);
+				if (NULL != toolCursor) {
+					char *optionValue = NULL;
+					/* The mapped option specifies the tool command to run after the equals */
+					GET_OPTION_VALUE(xdumpIndex, '=', &optionValue);
+					
+					/* Move toolCursor past ":tool:" */
+					toolCursor += strlen(toolString);
+
+					if (NULL != optionValue) {
+						size_t toolCursorLength = strlen(toolCursor);
+						size_t optionValueLength = strlen(optionValue);
+						size_t optionStringMemAlloc = toolCursorLength + optionValueLength + 1;
+
+						/* Construct optionString by combining the J9 tool dump command with the mapped option */
+						optionString = (char *) j9mem_allocate_memory(optionStringMemAlloc, OMRMEM_CATEGORY_VM);
+						
+						if (NULL != optionString) {
+							strcpy(optionString, toolCursor);
+							strcat(optionString + toolCursorLength, optionValue);
+							isMappedToolDump = TRUE;
+						} else {
+							char *mappingMapName = MAPPING_MAPNAME(j9vm_args, xdumpIndex);
+							j9tty_err_printf(PORTLIB, "Unable to map %s to J9 %s - Could not allocate the requested size of memory %zu for optionString\n", mappingMapName, mappingJ9Name, optionStringMemAlloc);
+							return J9VMDLLMAIN_FAILED;
+						}
+					}
+				} else {
+					GET_OPTION_VALUE(xdumpIndex, ':', &optionString);
+				}
+			} else {
+				GET_OPTION_VALUE(xdumpIndex, ':', &optionString);
+			}
 			if (!optionString) {
 				/* ... silent option ... */
 			} else if( strncmp(optionString, "none", strlen("none") ) == 0 ){
@@ -552,6 +626,13 @@ configureDumpAgents(J9JavaVM *vm)
 					agentOpts[agentNum].pass = J9RAS_DUMP_OPTS_PASS_ONE;
 					agentNum++;
 				}
+			} else if (isMappedToolDump) {
+				char * toolString = "tool";
+				agentOpts[agentNum].kind = scanDumpType(&toolString);
+				agentOpts[agentNum].flags = J9RAS_DUMP_OPT_ARGS_ALLOC;
+				agentOpts[agentNum].args = optionString;
+				agentOpts[agentNum].pass = J9RAS_DUMP_OPTS_PASS_ONE;
+				agentNum++;
 			} else {
 				char *typeString = optionString;
 
@@ -584,6 +665,14 @@ configureDumpAgents(J9JavaVM *vm)
 		}
 
 		xdumpIndex = FIND_NEXT_ARG_IN_VMARGS_FORWARD(OPTIONAL_LIST_MATCH, VMOPT_XDUMP, NULL, xdumpIndex);
+	}
+	/* handle the case of no -Xdump options */
+	if (processXXHeapDump) {
+		if (enableXXHeapDump) {
+			enableDumpOnOutOfMemoryError(agentOpts, &agentNum);
+		} else {
+			disableDumpOnOutOfMemoryError(agentOpts, agentNum);
+		}
 	}
 
 	/* Process active agent options (L..R) */
@@ -632,7 +721,7 @@ configureDumpAgents(J9JavaVM *vm)
 	}
 
 	/* Re-process active agent options (L..R) to do deletes and replace any options killed by a delete that
-	 * preceeded them. */
+	 * preceded them. */
 	for (i = 0; i < agentNum; i++) {
 		if (agentOpts[i].kind == J9RAS_DUMP_OPT_DISABLED) continue;
 		if (agentOpts[i].pass != J9RAS_DUMP_OPTS_PASS_ONE) continue;
@@ -863,7 +952,7 @@ setDumpOption(struct J9JavaVM *vm, char *optionString)
 			 * invalid one and have partially set the configuration we were
 			 * passed.
 			 */
-			if(J9RAS_DUMP_INVALID_TYPE == kind) {
+			if (J9RAS_DUMP_INVALID_TYPE == kind) {
 				unlockConfig();
 				return OMR_ERROR_INTERNAL;  /* Return unrecognized dump type error code. */
 			}
@@ -1006,14 +1095,12 @@ pushDumpFacade(J9JavaVM *vm)
 		/* Install new facade */
 		vm->j9rasDumpFunctions = (J9RASdumpFunctions *)queue;
 
-		/* Note that we need to do the same check in popDumpFacade()
-		 *
-		 * According to the port library SIGABRT (J9PORT_SIG_FLAG_SIGABRT) is an ASYNC signal, so you'd think we should be checking for J9PORT_SIG_OPTIONS_REDUCED_SIGNALS_ASYNCHRONOUS here.
-		 *  However we want to disable the abortHandler when either of -Xrs / -Xrs:sync are present, so check for J9PORT_SIG_OPTIONS_REDUCED_SIGNALS_SYNCHRONOUS instead
-         */
-		if ( (j9sig_get_options() & J9PORT_SIG_OPTIONS_REDUCED_SIGNALS_SYNCHRONOUS) == 0 ) {
+		/* Note that we need to do the same check in popDumpFacade().
+		 * Do not install the abort handler if -Xrs, -Xrs:sync or -XX:-HandleSIGABRT are present.
+		 */
+		if (OMR_ARE_NO_BITS_SET(vm->sigFlags, J9_SIG_XRS_SYNC | J9_SIG_NO_SIG_ABRT)) {
 			/* Install RAS abort handler */
-			installAbortHandler( vm );
+			installAbortHandler(vm);
 		}
 
 	} else {
@@ -1032,12 +1119,10 @@ popDumpFacade(J9JavaVM *vm)
 	if ( FIND_DUMP_QUEUE(vm, queue) )
 	{
 		PORT_ACCESS_FROM_JAVAVM(vm);
-		/* Note that we need to do the same check in pushDumpFacade()
-		 *
-		 * According to the port library SIGABRT (J9PORT_SIG_FLAG_SIGABRT) is an ASYNC signal, so you'd think we should be checking for J9PORT_SIG_OPTIONS_REDUCED_SIGNALS_ASYNCHRONOUS here.
-		 *  However we want to disable the abortHandler when either of -Xrs / -Xrs:sync are present, so check for J9PORT_SIG_OPTIONS_REDUCED_SIGNALS_SYNCHRONOUS instead
-         */
-		if ( (j9sig_get_options() & J9PORT_SIG_OPTIONS_REDUCED_SIGNALS_SYNCHRONOUS) == 0 ) {
+		/* Note that we need to do the same check in pushDumpFacade().
+		 * Do not install the abort handler if -Xrs, -Xrs:sync or -XX:-HandleSIGABRT are present.
+		 */
+		if (OMR_ARE_NO_BITS_SET(vm->sigFlags, J9_SIG_XRS_SYNC | J9_SIG_NO_SIG_ABRT)) {
 			/* Re-install application abort handler only if we installed our own */
 			OMRSIG_SIGNAL(SIGABRT, SIG_DFL);
 		}
@@ -1161,9 +1246,9 @@ JVM_OnUnload(JavaVM *vm, void *reserved)
 }
 
 /**
- * On Linux the first call to get a backtrace can cause some initialisation work.
- * If this is called in a signal handler with other threads paused then one of
- * those can hold a lock required for the initialisation to complete. This causes
+ * On Linux and OSX the first call to get a backtrace can cause some initialization
+ * work. If this is called in a signal handler with other threads paused then one of
+ * those can hold a lock required for the initialization to complete. This causes
  * a hang. Therefore we do one redundant call to backtrace at startup to prevent
  * java dumps hanging the VM.
  * 
@@ -1172,7 +1257,7 @@ JVM_OnUnload(JavaVM *vm, void *reserved)
 static void
 initBackTrace(J9JavaVM *vm)
 {
-#ifdef LINUX
+#if defined(LINUX) || defined(OSX)
 	J9PlatformThread threadInfo;
 	J9Heap *heap;
 	char backingStore[8096];
@@ -1184,7 +1269,7 @@ initBackTrace(J9JavaVM *vm)
 	if( j9introspect_backtrace_thread(&threadInfo, heap, NULL) != 0 ) {
 		j9introspect_backtrace_symbols(&threadInfo, heap);
 	}
-#endif
+#endif /* defined(LINUX) || defined(OSX) */
 }
 
 /**
@@ -1223,7 +1308,7 @@ initSystemInfo(J9JavaVM *vm)
 		}
 	}
 
-#ifdef LINUX
+#if defined(LINUX)
 	/* On Linux, store the startup value of /proc/sys/kernel/sched_compat_yield if it's set */
 	{
 		char schedCompatYieldValue = j9util_sched_compat_yield_value(vm);
@@ -1242,11 +1327,11 @@ initSystemInfo(J9JavaVM *vm)
 	}
 	appendSystemInfoFromFile(vm, J9RAS_SYSTEMINFO_CORE_PATTERN, J9RAS_CORE_PATTERN_FILE);
 	appendSystemInfoFromFile(vm, J9RAS_SYSTEMINFO_CORE_USES_PID, J9RAS_CORE_USES_PID_FILE);
-#endif
+#endif /* defined(LINUX) */
 }
 
 /**
- * We need to read the -Xdump:directory option before we start initialising the
+ * We need to read the -Xdump:directory option before we start initializing the
  * default dump agents.
  */
 static omr_error_t
@@ -1254,14 +1339,13 @@ initDumpDirectory(J9JavaVM *vm)
 {
 	IDATA xdumpIndex = 0;
 	omr_error_t retVal = OMR_ERROR_NONE;
-	char *optionString = NULL;
-
 	PORT_ACCESS_FROM_JAVAVM(vm);
 
 	/* -Xdump:directory */
 	xdumpIndex = FIND_AND_CONSUME_ARG(STARTSWITH_MATCH, VMOPT_XDUMP ":directory", NULL);
 	if ( xdumpIndex >= 0 )
 	{
+		char *optionString = NULL;
 		GET_OPTION_VALUE(xdumpIndex, '=', &optionString);
 		if( !optionString ) {
 			printDumpUsage(vm);
@@ -1281,7 +1365,7 @@ initDumpDirectory(J9JavaVM *vm)
 	return retVal;
 }
 
-
+#if defined(LINUX)
 /* Adds a J9RASSystemInfo to the end of the system info list using the key
  * specified as the key and the data from the specified file in /proc if
  * it exists.
@@ -1338,7 +1422,7 @@ appendSystemInfoFromFile(J9JavaVM *vm, U_32 key, const char *fileName )
 		j9file_close(fd);
 	}
 }
-
+#endif /* defined(LINUX) */
 
 IDATA
 J9VMDllMain(J9JavaVM *vm, IDATA stage, void *reserved)

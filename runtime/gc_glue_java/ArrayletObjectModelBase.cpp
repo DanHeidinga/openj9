@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -23,15 +23,19 @@
 #include "ArrayletObjectModelBase.hpp"
 #include "GCExtensionsBase.hpp"
 
-#if defined(J9VM_GC_ARRAYLETS)
-
 bool
 GC_ArrayletObjectModelBase::initialize(MM_GCExtensionsBase * extensions)
 {
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+	_compressObjectReferences = extensions->compressObjectReferences();
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 	_omrVM = extensions->getOmrVM();
 	_arrayletRangeBase = NULL;
 	_arrayletRangeTop = (void *)UDATA_MAX;
 	_arrayletSubSpace = NULL;
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+	_enableDoubleMapping = false;
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
 	_largestDesirableArraySpineSize = UDATA_MAX;
 
 	return true;
@@ -79,29 +83,31 @@ GC_ArrayletObjectModelBase::getSpineSizeWithoutHeader(ArrayLayout layout, UDATA 
 	 * 3. in-line data
 	 * In hybrid specs, the spine may also include padding for a secondary size field in empty arrays
 	 */
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
+	UDATA const slotSize = J9GC_REFERENCE_SIZE(this);
 	MM_GCExtensionsBase* extensions = MM_GCExtensionsBase::getExtensions(_omrVM);
 	UDATA spineArrayoidSize = 0;
 	UDATA spinePaddingSize = 0;
 	if (InlineContiguous != layout) {
 		if (0 != dataSize) {
 			/* not in-line, so there in an arrayoid */
-			spinePaddingSize = alignData ? (extensions->getObjectAlignmentInBytes() - sizeof(fj9object_t)) : 0;
-			spineArrayoidSize = numberArraylets * sizeof(fj9object_t);
+			spinePaddingSize = alignData ? (extensions->getObjectAlignmentInBytes() - slotSize) : 0;
+			spineArrayoidSize = numberArraylets * slotSize;
 		}
 	}
-#else
-	UDATA spinePaddingSize = alignData ? sizeof(fj9object_t) : 0;
-	UDATA spineArrayoidSize = numberArraylets * sizeof(fj9object_t);
-#endif
 	UDATA spineDataSize = 0;
 	if (InlineContiguous == layout) {
 		spineDataSize = dataSize; // All data in spine
 	} else if (Hybrid == layout) {
-		spineDataSize = (dataSize & (_omrVM->_arrayletLeafSize - 1)); // Last arraylet in spine.
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+		if (extensions->indexableObjectModel.isDoubleMappingEnabled()) {
+			spineDataSize = 0;
+		} else
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
+		{
+			/* Last arraylet in spine */
+			spineDataSize = (dataSize & (_omrVM->_arrayletLeafSize - 1));
+		}
 	}
 
 	return spinePaddingSize + spineArrayoidSize + spineDataSize;
 }
-
-#endif /* defined(J9VM_GC_ARRAYLETS) */

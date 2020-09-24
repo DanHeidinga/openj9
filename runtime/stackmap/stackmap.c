@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -60,36 +60,6 @@ typedef struct J9MappingStack {
 #define PUSH( t ) \
 	((*stackTop++ = t))
 
-#define PARAM_8(index, offset) ((index) [offset])
-
-#ifdef J9VM_ENV_LITTLE_ENDIAN
-#define PARAM_16(index, offset)	\
-	( ( ((U_16) (index)[offset])			)	\
-	| ( ((U_16) (index)[offset + 1]) << 8)	\
-	)
-#else
-#define PARAM_16(index, offset)	\
-	( ( ((U_16) (index)[offset]) << 8)	\
-	| ( ((U_16) (index)[offset + 1])			)	\
-	)
-#endif
-
-#ifdef J9VM_ENV_LITTLE_ENDIAN
-#define PARAM_32(index, offset)						\
-	( ( ((U_32) (index)[offset])					)	\
-	| ( ((U_32) (index)[offset + 1]) << 8 )	\
-	| ( ((U_32) (index)[offset + 2]) << 16)	\
-	| ( ((U_32) (index)[offset + 3]) << 24)	\
-	)
-#else
-#define PARAM_32(index, offset)						\
-	( ( ((U_32) (index)[offset])		 << 24)	\
-	| ( ((U_32) (index)[offset + 1]) << 16)	\
-	| ( ((U_32) (index)[offset + 2]) << 8 )	\
-	| ( ((U_32) (index)[offset + 3])			)	\
-	)
-#endif
-
 static J9MappingStack* pushStack (J9MappingStack* liveStack, UDATA totalStack, UDATA** stackTop);
 static IDATA outputStackMap (J9MappingStack * liveStack, U_32 * newStackDescription, UDATA bits);
 static IDATA mapStack (UDATA *scratch, UDATA totalStack, U_8 * map, J9ROMClass * romClass, J9ROMMethod * romMethod, J9MappingStack ** resultStack);
@@ -123,8 +93,8 @@ j9stackmap_StackBitsForPC(J9PortLibrary * portLib, UDATA pc, J9ROMClass * romCla
 
 	Trc_Map_j9stackmap_StackBitsForPC_Method(J9_MAX_STACK_FROM_ROM_METHOD(romMethod), pc, 
 												(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(romClass)), J9UTF8_DATA(J9ROMCLASS_CLASSNAME(romClass)),
-												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(romClass, romMethod)), J9UTF8_DATA(J9ROMMETHOD_GET_NAME(romClass, romMethod)),
-												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod)), J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod)));
+												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(romMethod)), J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod)),
+												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(romMethod)), J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)));
 	
 	/* Add 2 for the J9MappingStack size */
 	stackStructSize = J9_MAX_STACK_FROM_ROM_METHOD(romMethod) + 2;
@@ -349,8 +319,15 @@ mapStack(UDATA *scratch, UDATA totalStack, U_8 * map, J9ROMClass * romClass, J9R
 					index = PARAM_16(bcIndex, 1);
 				}
 
-				if (pool[index].slot2) {
-					PUSH(OBJ);
+				if (0 != pool[index].slot2) {
+					/* Check for primitive values resolved from ConstantDynamic */
+					if ((J9DescriptionCpTypeConstantDynamic == (pool[index].slot2 & J9DescriptionCpTypeMask))
+					&& (0 != (pool[index].slot2 >> J9DescriptionReturnTypeShift))
+					) {
+						PUSH(INT);
+					} else {
+						PUSH(OBJ);
+					}
 				} else {
 					PUSH(INT);
 				}
@@ -436,7 +413,7 @@ mapStack(UDATA *scratch, UDATA totalStack, U_8 * map, J9ROMClass * romClass, J9R
 					J9ROMNAMEANDSIGNATURE_SIGNATURE(J9ROMFIELDREF_NAMEANDSIGNATURE
 													((J9ROMFieldRef *) (&(pool[index]))));
 				signature = (U_8) J9UTF8_DATA(utf8Signature)[0];
-				if ((signature == 'L') || (signature == '[')) {
+				if ((signature == 'L') || (signature == 'Q') || (signature == '[')) {
 					PUSH(OBJ);
 				} else {
 					PUSH(INT);
@@ -447,6 +424,7 @@ mapStack(UDATA *scratch, UDATA totalStack, U_8 * map, J9ROMClass * romClass, J9R
 				
 				break;
 
+			case JBwithfield:
 			case JBputfield:
 				POP();			/* fall through case !!! */
 
@@ -457,6 +435,10 @@ mapStack(UDATA *scratch, UDATA totalStack, U_8 * map, J9ROMClass * romClass, J9R
 													((J9ROMFieldRef *) (&(pool[index]))));
 				signature = (U_8) J9UTF8_DATA(utf8Signature)[0];
 				stackTop -= (UDATA) argCountCharConversion[signature - 'A'];
+				if (JBwithfield == bc) {
+					PUSH(OBJ);
+				}
+
 				break;
 
 			case JBinvokeinterface2:

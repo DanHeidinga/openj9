@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -65,36 +65,6 @@
 #define	PARALLEL_INCREMENT		(-1)
 #endif
 
-#define PARAM_8(index, offset) ((index) [offset])
-
-#ifdef J9VM_ENV_LITTLE_ENDIAN
-#define PARAM_16(index, offset)				\
-	( ( ((U_16) (index)[offset])		)	\
-	| ( ((U_16) (index)[offset + 1]) << 8)	\
-	)
-#else
-#define PARAM_16(index, offset)			\
-	( ( ((U_16) (index)[offset]) << 8)	\
-	| ( ((U_16) (index)[offset + 1]) )	\
-	)
-#endif
-
-#ifdef J9VM_ENV_LITTLE_ENDIAN
-#define PARAM_32(index, offset)				\
-	( ( ((U_32) (index)[offset])		  )	\
-	| ( ((U_32) (index)[offset + 1]) << 8 )	\
-	| ( ((U_32) (index)[offset + 2]) << 16)	\
-	| ( ((U_32) (index)[offset + 3]) << 24)	\
-	)
-#else
-#define PARAM_32(index, offset)				\
-	( ( ((U_32) (index)[offset])	 << 24)	\
-	| ( ((U_32) (index)[offset + 1]) << 16)	\
-	| ( ((U_32) (index)[offset + 2]) << 8 )	\
-	| ( ((U_32) (index)[offset + 3])	  ) \
-	)
-#endif
-
 static void mapAllLocals(J9PortLibrary * portLibrary, J9ROMMethod * romMethod, PARALLEL_TYPE * unknownsByPC, UDATA startPC, U_32 * resultArrayBase);
 static IDATA mapLocalSet(J9PortLibrary * portLibrary, J9ROMMethod * romMethod, PARALLEL_TYPE * unknownsByPC, UDATA startPC, UDATA localIndexBase, PARALLEL_TYPE * knownLocals, PARALLEL_TYPE * knownObjects, BOOLEAN* unknownsWereUpdated);
 
@@ -102,7 +72,7 @@ static IDATA mapLocalSet(J9PortLibrary * portLibrary, J9ROMMethod * romMethod, P
 /**
  * Construct a locals map size_of(PARALLEL_TYPE) * 8 slots at a time from 0 to remainingLocals-1.
  * @param portLibrary
- * @param romMethod Method whose byteocdes should be walked.
+ * @param romMethod Method whose bytecodes should be walked.
  * @param unknownsByPC Buffer used to store per-PC metadata (1 PARALLEL_TYPE per PC) + branch stack.
  * @param startPC The PC at which to start mapping.
  * @param resultArrayBase Memory into which the result should be stored.
@@ -231,7 +201,7 @@ mapAllLocals(J9PortLibrary * portLibrary, J9ROMMethod * romMethod, PARALLEL_TYPE
 	@param romMethod Method containing the bytecodes to walk.
 	@param unknownsByPC Buffer used to store per-PC metadata (1 PARALLEL_TYPE per PC) + branch stack.
 	@param startPC Bytecode index to begin the walk.
-	@param localIndexBase Offset of the first local, usuually zero unless method has > PARALLEL_TYPE bits. 
+	@param localIndexBase Offset of the first local, usually zero unless method has > PARALLEL_TYPE bits. 
 	@param knownLocals Bitfield of locals whose types are known definitively.
 	@param knownObject Bitfield of locals which are definitively objects.
 	@param unknownsUpdated Pointer to a boolean value updated iff. any per-PC metadata was updated.
@@ -449,7 +419,7 @@ void
 j9localmap_ArgBitsForPC0 (J9ROMClass * romClass, J9ROMMethod * romMethod, U_32 * resultArrayBase) 
 {
 	argBitsFromSignature(
-		J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod)),
+		J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)),
 		resultArrayBase,
 		(J9_ARG_COUNT_FROM_ROM_METHOD(romMethod) + 31) >> 5,
 		(romMethod->modifiers & J9AccStatic) != 0);
@@ -477,8 +447,8 @@ j9localmap_LocalBitsForPC(J9PortLibrary * portLib, J9ROMClass * romClass, J9ROMM
 
 	Trc_Map_j9localmap_LocalBitsForPC_Method(J9_TEMP_COUNT_FROM_ROM_METHOD(romMethod) + J9_ARG_COUNT_FROM_ROM_METHOD(romMethod), pc, 
 												(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(romClass)), J9UTF8_DATA(J9ROMCLASS_CLASSNAME(romClass)),
-												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(romClass, romMethod)), J9UTF8_DATA(J9ROMMETHOD_GET_NAME(romClass, romMethod)),
-												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod)), J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod)));
+												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(romMethod)), J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod)),
+												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(romMethod)), J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)));
 	
 	/* clear the result map as we may not write all of it */
 	memset ((U_8 *)resultArrayBase, 0, mapWords * sizeof (U_32));

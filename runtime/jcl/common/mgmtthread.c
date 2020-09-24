@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1998, 2018 IBM Corp. and others
+ * Copyright (c) 1998, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -221,7 +221,7 @@ Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_getAllThreadIdsImpl(
 	threadIDs = j9mem_allocate_memory(javaVM->totalThreadCount * sizeof(jlong), J9MEM_CATEGORY_VM_JCL);
 	if (NULL == threadIDs) {
 		omrthread_monitor_exit(javaVM->vmThreadListMutex);
-		releaseVMAccess((J9VMThread *) env);
+		exitVMToJNI((J9VMThread *) env);
 		return NULL;
 	}
 
@@ -243,7 +243,7 @@ Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_getAllThreadIdsImpl(
 
 	omrthread_monitor_exit(javaVM->vmThreadListMutex);
 
-	releaseVMAccess((J9VMThread *) env);
+	exitVMToJNI((J9VMThread *) env);
 
 	resultArray = (*env)->NewLongArray(env, (jsize)threadCount);
 	if (resultArray != NULL) {
@@ -270,7 +270,7 @@ Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_getThreadCpuTimeImpl
 	
 	/* shortcut for the current thread */
 	if (getThreadID(currentThread, (j9object_t)currentThread->threadObject) == threadID) {
-		vmfns->internalReleaseVMAccess(currentThread);
+		vmfns->internalExitVMToJNI(currentThread);
 		return omrthread_get_self_cpu_time(currentThread->osThread);
 	}
 
@@ -294,7 +294,7 @@ Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_getThreadCpuTimeImpl
 		}
 	}
 	omrthread_monitor_exit(javaVM->vmThreadListMutex);
-	vmfns->internalReleaseVMAccess(currentThread);
+	vmfns->internalExitVMToJNI(currentThread);
 
 	return cpuTime;
 }
@@ -315,7 +315,7 @@ Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_getThreadUserTimeImp
 	
 	/* shortcut for the current thread */
 	if (getThreadID(currentThread, (j9object_t)currentThread->threadObject) == threadID) {
-		vmfns->internalReleaseVMAccess(currentThread);
+		vmfns->internalExitVMToJNI(currentThread);
 		return getCurrentThreadUserTime(currentThread->osThread);
 	}
 	
@@ -339,7 +339,7 @@ Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_getThreadUserTimeImp
 		}
 	}
 	omrthread_monitor_exit(javaVM->vmThreadListMutex);
-	vmfns->internalReleaseVMAccess(currentThread);
+	vmfns->internalExitVMToJNI(currentThread);
 	
 	return userTime;
 }
@@ -592,7 +592,6 @@ Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_getThreadInfoImpl(JN
 	Trc_JCL_threadmxbean_getThreadInfoImpl6_Entry(env, id, 
 			maxStackDepth, getLockedMonitors, getLockedSynchronizers);
 
-	/* This function call ensures that the correct tenant thread is matched with the thread ID */
 	allinfo = getArrayOfThreadInfo(env, &id, 1, maxStackDepth, getLockedMonitors, getLockedSynchronizers);
 	if (allinfo) {
 		if (allinfo[0].thread) {
@@ -629,7 +628,7 @@ Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_getMultiThreadInfoIm
 	 * so skip doing anything extra and just return the new array
 	 */
 	if (0 == numThreads){
-		jclass cls = JCL_CACHE_GET(env, CLS_java_lang_management_ThreadInfo);
+		jclass cls = JCL_CACHE_GET(env, CLS_openj9_management_internal_ThreadInfoBase);
 		result = (*env)->NewObjectArray(env, 0, cls, NULL);
 	} else {
 		threadIDs = (*env)->GetLongArrayElements(env, ids, &isCopy);
@@ -637,7 +636,6 @@ Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_getMultiThreadInfoIm
 			return NULL;
 		}
 
-		/* Threads that belong to other tenants will be filtered out in this function call */
 		allinfo = getArrayOfThreadInfo(env, threadIDs, numThreads,
 				maxStackDepth,
 				getLockedMonitors, getLockedSynchronizers);
@@ -656,7 +654,7 @@ Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_getMultiThreadInfoIm
 }
 
 jobjectArray JNICALL
-Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_dumpAllThreadsImpl(JNIEnv *env, jobject beanInstance,
+Java_openj9_internal_tools_attach_target_DiagnosticUtils_dumpAllThreadsImpl(JNIEnv *env, jobject beanInstance,
 	jboolean getLockedMonitors, jboolean getLockedSynchronizers, jint maxDepth)
 {
 	J9VMThread *currentThread = (J9VMThread *)env;
@@ -744,11 +742,11 @@ Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_dumpAllThreadsImpl(J
 		allinfo[i].stackTrace = createStackTrace(currentThread, &allinfo[i]);
 		if (!allinfo[i].stackTrace) {
 			freeThreadInfos(currentThread, allinfo, numThreads);
-			vmfns->internalReleaseVMAccess(currentThread);
+			vmfns->internalExitVMToJNI(currentThread);
 			return NULL;
 		}
 	}
-	vmfns->internalReleaseVMAccess(currentThread);
+	vmfns->internalExitVMToJNI(currentThread);
 
 	result = createThreadInfoArray(env, allinfo, numThreads, (jsize)J9_THREADINFO_MAX_STACK_DEPTH);
 	j9mem_free_memory(allinfo);
@@ -761,10 +759,20 @@ dumpAll_failWithExclusive:
 	if (exc > 0) {
 		throwError(currentThread, exc);
 	}
-	vmfns->internalReleaseVMAccess(currentThread);
+	vmfns->internalExitVMToJNI(currentThread);
 	return NULL;
 }
 
+/* This is an alias for the private native method DiagnosticUtils.dumpAllThreadsImpl() */
+jobjectArray JNICALL
+Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_dumpAllThreadsImpl
+(JNIEnv *env, jobject beanInstance,
+	jboolean getLockedMonitors, jboolean getLockedSynchronizers, jint maxDepth)
+{
+	return Java_openj9_internal_tools_attach_target_DiagnosticUtils_dumpAllThreadsImpl(
+			env, beanInstance, getLockedMonitors, getLockedSynchronizers,
+			maxDepth);
+}
 
 /**
  * Allocate and populate an array of ThreadInfo for a given array of threadIDs
@@ -879,12 +887,12 @@ getArrayOfThreadInfo(JNIEnv *env,
 			allinfo[i].stackTrace = createStackTrace(currentThread, &allinfo[i]);
 			if (!allinfo[i].stackTrace) {
 				freeThreadInfos(currentThread, allinfo, numThreads);
-				vmfns->internalReleaseVMAccess(currentThread);
+				vmfns->internalExitVMToJNI(currentThread);
 				return NULL;
 			}
 		}
 	}
-	vmfns->internalReleaseVMAccess(currentThread);
+	vmfns->internalExitVMToJNI(currentThread);
 
 	return allinfo;
 
@@ -893,7 +901,7 @@ getArray_failWithExclusive:
 	if (exc > 0) {
 		throwError(currentThread, exc);
 	}
-	vmfns->internalReleaseVMAccess(currentThread);
+	vmfns->internalExitVMToJNI(currentThread);
 	return NULL;
 }
 
@@ -969,14 +977,14 @@ getThreadUserTime(omrthread_t thread)
 	
 	userTime = omrthread_get_user_time(thread);
 	
-#if defined(J9ZOS390) || defined(LINUX)
+#if defined(J9ZOS390) || defined(LINUX) || defined(OSX)
 	if (-1 == userTime) {
-		/* For z/OS and Linux, user time is not available from the OS.
+		/* For z/OS, Linux and OSX, user time is not available from the OS.
 		 * So provide cpu time in its place.
 		 */
 		userTime = omrthread_get_cpu_time(thread);
 	}
-#endif /* ZOS or LINUX */
+#endif /* ZOS, LINUX or OSX */
 		
 	return userTime;
 }
@@ -993,14 +1001,14 @@ getCurrentThreadUserTime(omrthread_t self)
 	
 	userTime = omrthread_get_self_user_time(self);
 	
-#if defined(J9ZOS390) || defined(LINUX)
+#if defined(J9ZOS390) || defined(LINUX) || defined(OSX)
 	if (-1 == userTime) {
-		/* For z/OS and Linux, user time is not available from the OS.
+		/* For z/OS, Linux and OSX, user time is not available from the OS.
 		 * So provide cpu time in its place.
 		 */
 		userTime = omrthread_get_self_cpu_time(self);
 	}
-#endif /* ZOS or LINUX */
+#endif /* defined(J9ZOS390) || defined(LINUX) || defined(OSX) */
 		
 	return userTime;
 }
@@ -1131,7 +1139,7 @@ initIDCache(JNIEnv *env)
 		goto initIDCache_fail;
 	}
 	
-	cls = (*env)->FindClass(env, "java/lang/management/ThreadInfo");
+	cls = (*env)->FindClass(env, "openj9/management/internal/ThreadInfoBase");
 	if (!cls) {
 		err = JNI_ERR;
 		goto initIDCache_fail;
@@ -1141,20 +1149,20 @@ initIDCache(JNIEnv *env)
 		goto initIDCache_fail;
 	}
 	(*env)->DeleteLocalRef(env, cls);
-	JCL_CACHE_SET(env, CLS_java_lang_management_ThreadInfo, gcls);
+	JCL_CACHE_SET(env, CLS_openj9_management_internal_ThreadInfoBase, gcls);
 
 	mid = (*env)->GetMethodID(env, gcls, "<init>", 
-		"(Ljava/lang/Thread;JIZZJJJJ[Ljava/lang/StackTraceElement;Ljava/lang/Object;Ljava/lang/Thread;[Ljava/lang/management/MonitorInfo;[Ljava/lang/management/LockInfo;)V");
+		"(Ljava/lang/Thread;JIZZJJJJ[Ljava/lang/StackTraceElement;Ljava/lang/Object;Ljava/lang/Thread;[Lopenj9/management/internal/MonitorInfoBase;[Lopenj9/management/internal/LockInfoBase;)V");
 	if (mid) {
-		JCL_CACHE_SET(env, MID_java_lang_management_ThreadInfo_init, mid);
-		JCL_CACHE_SET(env, MID_java_lang_management_ThreadInfo_init_nolocks, NULL);
+		JCL_CACHE_SET(env, MID_openj9_management_internal_ThreadInfoBase_init, mid);
+		JCL_CACHE_SET(env, MID_openj9_management_internal_ThreadInfoBase_init_nolocks, NULL);
 	}
 	if (!mid) {
 		err = JNI_ERR;
 		goto initIDCache_fail;
 	}
 
-	cls = (*env)->FindClass(env, "java/lang/management/MonitorInfo");
+	cls = (*env)->FindClass(env, "openj9/management/internal/MonitorInfoBase");
 	if (!cls) {
 		err = JNI_ERR;
 		goto initIDCache_fail;
@@ -1164,7 +1172,7 @@ initIDCache(JNIEnv *env)
 		goto initIDCache_fail;
 	}
 	(*env)->DeleteLocalRef(env, cls);
-	JCL_CACHE_SET(env, CLS_java_lang_management_MonitorInfo, gcls);
+	JCL_CACHE_SET(env, CLS_openj9_management_internal_MonitorInfoBase, gcls);
 
 	mid = (*env)->GetMethodID(env, gcls, "<init>",
 			"(Ljava/lang/String;IILjava/lang/StackTraceElement;)V");
@@ -1172,7 +1180,7 @@ initIDCache(JNIEnv *env)
 		err = JNI_ERR;
 		goto initIDCache_fail;
 	}
-	JCL_CACHE_SET(env, MID_java_lang_management_MonitorInfo_init, mid);
+	JCL_CACHE_SET(env, MID_openj9_management_internal_MonitorInfoBase_init, mid);
 
 	cls = (*env)->FindClass(env, "java/lang/Class");
 	if (!cls) {
@@ -1187,7 +1195,7 @@ initIDCache(JNIEnv *env)
 	(*env)->DeleteLocalRef(env, cls);
 	JCL_CACHE_SET(env, MID_java_lang_Class_getName, mid);
 
-	cls = (*env)->FindClass(env, "java/lang/management/LockInfo");
+	cls = (*env)->FindClass(env, "openj9/management/internal/LockInfoBase");
 	if (!cls) {
 		err = JNI_ERR;
 		goto initIDCache_fail;
@@ -1197,14 +1205,14 @@ initIDCache(JNIEnv *env)
 		goto initIDCache_fail;
 	}
 	(*env)->DeleteLocalRef(env, cls);
-	JCL_CACHE_SET(env, CLS_java_lang_management_LockInfo, gcls);
+	JCL_CACHE_SET(env, CLS_openj9_management_internal_LockInfoBase, gcls);
 
 	mid = (*env)->GetMethodID(env, gcls, "<init>", "(Ljava/lang/Object;)V");
 	if (!mid) {
 		err = JNI_ERR;
 		goto initIDCache_fail;
 	}
-	JCL_CACHE_SET(env, MID_java_lang_management_LockInfo_init, mid);
+	JCL_CACHE_SET(env, MID_openj9_management_internal_LockInfoBase_init, mid);
 
 	cls = (*env)->FindClass(env, "java/lang/StackTraceElement");
 	if (!cls) {
@@ -1233,15 +1241,15 @@ initIDCache_fail:
 	if (NULL != gcls) {
 		(*env)->DeleteGlobalRef(env, gcls);
 	}
-	gcls = JCL_CACHE_GET(env, CLS_java_lang_management_LockInfo);
+	gcls = JCL_CACHE_GET(env, CLS_openj9_management_internal_LockInfoBase);
 	if (NULL != gcls) {
 		(*env)->DeleteGlobalRef(env, gcls);
 	}
-	gcls = JCL_CACHE_GET(env, CLS_java_lang_management_MonitorInfo);
+	gcls = JCL_CACHE_GET(env, CLS_openj9_management_internal_MonitorInfoBase);
 	if (NULL != gcls) {
 		(*env)->DeleteGlobalRef(env, gcls);
 	}
-	gcls = JCL_CACHE_GET(env, CLS_java_lang_management_ThreadInfo);
+	gcls = JCL_CACHE_GET(env, CLS_openj9_management_internal_ThreadInfoBase);
 	if (NULL != gcls) {
 		(*env)->DeleteGlobalRef(env, gcls);
 	}
@@ -1603,13 +1611,13 @@ getMonitors(J9VMThread *currentThread, J9VMThread *targetThread, ThreadInfo *tin
 }
 
 /**
- * Allocate and populate an array of java/lang/management/ThreadInfo.
+ * Allocate and populate an array of openj9/management/internal/ThreadInfoBase.
  * @pre must not have VM access
  * @post temp memory in allinfo[] is freed
  * @param[in] env
  * @param[in] allinfo
  * @param[in] allinfolen
- * @return java/lang/management/ThreadInfo[]
+ * @return openj9/management/internal/ThreadInfoBase[]
  * @retval non-null success
  * @retval null error, an exception is set
  */
@@ -1620,7 +1628,7 @@ createThreadInfoArray(JNIEnv *env, ThreadInfo *allinfo, UDATA allinfolen, jsize 
 	jobjectArray result;
 	UDATA i;
 
-	cls = JCL_CACHE_GET(env, CLS_java_lang_management_ThreadInfo);
+	cls = JCL_CACHE_GET(env, CLS_openj9_management_internal_ThreadInfoBase);
 	Assert_JCL_notNull(cls);
 
 	result = (*env)->NewObjectArray(env, (jsize)allinfolen, cls, NULL);
@@ -1647,13 +1655,13 @@ createThreadInfoArray(JNIEnv *env, ThreadInfo *allinfo, UDATA allinfolen, jsize 
 }
 
 /**
- * Allocate and populate a single java/lang/management/ThreadInfo object.
+ * Allocate and populate a single openj9/management/internal/ThreadInfoBase object.
  * @pre must not have VM access
  * @post temp memory in tinfo is freed
  * @param[in] env
  * @param[in] tinfo
  * @param[in] maxStackDepth The stack trace is pruned to this depth.
- * @return java/lang/management/ThreadInfo object
+ * @return openj9/management/internal/ThreadInfoBase object
  * @retval non-null success
  * @retval null error, an exception is set
  */
@@ -1671,13 +1679,13 @@ createThreadInfo(JNIEnv *env, ThreadInfo *tinfo, jsize maxStackDepth)
 	jboolean isNative;
 	jboolean getOwnedLocks = JNI_TRUE;
 
-	cls = JCL_CACHE_GET(env, CLS_java_lang_management_ThreadInfo);
+	cls = JCL_CACHE_GET(env, CLS_openj9_management_internal_ThreadInfoBase);
 	Assert_JCL_notNull(cls);
 
 	/* look for Java 6 version of the constructor */
-	ctor = JCL_CACHE_GET(env, MID_java_lang_management_ThreadInfo_init);
+	ctor = JCL_CACHE_GET(env, MID_openj9_management_internal_ThreadInfoBase_init);
 	if (!ctor) {
-		ctor = JCL_CACHE_GET(env, MID_java_lang_management_ThreadInfo_init_nolocks);
+		ctor = JCL_CACHE_GET(env, MID_openj9_management_internal_ThreadInfoBase_init_nolocks);
 		getOwnedLocks = JNI_FALSE;
 	}
 	Assert_JCL_notNull(ctor);
@@ -1754,7 +1762,7 @@ createThreadInfo(JNIEnv *env, ThreadInfo *tinfo, jsize maxStackDepth)
  * @post frees tinfo->lockedMonitors.arr_safe.
  * @param[in] env
  * @param[in] tinfo
- * @return java/lang/management/MonitorInfo[]
+ * @return openj9/management/internal/MonitorInfoBase[]
  * @retval non-null success
  * @retval null error, an exception is set
  */ 
@@ -1769,10 +1777,10 @@ createLockedMonitors(JNIEnv *env, ThreadInfo *tinfo)
 	UDATA count;
 	UDATA i, j;
 
-	cls = JCL_CACHE_GET(env, CLS_java_lang_management_MonitorInfo);
+	cls = JCL_CACHE_GET(env, CLS_openj9_management_internal_MonitorInfoBase);
 	Assert_JCL_notNull(cls);
 
-	ctor = JCL_CACHE_GET(env, MID_java_lang_management_MonitorInfo_init);
+	ctor = JCL_CACHE_GET(env, MID_openj9_management_internal_MonitorInfoBase_init);
 	Assert_JCL_notNull(ctor);
 
 	getName = JCL_CACHE_GET(env, MID_java_lang_Class_getName);
@@ -1854,7 +1862,7 @@ createLockedMonitors(JNIEnv *env, ThreadInfo *tinfo)
  * 
  * @param[in] env
  * @param[in] tinfo
- * @return java/lang/management/LockInfo[]
+ * @return openj9/management/internal/LockInfoBase[]
  * @retval non-null success
  * @retval null error, an exception is set
  */ 
@@ -1868,10 +1876,10 @@ createLockedSynchronizers(JNIEnv *env, ThreadInfo *tinfo)
 	jmethodID ctor;
 	UDATA i;
 
-	cls = JCL_CACHE_GET(env, CLS_java_lang_management_LockInfo);
+	cls = JCL_CACHE_GET(env, CLS_openj9_management_internal_LockInfoBase);
 	Assert_JCL_notNull(cls);
 
-	ctor = JCL_CACHE_GET(env, MID_java_lang_management_LockInfo_init);
+	ctor = JCL_CACHE_GET(env, MID_openj9_management_internal_LockInfoBase_init);
 	Assert_JCL_notNull(ctor);
 
 	lockedSyncs = (*env)->NewObjectArray(env, (jsize)tinfo->lockedSynchronizers.len, cls, NULL);
@@ -2093,8 +2101,7 @@ isInNative(JNIEnv *env, jobjectArray stackTrace)
 }
 
 /**
- * Discover deadlocked threads. In case of multitenancy, only the deadlocked threads that belong to
- * the calling tenant are returned.
+ * Discover deadlocked threads.
  * @param[in] env
  * @param[in] findFlags J9VMTHREAD_FINDDEADLOCKFLAG_xxx. Flags passed to the VM helper 
  * that determine whether deadlocks among synchronizers or waiting threads should be 
@@ -2109,55 +2116,46 @@ findDeadlockedThreads(JNIEnv *env, UDATA findFlags)
 	PORT_ACCESS_FROM_ENV(env);
 	J9VMThread *currentThread = (J9VMThread *)env;
 	J9JavaVM *javaVM = currentThread->javaVM;
+	J9InternalVMFunctions *vmfns = javaVM->internalVMFunctions;
 	j9object_t *threads = NULL;
 	IDATA deadCount = 0;
 	jlong *deadIDs = NULL;
 	jlongArray resultArray = NULL;
 	UDATA i;
 
-	javaVM->internalVMFunctions->internalEnterVMFromJNI(currentThread);
+	vmfns->internalEnterVMFromJNI(currentThread);
 	
-	deadCount = javaVM->internalVMFunctions->findObjectDeadlockedThreads(currentThread, &threads, NULL, findFlags);
+	deadCount = vmfns->findObjectDeadlockedThreads(currentThread, &threads, NULL, findFlags);
 
 	/* spec says to return NULL array for no threads */	
 	if (deadCount <= 0) {
-		j9mem_free_memory(threads);
 		if (deadCount < 0) {
-			javaVM->internalVMFunctions->setNativeOutOfMemoryError(currentThread, 0, 0);
+oom:
+			vmfns->setNativeOutOfMemoryError(currentThread, 0, 0);
 		}
-		javaVM->internalVMFunctions->internalReleaseVMAccess(currentThread);
+		vmfns->internalExitVMToJNI(currentThread);
+		j9mem_free_memory(threads);
 		return NULL;
 	}
 		
 	/* Finally, ready to output the list of deadlocked threads */
 	deadIDs = (jlong *)j9mem_allocate_memory(deadCount * sizeof(jlong), J9MEM_CATEGORY_VM_JCL);
 	if (!deadIDs) {
-		j9mem_free_memory(threads);
-		javaVM->internalVMFunctions->internalReleaseVMAccess(currentThread);
-		return NULL;
+		goto oom;
 	}
-	{
-		for (i = 0; (IDATA)i < deadCount; i++) {
-			deadIDs[i] = getThreadID(currentThread, threads[i]);
-		}
+	for (i = 0; (IDATA)i < deadCount; i++) {
+		deadIDs[i] = getThreadID(currentThread, threads[i]);
 	}
-
 
 	j9mem_free_memory(threads);
-	javaVM->internalVMFunctions->internalReleaseVMAccess(currentThread);
+	vmfns->internalExitVMToJNI(currentThread);
 
 	resultArray = (*env)->NewLongArray(env, (jsize)deadCount);
-	if (!resultArray) {
-		j9mem_free_memory(deadIDs);
-		return NULL;
-	}
-	
-	(*env)->SetLongArrayRegion(env, resultArray, 0, (jsize)deadCount, deadIDs);
-	j9mem_free_memory(deadIDs);
-	if ((*env)->ExceptionCheck(env)) {
-		return NULL;
+	if (NULL != resultArray) {
+		(*env)->SetLongArrayRegion(env, resultArray, 0, (jsize)deadCount, deadIDs);
 	}
 
+	j9mem_free_memory(deadIDs);
 	return resultArray;
 }
 
@@ -2246,7 +2244,7 @@ Java_com_ibm_lang_management_internal_JvmCpuMonitor_getThreadsCpuUsageImpl(JNIEn
 	memset(&cpuUsage, 0, sizeof(cpuUsage));
 
 	/* Get the cpu usage for all threads while holding the vmThreadListMutex.
-	 * This ensures that a thread doesnt die on us while walking the threads in the thread library
+	 * This ensures that a thread doesn't die on us while walking the threads in the thread library
 	 */
 	omrthread_monitor_enter(javaVM->vmThreadListMutex);
 	rc = omrthread_get_jvm_cpu_usage_info(&cpuUsage);
@@ -2425,7 +2423,7 @@ err_exit:
 	if (t_osThread != currentThread->osThread) {
 		omrthread_monitor_exit(javaVM->vmThreadListMutex);
 	}
-	vmfns->internalReleaseVMAccess(currentThread);
+	vmfns->internalExitVMToJNI(currentThread);
 	if (NULL != err_msg) {
 		throwNewIllegalArgumentException(env, (char *) err_msg);
 	}
@@ -2458,7 +2456,7 @@ Java_com_ibm_lang_management_internal_JvmCpuMonitor_getThreadCategoryImpl(JNIEnv
 		t_osThread = get_thread_from_id(currentThread, threadID);
 		if (NULL == t_osThread) {
 			omrthread_monitor_exit(javaVM->vmThreadListMutex);
-			vmfns->internalReleaseVMAccess(currentThread);
+			vmfns->internalExitVMToJNI(currentThread);
 			return THREAD_CATEGORY_INVALID;
 		}
 	}
@@ -2468,7 +2466,7 @@ Java_com_ibm_lang_management_internal_JvmCpuMonitor_getThreadCategoryImpl(JNIEnv
 	if (t_osThread != currentThread->osThread) {
 		omrthread_monitor_exit(javaVM->vmThreadListMutex);
 	}
-	vmfns->internalReleaseVMAccess(currentThread);
+	vmfns->internalExitVMToJNI(currentThread);
 
 	switch (category) {
 	case J9THREAD_CATEGORY_SYSTEM_THREAD:
@@ -2572,7 +2570,7 @@ Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_findNativeThreadIDIm
 	omrthread_monitor_enter(javaVM->vmThreadListMutex);
 	nativeTID = findNativeThreadId(currentThread, threadID);
 	omrthread_monitor_exit(javaVM->vmThreadListMutex);
-	vmfns->internalReleaseVMAccess(currentThread);
+	vmfns->internalExitVMToJNI(currentThread);
 
 	Trc_JCL_threadmxbean_findNativeThreadIDImpl_Exit(env, nativeTID);
 	return nativeTID;
@@ -2618,7 +2616,7 @@ Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_getNativeThreadIdsIm
 	nativeIds = j9mem_allocate_memory(arrLen * sizeof(jlong), J9MEM_CATEGORY_VM_JCL);
 	if (NULL == nativeIds) {
 		Trc_JCL_threadmxbean_getNativeThreadIdsImpl_outOfMemory(env, arrLen);
-		throwNativeOOMError(env, 0, 0);
+		javaVM->internalVMFunctions->throwNativeOOMError(env, 0, 0);
 		goto _exit;
 	}
 	/* Extract primitive (jlong) array from the jlongArray passed by JNI.  Examine its elements for TIDs. */
@@ -2635,7 +2633,7 @@ Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_getNativeThreadIdsIm
 	}
 	/* Release mutexes.  If thread counts go up or down from this point on, its acceptable as per the API. */
 	omrthread_monitor_exit(javaVM->vmThreadListMutex);
-	releaseVMAccess((J9VMThread *) env);
+	exitVMToJNI((J9VMThread *) env);
 	(*env)->SetLongArrayRegion(env, resultArray, 0, (jsize) arrLen, nativeIds);
 
 _exit:

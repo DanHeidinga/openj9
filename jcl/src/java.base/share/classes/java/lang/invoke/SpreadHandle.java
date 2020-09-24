@@ -1,6 +1,6 @@
-/*[INCLUDE-IF Sidecar17]*/
+/*[INCLUDE-IF Sidecar17 & !OPENJDK_METHODHANDLES]*/
 /*******************************************************************************
- * Copyright (c) 2011, 2016 IBM Corp. and others
+ * Copyright (c) 2011, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -21,6 +21,10 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
 package java.lang.invoke;
+
+/*[IF Java15]*/
+import java.util.List;
+/*[ENDIF] Java15 */
 
 import com.ibm.oti.util.Msg;
 
@@ -80,7 +84,11 @@ final class SpreadHandle extends MethodHandle {
 		if (spreadArg == null) {
 			if (spreadCount != 0) {
 				/*[MSG "K05d1", "cannot have null spread argument unless spreadCount is 0"]*/
+/*[IF Java11]*/
+				throw new NullPointerException(Msg.getString("K05d1")); //$NON-NLS-1$
+/*[ELSE]*/
 				throw new IllegalArgumentException(Msg.getString("K05d1")); //$NON-NLS-1$
+/*[ENDIF]*/
 			}
 		} else if (spreadCount != java.lang.reflect.Array.getLength(spreadArg)) {
 			/*[MSG "K05d2", "expected '{0}' sized array; encountered '{1}' sized array"]*/
@@ -104,6 +112,14 @@ final class SpreadHandle extends MethodHandle {
 			ILGenMacros.lastN(numArgsAfterSpreadArray(), argPlaceholder))
 			);
 	}
+
+/*[IF Java15]*/
+	@Override
+	boolean addRelatedMHs(List<MethodHandle> relatedMHs) {
+		relatedMHs.add(next);
+		return true;
+	}
+/*[ENDIF] Java15 */
 
 	// }}} JIT support
 

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2014 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -22,19 +22,29 @@
 package com.ibm.j9ddr.vm29.pointer.helper;
 
 import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
+
 import com.ibm.j9ddr.CorruptDataException;
+import com.ibm.j9ddr.vm29.pointer.U8Pointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9UTF8Pointer;
+import com.ibm.j9ddr.vm29.types.U16;
 
 public class J9UTF8Helper {
-	
-	public static String stringValue(J9UTF8Pointer utf8pointer) throws CorruptDataException 
+
+	// Do not use J9UTF8.SIZEOF here in order to maintain compatibility
+	// with older core files.
+	public static final int J9UTF8_HEADER_SIZE = U16.SIZEOF;
+
+	public static U8Pointer dataEA(J9UTF8Pointer utf8pointer) throws CorruptDataException
+	{
+		return U8Pointer.cast(utf8pointer).add(J9UTF8_HEADER_SIZE);
+	}
+
+	public static String stringValue(J9UTF8Pointer utf8pointer) throws CorruptDataException
 	{
 		byte[] buffer = new byte[utf8pointer.length().intValue()];
-		utf8pointer.dataEA().getBytesAtOffset(0, buffer);
-		try {
-			return new String(buffer, "UTF-8");
-		} catch (UnsupportedEncodingException e) {
-			throw new IllegalArgumentException("Can't find UTF-8 Encoding");
-		}
+		dataEA(utf8pointer).getBytesAtOffset(0, buffer);
+		return new String(buffer, StandardCharsets.UTF_8);
 	}
+
 }

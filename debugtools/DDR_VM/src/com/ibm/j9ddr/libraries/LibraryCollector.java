@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -41,7 +41,7 @@ import java.util.logging.SimpleFormatter;
 
 public class LibraryCollector {
 	/**
-	 * Used to indicated the overall outcome when invoking the libary collection process
+	 * Used to indicated the overall outcome when invoking the library collection process
 	 * @author Adam Pilkington
 	 *
 	 */
@@ -310,7 +310,7 @@ public class LibraryCollector {
 		return libraryName.equals("lib.so") // the SOname that appears in executables
 				// ABI: i386, ia64, sh
 				|| libraryName.startsWith("linux-gate")
-				// ABI: aarch64, arm, mips, x86_64, x86/32
+				// ABI: aarch64, arm, mips, riscv, x86_64, x86/32
 				|| libraryName.startsWith("linux-vdso.so.1")
 				// ABI: ppc/32, s390
 				|| libraryName.startsWith("linux-vdso32.so.1")

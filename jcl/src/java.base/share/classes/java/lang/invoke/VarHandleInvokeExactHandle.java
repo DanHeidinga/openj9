@@ -1,6 +1,6 @@
-/*[INCLUDE-IF Sidecar19-SE]*/
+/*[INCLUDE-IF Sidecar19-SE & !OPENJDK_METHODHANDLES]*/
 /*******************************************************************************
- * Copyright (c) 2016, 2018 IBM Corp. and others
+ * Copyright (c) 2016, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -34,6 +34,12 @@ final class VarHandleInvokeExactHandle extends VarHandleInvokeHandle {
 
 	VarHandleInvokeExactHandle(VarHandleInvokeExactHandle originalHandle, MethodType newType) {
 		super(originalHandle, newType);
+	}
+	
+	@Override
+	boolean canRevealDirect() {
+		/* This is invokevirtual of VarHandle.invokeExact() */
+		return true;
 	}
 
 	@Override

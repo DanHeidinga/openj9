@@ -1,4 +1,4 @@
-dnl Copyright (c) 2001, 2018 IBM Corp. and others
+dnl Copyright (c) 2001, 2020 IBM Corp. and others
 dnl
 dnl This program and the accompanying materials are made available under
 dnl the terms of the Eclipse Public License 2.0 which accompanies this
@@ -58,17 +58,20 @@ _X(JVM_FreeMemory,JNICALL,true,jlong ,void)
 _X(JVM_GC,JNICALL,true,void ,void)
 _X(JVM_GCNoCompact,JNICALL,true,void ,void)
 _X(JVM_GetAllThreads,JNICALL,true,jobjectArray ,JNIEnv *env, jclass aClass)
-_IF([!defined(J9VM_JCL_SE11)],
+_IF([JAVA_SPEC_VERSION < 11],
 	[_X(JVM_GetCallerClass,JNICALL,true,jobject ,JNIEnv *env, jint depth)])
-_IF([defined(J9VM_JCL_SE11)],
+_IF([JAVA_SPEC_VERSION >= 11],
 	[_X(JVM_GetCallerClass,JNICALL,true,jobject ,JNIEnv *env)])
 _X(JVM_GetClassAccessFlags,JNICALL,true,jint ,JNIEnv * env, jclass clazzRef)
 _X(JVM_GetClassAnnotations,JNICALL,true,jbyteArray ,JNIEnv *env, jclass target)
 _X(JVM_GetClassConstantPool,JNICALL,true,jobject ,JNIEnv *env, jclass target)
 _X(JVM_GetClassContext,JNICALL,true,jobject ,JNIEnv *env)
 _X(JVM_GetClassLoader,JNICALL,true,jobject ,JNIEnv *env, jobject obj)
-_X(JVM_GetClassName,JNICALL,true,jstring ,JNIEnv *env, jclass theClass)
-_X(JVM_GetClassSignature,JNICALL,true,jstring ,JNIEnv *env, jclass target)
+_IF([JAVA_SPEC_VERSION < 11],
+	[_X(JVM_GetClassName,JNICALL,true,jstring, JNIEnv *env, jclass theClass)])
+_IF([JAVA_SPEC_VERSION >= 11],
+	[_X(JVM_InitClassName,JNICALL,true,jstring, JNIEnv *env, jclass theClass)])
+_X(JVM_GetClassSignature,JNICALL,true,jstring,JNIEnv *env, jclass target)
 _X(JVM_GetEnclosingMethodInfo,JNICALL,true,jobjectArray ,JNIEnv *env, jclass theClass)
 _X(JVM_GetInterfaceVersion,JNICALL,true,jint ,void)
 _X(JVM_GetLastErrorString,JNICALL,true,jint ,char* buffer, jint length)
@@ -188,7 +191,10 @@ _X(JVM_SetThreadPriority,JNICALL,true,void,JNIEnv* env, jobject thread, jint pri
 _X(JVM_StartThread,JNICALL,true,void ,JNIEnv* jniEnv, jobject newThread)
 _X(JVM_StopThread,JNICALL,true,jobject ,jint arg0, jint arg1, jint arg2)
 _X(JVM_SuspendThread,JNICALL,true,jobject ,jint arg0, jint arg1)
-_X(JVM_UnloadLibrary,JNICALL,true,jobject ,jint arg0)
+_IF([JAVA_SPEC_VERSION < 15],
+	[_X(JVM_UnloadLibrary, JNICALL, true, jobject, jint arg0)])
+_IF([JAVA_SPEC_VERSION >= 15],
+	[_X(JVM_UnloadLibrary, JNICALL, true, void, void* handle)])
 _X(JVM_Yield,JNICALL,true,jobject ,jint arg0, jint arg1)
 _X(JVM_SetSockOpt,JNICALL,true,jint ,jint fd, int level, int optname, const char *optval, int optlen)
 _X(JVM_GetSockOpt,JNICALL,true,jint ,jint fd, int level, int optname, char *optval, int *optlen)
@@ -256,6 +262,7 @@ _X(JVM_GetMethodParameters,JNICALL,true,jobjectArray ,JNIEnv *env, jobject metho
 _X(JVM_GetMethodTypeAnnotations,JNICALL,true,jbyteArray ,JNIEnv *env, jobject method)
 _X(JVM_IsVMGeneratedMethodIx,JNICALL,true,jboolean ,JNIEnv *env, jclass cb, jint index)
 _X(JVM_GetTemporaryDirectory,JNICALL,false,jstring ,JNIEnv *env)
+_X(JVM_CopySwapMemory,JNICALL,true,void ,JNIEnv *env, jobject srcObj, jlong srcOffset, jobject dstObj, jlong dstOffset, jlong size, jlong elemSize)
 _X(JVM_GetPrimitiveField,JNICALL,true,jobject ,jint arg0, jint arg1, jint arg2, jint arg3)
 _X(JVM_InitializeCompiler,JNICALL,true,jobject ,jint arg0, jint arg1)
 _X(JVM_IsSilentCompiler,JNICALL,true,jobject ,jint arg0, jint arg1)
@@ -265,31 +272,26 @@ _X(JVM_PrintStackTrace,JNICALL,true,jobject ,jint arg0, jint arg1, jint arg2)
 _X(JVM_SetField,JNICALL,true,jobject ,jint arg0, jint arg1, jint arg2, jint arg3)
 _X(JVM_SetPrimitiveField,JNICALL,true,jobject ,jint arg0, jint arg1, jint arg2, jint arg3, jint arg4, jint arg5)
 _X(JVM_SetNativeThreadName,JNICALL,true,void ,jint arg0, jobject arg1, jstring arg2)
-_IF([(!defined(J9VM_JAVA9_BUILD)) || (J9VM_JAVA9_BUILD < 148)],
-	[_X(JVM_DefineModule,JNICALL,false,jobject ,JNIEnv arg0, jobject arg1, jstring arg2, jstring arg3, jobjectArray arg4)])
-_IF([defined(J9VM_JAVA9_BUILD) && (J9VM_JAVA9_BUILD >= 148) && (J9VM_JAVA9_BUILD < 156)],
-	[_X(JVM_DefineModule,JNICALL,false,jobject ,JNIEnv arg0, jobject arg1, jboolean arg2, jstring arg3, jstring arg4, jobjectArray arg5)])
-_IF([defined(J9VM_JAVA9_BUILD) && (J9VM_JAVA9_BUILD >= 156)],
-	[_X(JVM_DefineModule,JNICALL,false,jobject ,JNIEnv arg0, jobject arg1, jboolean arg2, jstring arg3, jstring arg4, const char* const* arg5, jsize arg6)])
-_IF([(!defined(J9VM_JAVA9_BUILD)) || (J9VM_JAVA9_BUILD < 156)],
-	[_X(JVM_AddModuleExports,JNICALL,false,void ,JNIEnv arg0, jobject arg1, jstring arg2, jobject arg3)])
-_IF([defined(J9VM_JAVA9_BUILD) && (J9VM_JAVA9_BUILD >= 156)],
-	[_X(JVM_AddModuleExports,JNICALL,false,void ,JNIEnv arg0, jobject arg1, const char *arg2, jobject arg3)])
-_IF([(!defined(J9VM_JAVA9_BUILD)) || (J9VM_JAVA9_BUILD < 156)],
-	[_X(JVM_AddModuleExportsToAll,JNICALL,false,void ,JNIEnv arg0, jobject arg1, jstring arg2, jobject arg3)])
-_IF([defined(J9VM_JAVA9_BUILD) && (J9VM_JAVA9_BUILD >= 156)],
-	[_X(JVM_AddModuleExportsToAll,JNICALL,false,void ,JNIEnv arg0, jobject arg1, const char *arg2, jobject arg3)])
+_IF([(9 <= JAVA_SPEC_VERSION) && (JAVA_SPEC_VERSION < 15)],
+	[_X(JVM_DefineModule,JNICALL,false,jobject,JNIEnv arg0, jobject arg1, jboolean arg2, jstring arg3, jstring arg4, const char* const* arg5, jsize arg6)])
+_IF([JAVA_SPEC_VERSION >= 15],
+	[_X(JVM_DefineModule,JNICALL,false,jobject,JNIEnv arg0, jobject arg1, jboolean arg2, jstring arg3, jstring arg4, jobjectArray arg5)])
+_IF([(9 <= JAVA_SPEC_VERSION) && (JAVA_SPEC_VERSION < 15)],
+	[_X(JVM_AddModuleExports,JNICALL,false,void,JNIEnv arg0, jobject arg1, const char *arg2, jobject arg3)])
+_IF([JAVA_SPEC_VERSION >= 15],
+	[_X(JVM_AddModuleExports,JNICALL,false,void,JNIEnv arg0, jobject arg1, jstring arg2, jobject arg3)])
+_IF([(9 <= JAVA_SPEC_VERSION) && (JAVA_SPEC_VERSION < 15)],
+	[_X(JVM_AddModuleExportsToAll,JNICALL,false,void,JNIEnv arg0, jobject arg1, const char *arg2, jobject arg3)])
+_IF([JAVA_SPEC_VERSION >= 15],
+	[_X(JVM_AddModuleExportsToAll,JNICALL,false,void,JNIEnv arg0, jobject arg1, jstring arg2, jobject arg3)])
 _X(JVM_AddReadsModule,JNICALL,false,void ,JNIEnv arg0, jobject arg1, jobject arg2)
 _X(JVM_CanReadModule,JNICALL,false,jboolean ,JNIEnv arg0, jobject arg1, jobject arg2)
-_X(JVM_IsExportedToModule,JNICALL,false,jboolean ,JNIEnv arg0, jobject arg1, jstring arg2, jobject arg3)
-_IF([(!defined(J9VM_JAVA9_BUILD)) || (J9VM_JAVA9_BUILD < 156)],
-	[_X(JVM_AddModulePackage,JNICALL,false,void ,JNIEnv arg0, jobject arg1, jstring arg2)])
-_IF([defined(J9VM_JAVA9_BUILD) && (J9VM_JAVA9_BUILD >= 156)],
-	[_X(JVM_AddModulePackage,JNICALL,false,void ,JNIEnv arg0, jobject arg1, const char *arg2)])
-_IF([(!defined(J9VM_JAVA9_BUILD)) || (J9VM_JAVA9_BUILD < 156)],
-	[_X(JVM_AddModuleExportsToAllUnnamed,JNICALL,false,void ,JNIEnv arg0, jobject arg1, jstring arg2)])
-_IF([defined(J9VM_JAVA9_BUILD) && (J9VM_JAVA9_BUILD >= 156)],
-	[_X(JVM_AddModuleExportsToAllUnnamed,JNICALL,false,void ,JNIEnv arg0, jobject arg1, const char *arg2)])
+_IF([JAVA_SPEC_VERSION >= 9],
+	[_X(JVM_AddModulePackage,JNICALL,false,void,JNIEnv arg0, jobject arg1, const char *arg2)])
+_IF([(9 <= JAVA_SPEC_VERSION) && (JAVA_SPEC_VERSION < 15)],
+	[_X(JVM_AddModuleExportsToAllUnnamed,JNICALL,false,void,JNIEnv arg0, jobject arg1, const char *arg2)])
+_IF([JAVA_SPEC_VERSION >= 15],
+	[_X(JVM_AddModuleExportsToAllUnnamed,JNICALL,false,void,JNIEnv arg0, jobject arg1, jstring arg2)])
 _X(JVM_GetSimpleBinaryName,JNICALL,false,jstring ,JNIEnv arg0, jclass arg1)
 _X(JVM_SetMethodInfo,JNICALL,false,void ,JNIEnv arg0, jobject arg1)
 _X(JVM_ConstantPoolGetNameAndTypeRefIndexAt,JNICALL,false,jint ,JNIEnv arg0, jobject arg1, jobject arg2, jint arg3)
@@ -310,6 +312,29 @@ _X(JVM_InitStackTraceElement,JNICALL,false,void ,JNIEnv *env, jobject arg1, jobj
 _X(JVM_GetAndClearReferencePendingList,JNICALL,false,jobject ,JNIEnv *env)
 _X(JVM_HasReferencePendingList,JNICALL,false,jboolean ,JNIEnv *env)
 _X(JVM_WaitForReferencePendingList,JNICALL,false,void ,JNIEnv *env)
-_X(JVM_GetNanoTimeAdjustment,JNICALL,true,jlong ,JNIEnv *env, jclass clazz, jlong offsetSeconds)
-_IF([defined(J9VM_JCL_SE11)],
-	[_X(JVM_BeforeHalt,JNICALL,false,void,void)])
+_X(JVM_BeforeHalt,JNICALL,false,void,void)
+_IF([JAVA_SPEC_VERSION >= 9],
+	[_X(JVM_GetNanoTimeAdjustment,JNICALL,true,jlong ,JNIEnv *env, jclass clazz, jlong offsetSeconds)])
+_IF([JAVA_SPEC_VERSION >= 11],
+	[_X(JVM_GetNestHost,JNICALL,false,jclass,JNIEnv *env,jclass clz)])
+_IF([JAVA_SPEC_VERSION >= 11],
+	[_X(JVM_GetNestMembers,JNICALL,false,jobjectArray,JNIEnv *env,jclass clz)])
+_IF([JAVA_SPEC_VERSION >= 11],
+	[_X(JVM_AreNestMates,JNICALL,false,jboolean,JNIEnv *env,jclass clzOne, jclass clzTwo)])
+_IF([JAVA_SPEC_VERSION >= 11],
+	[_X(JVM_InitializeFromArchive, JNICALL, false, void, JNIEnv *env, jclass clz)])
+_IF([JAVA_SPEC_VERSION >= 14],
+	[_X(JVM_GetExtendedNPEMessage, JNICALL, false, jstring, JNIEnv *env, jthrowable throwableObj)])
+_IF([JAVA_SPEC_VERSION >= 15],
+	[_X(JVM_GetRandomSeedForCDSDump, JNICALL, false, jlong)])
+_IF([JAVA_SPEC_VERSION >= 15],
+	[_X(JVM_RegisterLambdaProxyClassForArchiving, JNICALL, false, void, JNIEnv *env, jclass arg1, jstring arg2, jobject arg3, jobject arg4, jobject arg5, jobject arg6, jclass arg7)])
+_IF([JAVA_SPEC_VERSION >= 15],
+	[_X(JVM_LookupLambdaProxyClassFromArchive, JNICALL, false, jclass, JNIEnv *env, jclass arg1, jstring arg2, jobject arg3, jobject arg4, jobject arg5, jobject arg6, jboolean arg7)])
+_IF([JAVA_SPEC_VERSION >= 15],
+	[_X(JVM_IsCDSDumpingEnabled, JNICALL, false, jboolean, JNIEnv *env)])
+_IF([JAVA_SPEC_VERSION >= 15],
+	[_X(JVM_IsCDSSharingEnabled, JNICALL, false, jboolean, JNIEnv *env)])
+_IF([JAVA_SPEC_VERSION >= 16],
+	[_X(JVM_DefineArchivedModules, JNICALL, false, void, JNIEnv *env, jobject obj1, jobject obj2)])
+_X(JVM_IsUseContainerSupport, JNICALL, false, jboolean, JNIEnv *env)

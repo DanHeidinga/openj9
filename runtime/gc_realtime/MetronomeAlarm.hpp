@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -32,14 +31,13 @@
 
 class MM_EnvironmentBase;
 class MM_ProcessorInfo;
-class MM_OSInterface;
 class MM_MetronomeAlarmThread;
 
-#include "j9.h"
-#include "j9cfg.h"
+#include "omr.h"
+#include "omrcfg.h"
 
 #include "Base.hpp"
-#include "GCExtensions.hpp"
+#include "GCExtensionsBase.hpp"
 
 #if defined(WIN32)
 #include "omrmutex.h"
@@ -63,21 +61,20 @@ class MM_Alarm : protected MM_BaseVirtual
 {	
 private:
 protected:
-	MM_Alarm(MM_OSInterface* osInterface)
+	MM_Alarm()
 	{
 		_typeId = __FUNCTION__;
-		_osInterface = osInterface;
 	}
 	virtual void tearDown(MM_EnvironmentBase *env);
 
-	MM_OSInterface* _osInterface;
+	MM_GCExtensionsBase *_extensions;
 
 public:
 	virtual void kill(MM_EnvironmentBase *envModron);
 
 	virtual bool initialize(MM_EnvironmentBase *env, MM_MetronomeAlarmThread* alarmThread)=0;
 	static MM_Alarm * factory(MM_EnvironmentBase *env, MM_OSInterface* osInterface);
-	virtual void describe(J9PortLibrary* port, char *buffer, I_32 bufferSize)=0;
+	virtual void describe(OMRPortLibrary* port, char *buffer, I_32 bufferSize)=0;
 
 	virtual void sleep()=0;
 	virtual void wakeUp(MM_MetronomeAlarmThread *) {};
@@ -86,31 +83,33 @@ public:
 class MM_HRTAlarm : public MM_Alarm
 {
 public:
-	static MM_HRTAlarm * newInstance(MM_EnvironmentBase *env, MM_OSInterface* osInterface);
+	static MM_HRTAlarm * newInstance(MM_EnvironmentBase *env);
 
-	MM_HRTAlarm(MM_OSInterface * osInterface) : MM_Alarm(osInterface)
+	MM_HRTAlarm() : MM_Alarm()
 	{
 		_typeId = __FUNCTION__;
 	}
 	virtual void sleep();
-	virtual void describe(J9PortLibrary* port, char *buffer, I_32 bufferSize);
+	virtual void describe(OMRPortLibrary* port, char *buffer, I_32 bufferSize);
 	virtual bool initialize(MM_EnvironmentBase *env, MM_MetronomeAlarmThread* alarmThread);
 };
 
 class MM_RTCAlarm : public MM_Alarm
 {
-private:	
+private:
+#if defined(LINUX) && !defined(J9ZTPF)
 	IDATA RTCfd;
+#endif /* defined(LINUX) && !defined(J9ZTPF) */
 
 public:
-	static MM_RTCAlarm * newInstance(MM_EnvironmentBase *env, MM_OSInterface* osInterface);
+	static MM_RTCAlarm * newInstance(MM_EnvironmentBase *env);
 
-	MM_RTCAlarm(MM_OSInterface * osInterface) : MM_Alarm(osInterface)
+	MM_RTCAlarm() : MM_Alarm()
 	{
 		_typeId = __FUNCTION__;
 	}
 	virtual void sleep();
-	virtual void describe(J9PortLibrary* port, char *buffer, I_32 bufferSize);
+	virtual void describe(OMRPortLibrary* port, char *buffer, I_32 bufferSize);
 	virtual bool initialize(MM_EnvironmentBase *env, MM_MetronomeAlarmThread* alarmThread);
 };
 
@@ -118,20 +117,23 @@ class MM_ITAlarm : public MM_Alarm
 {
 private:
 #if defined(WIN32)
-	UINT _uTimerId;
-#endif /* WIN32 */
+	HANDLE _hTimer;
+#endif /* defined(WIN32) */
 protected:
 	virtual void tearDown(MM_EnvironmentBase *env);
 
 public:
-	static MM_ITAlarm * newInstance(MM_EnvironmentBase *env, MM_OSInterface* osInterface);
+	static MM_ITAlarm * newInstance(MM_EnvironmentBase *env);
 
-	MM_ITAlarm(MM_OSInterface * osInterface) : MM_Alarm(osInterface)
+	MM_ITAlarm() : MM_Alarm()
+#if defined(WIN32)
+	, _hTimer(NULL)
+#endif /* defined(WIN32) */
 	{
 		_typeId = __FUNCTION__;
 	}
 	virtual void sleep();
-	virtual void describe(J9PortLibrary* port, char *buffer, I_32 bufferSize);
+	virtual void describe(OMRPortLibrary* port, char *buffer, I_32 bufferSize);
 	virtual bool initialize(MM_EnvironmentBase *env, MM_MetronomeAlarmThread* alarmThread);
 	static void alarm_handler(MM_MetronomeAlarmThread *);
 	virtual void wakeUp(MM_MetronomeAlarmThread *alarmThread) { alarm_handler(alarmThread); }

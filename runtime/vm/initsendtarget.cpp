@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -228,6 +228,7 @@ initializeMethodRunAddressNoHook(J9JavaVM* vm, J9Method *method)
 J9Method cInitialStaticMethod = { 0, 0, J9_BCLOOP_ENCODE_SEND_TARGET(J9_BCLOOP_SEND_TARGET_INITIAL_STATIC), 0 };
 J9Method cInitialSpecialMethod = { 0, 0, J9_BCLOOP_ENCODE_SEND_TARGET(J9_BCLOOP_SEND_TARGET_INITIAL_SPECIAL), 0 };
 J9Method cInitialVirtualMethod = { 0, 0, J9_BCLOOP_ENCODE_SEND_TARGET(J9_BCLOOP_SEND_TARGET_INITIAL_VIRTUAL), 0 };
+J9Method cInvokePrivateMethod  = { 0, 0, J9_BCLOOP_ENCODE_SEND_TARGET(J9_BCLOOP_SEND_TARGET_INVOKE_PRIVATE), 0 };
 
 void
 initializeInitialMethods(J9JavaVM *vm)
@@ -236,6 +237,7 @@ initializeInitialMethods(J9JavaVM *vm)
 	vm->initialMethods.initialStaticMethod = &cInitialStaticMethod;
 	vm->initialMethods.initialSpecialMethod = &cInitialSpecialMethod;
 	vm->initialMethods.initialVirtualMethod = &cInitialVirtualMethod;
+	vm->initialMethods.invokePrivateMethod = &cInvokePrivateMethod;
 }
 
 }

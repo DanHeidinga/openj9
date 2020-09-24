@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2015, 2018 IBM Corp. and others
+ * Copyright (c) 2015, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -61,7 +61,7 @@ import com.ibm.j9ddr.vm29.pointer.generated.J9ROMFieldShapePointer;
 import com.ibm.j9ddr.vm29.pointer.helper.J9ClassHelper;
 import com.ibm.j9ddr.vm29.pointer.helper.J9ObjectHelper;
 import com.ibm.j9ddr.vm29.types.U32;
-
+import com.ibm.j9ddr.vm29.types.UDATA;
 
 public class ObjectSizeInfo extends Command 
 {
@@ -71,10 +71,9 @@ public class ObjectSizeInfo extends Command
 	private static final String SPACE_USED = "Space used";
 
 	private String className = null;
-	private PrintStream out;
 	TreeMap<String, ClassFieldInfo> fieldStats;
 	private boolean includeArrays;
-	
+
 	public ObjectSizeInfo()
 	{
 		addCommand("objectsizeinfo", "[-a] [class name]", "Print information about object fields and size of the objects, including unused space");
@@ -95,7 +94,7 @@ public class ObjectSizeInfo extends Command
 		className = null;
 		includeArrays = true;
 		if (args.length > 2) {
-			out.append("Invalid number of argments" + nl);
+			out.append("Invalid number of arguments" + nl);
 			return false;
 		}
 		for (String a: args) {
@@ -107,7 +106,7 @@ public class ObjectSizeInfo extends Command
 			} else if (!a.startsWith("-")) {
 				className = a;
 			} else {
-				out.append("Invalid argment: " + a);
+				out.append("Invalid argument: " + a);
 			}
 		}
 		return true;
@@ -115,7 +114,6 @@ public class ObjectSizeInfo extends Command
 	
 	public void run(String command, String[] args, Context context, PrintStream out) throws DDRInteractiveCommandException 
 	{
-		this.out = out;
 		fieldStats = new TreeMap<String, ClassFieldInfo> ();
 		Table summary = new Table("Object field size summary");
 		summary.row(ClassFieldInfo.getTitleRow());
@@ -202,7 +200,7 @@ public class ObjectSizeInfo extends Command
 		protected boolean isArray;
 		
 		public String[] getResults() throws CorruptDataException {
-				ArrayList<String> results = new ArrayList(16);
+				ArrayList<String> results = new ArrayList<String>(16);
 				results.add(objectClassString);
 				String totSizeString = "N/A";
 				String minSizeString = "N/A";
@@ -278,7 +276,7 @@ public class ObjectSizeInfo extends Command
 					J9ObjectFieldOffset fo = fieldIter.next();
 					if (!fo.isStatic()) {
 						J9ROMFieldShapePointer f = fo.getField();
-						U32 mods = f.modifiers();
+						UDATA mods = f.modifiers();
 						if (mods.anyBitsIn(J9FieldTypeByte)) {
 							byteCount += 1;
 						} else if (mods.anyBitsIn(J9FieldTypeShort)) {

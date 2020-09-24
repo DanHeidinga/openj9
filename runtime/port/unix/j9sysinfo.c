@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -32,7 +32,7 @@
 
 #if (defined(LINUX) || defined(OSX)) && !defined(J9ZTPF)
 #define _GNU_SOURCE
-#endif
+#endif /* (defined(LINUX) || defined(OSX)) && !defined(J9ZTPF) */
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,7 +57,7 @@
 #include <langinfo.h>
 #if !defined(USER_HZ) && !defined(J9ZTPF)
 #define USER_HZ HZ
-#endif
+#endif /* !defined(USER_HZ) && !defined(J9ZTPF) */
 
 #if (defined(J9X86) || defined(J9HAMMER) || defined(S390) || defined(J9ZOS390))
 #include "j9sysinfo_helpers.h"
@@ -66,10 +66,10 @@
 #include "j9csrsi.h"
 #endif /* defined(J9ZOS390) */
 
-#if defined(LINUXPPC)
+#if (defined(LINUXPPC) || (defined(S390) && defined(LINUX) && !defined(J9ZTPF)))
 #include "auxv.h"
 #include <strings.h>
-#endif /* defined(LINUXPPC) */
+#endif /* (defined(LINUXPPC) || (defined(S390) && defined(LINUX) && !defined(J9ZTPF))) */
 
 #if defined(AIXPPC)
 #include <fcntl.h>
@@ -89,10 +89,6 @@
 /* a2e overrides nl_langinfo to return ASCII strings. We need the native EBCDIC string */
 #if defined(J9ZOS390) && defined (nl_langinfo)
 #undef nl_langinfo
-#endif
-
-#if defined(J9ZOS390)
-#include "j9getuserid.h"
 #endif
 
 /* End copy from j9filetext.c */
@@ -139,7 +135,7 @@ typedef struct lpar_info_format2_t {
         uint64_t dispatch_latency;      /* Max latency inbetween dispatches */
                                         /* of this LPAR on physCPUS in nsecs */
         uint     lpar_flags;
-#define LPAR_INFO2_CAPPED       0x01    /* Parition Capped */
+#define LPAR_INFO2_CAPPED       0x01    /* Partition Capped */
 #define LPAR_INFO2_AUTH_PIC     0x02    /* Authority granted for poolidle*/
 #define LPAR_INFO2_SMT_ENABLED  0x04    /* SMT Enabled */
 
@@ -165,7 +161,7 @@ typedef struct lpar_info_format2_t {
 
         ushort   group_id;              /* ID of a LPAR group/aggregation    */
         ushort   pool_id;               /* ID of a shared pool */
-        char     pad1[36];              /* reserved for furture */
+        char     pad1[36];              /* reserved for future */
 
 } lpar_info_format2_t;
 
@@ -200,7 +196,7 @@ typedef struct wpar_info_format_t {
 #if defined(LINUX) && !defined(J9ZTPF)
 #include <sys/sysinfo.h>
 #include <sched.h>
-#endif
+#endif /* defined(LINUX) && !defined(J9ZTPF) */
 
 #include <unistd.h>
 
@@ -223,7 +219,7 @@ typedef struct wpar_info_format_t {
 #define JIFFIES			100
 #define USECS_PER_SEC	1000000
 #define TICKS_TO_USEC	((uint64_t)(USECS_PER_SEC/JIFFIES))
- 
+
 static int32_t getCacheSize(J9PortLibrary *portLibrary, const int32_t cpu, const int32_t level,
 	const int32_t cacheType, const J9CacheQueryCommand query);
 
@@ -250,7 +246,16 @@ static intptr_t getAIXPPCDescription(struct J9PortLibrary *portLibrary, J9Proces
 #if !defined(__power_9)
 #define POWER_9 0x20000 /* Power 9 class CPU */
 #define __power_9() (_system_configuration.implementation == POWER_9)
+#if defined(J9OS_I5) && !defined(J9OS_I5_V6R1)
+#define PPI9 0x4E
+#define __phy_proc_imp_9() (_system_configuration.phys_implementation == PPI9)
+#endif /* defined(J9OS_I5) && !defined(J9OS_I5_V6R1) */
 #endif /* !defined(__power_9) */
+
+#if !defined(__power_10)
+#define POWER_10 0x40000 /* Power 10 class CPU */
+#define __power_10() (_system_configuration.implementation == POWER_10)
+#endif /* !defined(__power_10) */
 
 #if defined(J9OS_I5_V6R1) /* vmx_version id only available since TL4 */
 #define __power_vsx() (_system_configuration.vmx_version > 1)
@@ -269,7 +274,11 @@ static intptr_t getAIXPPCDescription(struct J9PortLibrary *portLibrary, J9Proces
 #elif (defined(S390) || defined(J9ZOS390) || defined(J9ZTPF))
 static BOOLEAN testSTFLE(struct J9PortLibrary *portLibrary, uint64_t stfleBit);
 static intptr_t getS390Description(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc);
-#endif
+#endif /* defined(S390) || defined(J9ZOS390) || defined(J9ZTPF) */
+
+#if defined(RISCV64)
+static intptr_t getRISCV64Description(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc);
+#endif /* defined(RISCV64) */
 
 #if (defined(LINUXPPC) || defined(AIXPPC))
 static J9ProcessorArchitecture mapPPCProcessor(const char *processorName);
@@ -434,6 +443,8 @@ j9sysinfo_get_processor_description(struct J9PortLibrary *portLibrary, J9Process
 		rc = getAIXPPCDescription(portLibrary, desc);
 #elif (defined(S390) || defined(J9ZOS390))
 		rc = getS390Description(portLibrary, desc);
+#elif defined(RISCV64)
+		rc = getRISCV64Description(portLibrary, desc);
 #endif
 	}
 
@@ -560,6 +571,8 @@ mapPPCProcessor(const char *processorName)
 		rc = PROCESSOR_PPC_P8;
 	} else if (0 == strncasecmp(processorName, "power9", 6)) {
 		rc = PROCESSOR_PPC_P9;
+	} else if (0 == strncasecmp(processorName, "power10", 7)) {
+                rc = PROCESSOR_PPC_P10;
 	}
 
 	return rc;
@@ -611,6 +624,8 @@ getAIXPPCDescription(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc)
 		desc->processor = PROCESSOR_PPC_P8;
 	} else if (__power_9()) {
 		desc->processor = PROCESSOR_PPC_P9;
+	} else if (__power_10()) {
+                desc->processor = PROCESSOR_PPC_P10;
 	} else {
 		desc->processor = PROCESSOR_PPC_UNKNOWN;
 	}
@@ -626,7 +641,13 @@ getAIXPPCDescription(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc)
 		desc->physicalProcessor = PROCESSOR_PPC_P7;
 	} else if (__phy_proc_imp_8()) {
 		desc->physicalProcessor = PROCESSOR_PPC_P8;
-	} else {
+	}
+#if defined(J9OS_I5)
+	else if (__phy_proc_imp_9()) {
+		desc->physicalProcessor = PROCESSOR_PPC_P9;
+	}
+#endif
+	else {
 		desc->physicalProcessor = desc->processor;
 	}
 #else
@@ -702,7 +723,6 @@ testSTFLE(struct J9PortLibrary *portLibrary, uint64_t stfleBit)
 }
 
 #ifdef J9ZOS390
-/* Determine whether z/OS supports SIMD (Vector Facility) */
 #ifdef _LP64
 typedef struct pcb_t
 {
@@ -729,23 +749,94 @@ typedef struct ceecaa_t
 } ceecaa_t;
 #endif /* ifdef _LP64 */
 
-/**
- * @internal
- * Check if z/OS supports the Vector Facility (SIMD)
- * Bit 0x8 of CEEPCB_FLAG6 field is set if LE supports Vector Facility
- * 
- * @return TRUE if supported, FALSE otherwise
+/** @internal
+ *  Check if z/OS supports the Vector Extension Facility (SIMD) by checking whether both the OS and LE support vector
+ *  registers. We use the CVTVEF (0x80) bit in the CVT structure for the OS check and bit 0x08 of CEEPCB_FLAG6 field in
+ *  the PCB for the LE check.
+ *
+ *  @return TRUE if VEF is supported; FALSE otherwise.
  */
 static BOOLEAN
-getS390zOS_supportsVectorFacility(void)
+getS390zOS_supportsVectorExtensionFacility(void)
 {
-	ceecaa_t *caa = ((ceecaa_t *)_gtca());
-	
-	if (NULL == caa) {
-		return FALSE;
+	/* FLCCVT is an ADDRESS off the PSA structure
+	 * https://www.ibm.com/support/knowledgecenter/en/SSLTBW_2.3.0/com.ibm.zos.v2r3.iead300/PSA-map.htm */
+	uint8_t* CVT = (uint8_t*)(*(uint32_t*)0x10);
+
+	/* CVTFLAG5 is a BITSTRING off the CVT structure containing the CVTVEF (0x80) bit
+	 * https://www.ibm.com/support/knowledgecenter/en/SSLTBW_2.3.0/com.ibm.zos.v2r3.iead100/CVT-map.htm */
+	uint8_t CVTFLAG5 = *(CVT + 0x0F4);
+
+	ceecaa_t* CAA = (ceecaa_t *)_gtca();
+
+	if (J9_ARE_ALL_BITS_SET(CVTFLAG5, 0x80)) {
+		if (NULL != CAA) {
+			return J9_ARE_ALL_BITS_SET(CAA->pcb_addr->ceepcb_flags6, 0x08);
+		}
 	}
-	
-	return (J9_ARE_ALL_BITS_SET(caa->pcb_addr->ceepcb_flags6, 0x8));
+
+	return FALSE;
+}
+
+/** @internal
+ *  Check if z/OS supports the Transactional Execution Facility (TX). We use the CVTTX (0x08) and CVTTXC (0x04) bits in
+ *  the CVT structure for the OS check.
+ *
+ *  @return TRUE if TX is supported; FALSE otherwise.
+ */
+static BOOLEAN
+getS390zOS_supportsTransactionalExecutionFacility(void)
+{
+	/* FLCCVT is an ADDRESS off the PSA structure
+	 * https://www.ibm.com/support/knowledgecenter/en/SSLTBW_2.3.0/com.ibm.zos.v2r3.iead300/PSA-map.htm */
+	uint8_t* CVT = (uint8_t*)(*(uint32_t*)0x10);
+
+	/* CVTFLAG4 is a BITSTRING off the CVT structure containing the CVTTX (0x08), CVTTXC (0x04), and CVTRI (0x02) bits
+	 * https://www.ibm.com/support/knowledgecenter/en/SSLTBW_2.3.0/com.ibm.zos.v2r3.iead100/CVT-map.htm */
+	uint8_t CVTFLAG4 = *(CVT + 0x17B);
+
+	/* Note we check for both constrained and non-constrained transaction support */
+	return J9_ARE_ALL_BITS_SET(CVTFLAG4, 0x0C);
+}
+
+/** @internal
+ *  Check if z/OS supports the Runtime Instrumentation Facility (RI). We use the CVTRI (0x02) bit in the CVT structure
+ *  for the OS check.
+ *
+ *  @return TRUE if RI is supported; FALSE otherwise.
+ */
+static BOOLEAN
+getS390zOS_supportsRuntimeInstrumentationFacility(void)
+{
+	/* FLCCVT is an ADDRESS off the PSA structure
+	 * https://www.ibm.com/support/knowledgecenter/en/SSLTBW_2.3.0/com.ibm.zos.v2r3.iead300/PSA-map.htm */
+	uint8_t* CVT = (uint8_t*)(*(uint32_t*)0x10);
+
+	/* CVTFLAG4 is a BITSTRING off the CVT structure containing the CVTTX (0x08), CVTTXC (0x04), and CVTRI (0x02) bits
+	 * https://www.ibm.com/support/knowledgecenter/en/SSLTBW_2.3.0/com.ibm.zos.v2r3.iead100/CVT-map.htm */
+	uint8_t CVTFLAG4 = *(CVT + 0x17B);
+
+	return J9_ARE_ALL_BITS_SET(CVTFLAG4, 0x02);
+}
+
+/** @internal
+ *  Check if z/OS supports the Guarded Storage Facility (GS). We use the CVTGSF (0x01) bit in the CVT structure
+ *  for the OS check.
+ *
+ *  @return TRUE if GS is supported; FALSE otherwise.
+ */
+static BOOLEAN
+getS390zOS_supportsGuardedStorageFacility(void)
+{
+	/* FLCCVT is an ADDRESS off the PSA structure
+	 * https://www.ibm.com/support/knowledgecenter/en/SSLTBW_2.3.0/com.ibm.zos.v2r3.iead300/PSA-map.htm */
+	uint8_t* CVT = (uint8_t*)(*(uint32_t*)0x10);
+
+	/* CVTFLAG3 is a BITSTRING off the CVT structure containing the CVTGSF (0x01) bit
+	 * https://www.ibm.com/support/knowledgecenter/en/SSLTBW_2.3.0/com.ibm.zos.v2r3.iead100/CVT-map.htm */
+	uint8_t CVTFLAG3 = *(CVT + 0x17A);
+
+	return J9_ARE_ALL_BITS_SET(CVTFLAG3, 0x01);
 }
 #endif /* ifdef J9ZOS390 */
 
@@ -763,77 +854,82 @@ getS390Description(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc)
 /* Check hardware and OS (z/OS only) support for GS (guarded storage), RI (runtime instrumentation) and TE (transactional memory) */
 #if defined(J9ZOS390)
 #define S390_STFLE_BIT (0x80000000 >> 7)
-	uint8_t *cvtptr = (uint8_t *)(*(uint32_t *)16); /* pointer to CVT is at offset +16 of PSA (at address 0) */
-	uint8_t cvttxj = *(cvtptr + 0x17B); /* CVTTX and CVTTXC are at offset +0x17B of CVT, bits 8 and 4, indicating full support */
-	uint8_t cvtgsf = *(cvtptr + 0x17A); /* CVTGSF is at offset +0x17A of CVT */
-
 	/* s390 feature detection requires the store-facility-list-extended (STFLE) instruction which was introduced in z9
 	 * Location 200 is architected such that bit 7 is ON if STFLE instruction is installed */
 	if (J9_ARE_NO_BITS_SET(*(int*) 200, S390_STFLE_BIT)) {
 		return -1;
 	}
-#endif /* defined(J9ZOS390) */
+#elif defined(J9ZTPF)  /* defined(J9ZOS390) */
+	/*
+	 * z/TPF requires OS support for some of the Hardware Capabilities.
+	 * Setting the auxvFeatures capabilities flag directly to mimic the query_auxv call in Linux.
+	 */
+	unsigned long auxvFeatures = J9PORT_HWCAP_S390_HIGH_GPRS|J9PORT_S390_FEATURE_ESAN3|J9PORT_HWCAP_S390_ZARCH|
+			J9PORT_HWCAP_S390_STFLE|J9PORT_HWCAP_S390_MSA|J9PORT_HWCAP_S390_DFP|
+			J9PORT_HWCAP_S390_LDISP|J9PORT_HWCAP_S390_EIMM|J9PORT_HWCAP_S390_ETF3EH;
 
-	/* GS hardwrae support */
-	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_GUARDED_STORAGE)) {
-#if defined(J9ZOS390)
-		/* GS OS support */
-		if (J9_ARE_ALL_BITS_SET(cvtgsf, 0x1)) /* CVTGSF bit is X'01' bit at byte X'17A' off CVT */
-#endif /* defined(J9ZOS390) */
-		{
-			setFeature(desc, J9PORT_S390_FEATURE_GUARDED_STORAGE);
+#elif defined(LINUX) /* defined(J9ZTPF) */
+	/* Some s390 features require OS support on Linux, querying auxv for AT_HWCAP bit-mask of processor capabilities. */
+	unsigned long auxvFeatures = query_auxv(AT_HWCAP);
+#endif /* defined(LINUX) */
 
-			desc->processor = PROCESSOR_S390_GP12;
-		}
+#if (defined(S390) && defined(LINUX))
+	/* OS Support of HPAGE on Linux on Z */
+	if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_HPAGE)){
+		setFeature(desc, J9PORT_S390_FEATURE_HPAGE);
 	}
-
-	/* RI hardware support */
-	if (testSTFLE(portLibrary, 64)) {
-#if defined(J9ZOS390)
-		/* RI OS support */
-		if (J9_ARE_ALL_BITS_SET(cvttxj, 0x2)) /* CVTRI bit is X'02' bit at byte X'17B' off CVT */
-#endif /* defined(J9ZOS390) */
-		{
-			setFeature(desc, J9PORT_S390_FEATURE_RI);
-		}
-	}
-
-	/* TE hardware support */
-	if (testSTFLE(portLibrary, 50) && testSTFLE(portLibrary, 73)) {
-#if defined(J9ZOS390)
-		/* TE OS support */
-		if (J9_ARE_ALL_BITS_SET(cvttxj, 0xC))
-#endif /* defined(J9ZOS390) */
-		{
-			setFeature(desc, J9PORT_S390_FEATURE_TE);
-		}
-	}
-
-	/* HIGH_GPRS support */
-#if defined(OMR_ENV_DATA64)
-	setFeature(desc, J9PORT_S390_FEATURE_HIGH_GPRS);
-#endif /* defined(OMR_ENV_DATA64) */
+#endif /* defined(S390) && defined(LINUX) */
 
 	/* Miscellaneous facility detection */
 
 	if (testSTFLE(portLibrary, 0)) {
-		setFeature(desc, J9PORT_S390_FEATURE_ESAN3);
+#if (defined(S390) && defined(LINUX))
+	/* OS Support for Linux on Z */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_ESAN3))
+#endif /* defined(S390) && defined(LINUX)*/
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_ESAN3);
+		}
 	}
 
 	if (testSTFLE(portLibrary, 2)) {
-		setFeature(desc, J9PORT_S390_FEATURE_ZARCH);
+#if (defined(S390) && defined(LINUX))
+	/* OS Support for Linux on Z */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_ZARCH))
+#endif /* defined(S390) && defined(LINUX)*/
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_ZARCH);
+		}
 	}
 
 	if (testSTFLE(portLibrary, 7)) {
-		setFeature(desc, J9PORT_S390_FEATURE_STFLE);
+#if (defined(S390) && defined(LINUX))
+	/* OS Support for Linux on Z */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_STFLE))
+#endif /* defined(S390) && defined(LINUX)*/
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_STFLE);
+		}
 	}
 
 	if (testSTFLE(portLibrary, 17)) {
-		setFeature(desc, J9PORT_S390_FEATURE_MSA);
+#if (defined(S390) && defined(LINUX))
+	/* OS Support for Linux on Z */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_MSA))
+#endif /* defined(S390) && defined(LINUX)*/
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_MSA);
+		}
 	}
 
 	if (testSTFLE(portLibrary, 42) && testSTFLE(portLibrary, 44)) {
-		setFeature(desc, J9PORT_S390_FEATURE_DFP);
+#if (defined(S390) && defined(LINUX))
+	/* OS Support for Linux on Z */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_DFP))
+#endif /* defined(S390) && defined(LINUX) */
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_DFP);
+		}
 	}
 
 	if (testSTFLE(portLibrary, 32)) {
@@ -874,15 +970,27 @@ getS390Description(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc)
 	/* z990 facility and processor detection */
 
 	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_LONG_DISPLACEMENT)) {
-		setFeature(desc, J9PORT_S390_FEATURE_LONG_DISPLACEMENT);
+#if (defined(S390) && defined(LINUX))
+	/* OS Support for Linux on Z */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_LDISP))
+#endif /* defined(S390) && defined(LINUX) */
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_LONG_DISPLACEMENT);
 
-		desc->processor = PROCESSOR_S390_GP6;
+			desc->processor = PROCESSOR_S390_GP6;
+		}
 	}
 
 	/* z9 facility and processor detection */
 
 	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_EXTENDED_IMMEDIATE)) {
-		setFeature(desc, J9PORT_S390_FEATURE_EXTENDED_IMMEDIATE);
+#if (defined(S390) && defined(LINUX))
+	/* OS Support for Linux on Z */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_EIMM))
+#endif /* defined(S390) && defined(LINUX) */
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_EXTENDED_IMMEDIATE);
+		}
 	}
 
 	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_EXTENDED_TRANSLATION_3)) {
@@ -890,7 +998,13 @@ getS390Description(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc)
 	}
 
 	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_ETF3_ENHANCEMENT)) {
-		setFeature(desc, J9PORT_S390_FEATURE_ETF3_ENHANCEMENT);
+#if (defined(S390) && defined(LINUX))
+	/* OS Support for Linux on Z */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_ETF3EH))
+#endif /* defined(S390) && defined(LINUX) */
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_ETF3_ENHANCEMENT);
+		}
 	}
 
 	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_EXTENDED_IMMEDIATE) &&
@@ -909,6 +1023,18 @@ getS390Description(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc)
 
 	/* z196 facility and processor detection */
 
+	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_HIGH_WORD)) {
+#if (defined(S390) && defined(LINUX))
+		/* OS Support for Linux on Z */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_HIGH_GPRS))
+#endif /* defined(S390) && defined(LINUX)*/
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_HIGH_WORD);
+		}
+
+		desc->processor = PROCESSOR_S390_GP9;
+	}
+
 	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_LOAD_STORE_ON_CONDITION_1)) {
 		setFeature(desc, J9PORT_S390_FEATURE_LOAD_STORE_ON_CONDITION_1);
 
@@ -917,6 +1043,30 @@ getS390Description(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc)
 
 	/* zEC12 facility and processor detection */
 
+	/* TE/TX hardware support */
+	if (testSTFLE(portLibrary, 50) && testSTFLE(portLibrary, 73)) {
+#if defined(J9ZOS390)
+		if (getS390zOS_supportsTransactionalExecutionFacility())
+#elif defined(LINUX) /* LINUX S390 */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_TE))
+#endif /* defined(J9ZOS390) */
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_TE);
+		}
+	}
+
+	/* RI hardware support */
+	if (testSTFLE(portLibrary, 64)) {
+#if defined(J9ZOS390)
+		if (getS390zOS_supportsRuntimeInstrumentationFacility())
+#endif /* defined(J9ZOS390) */
+		{
+#if !defined(J9ZTPF)
+			setFeature(desc, J9PORT_S390_FEATURE_RI);
+#endif /* !defined(J9ZTPF) */
+		}
+	}
+
 	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_MISCELLANEOUS_INSTRUCTION_EXTENSION)) {
 		setFeature(desc, J9PORT_S390_FEATURE_MISCELLANEOUS_INSTRUCTION_EXTENSION);
 
@@ -924,6 +1074,20 @@ getS390Description(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc)
 	}
 
 	/* z13 facility and processor detection */
+
+	if (testSTFLE(portLibrary, 129)) {
+#if defined(J9ZOS390)
+		/* Vector facility requires hardware and OS support */
+		if (getS390zOS_supportsVectorExtensionFacility())
+#elif defined(LINUX) /* LINUX S390 */
+		/* Vector facility requires hardware and OS support */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_VXRS))
+#endif
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_VECTOR_FACILITY);
+			desc->processor = PROCESSOR_S390_GP11;
+		}
+	}
 
 	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_LOAD_STORE_ON_CONDITION_2)) {
 		setFeature(desc, J9PORT_S390_FEATURE_LOAD_STORE_ON_CONDITION_2);
@@ -937,19 +1101,21 @@ getS390Description(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc)
 		desc->processor = PROCESSOR_S390_GP11;
 	}
 
-	if (testSTFLE(portLibrary, 129)) {
-#if defined(J9ZOS390)
-		/* Vector facility requires hardware and OS support */
-		if (getS390zOS_supportsVectorFacility())
-#endif
-		{
-			setFeature(desc, J9PORT_S390_FEATURE_VECTOR_FACILITY);
-		}
-
-		desc->processor = PROCESSOR_S390_GP11;
-	}
-
 	/* z14 facility and processor detection */
+
+	/* GS hardware support */
+	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_GUARDED_STORAGE)) {
+#if defined(J9ZOS390)
+		if (getS390zOS_supportsGuardedStorageFacility())
+#elif defined(LINUX) /* defined(J9ZOS390) */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_GS))
+#endif /* defined(LINUX) */
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_GUARDED_STORAGE);
+
+			desc->processor = PROCESSOR_S390_GP12;
+		}
+	}
 
 	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_MISCELLANEOUS_INSTRUCTION_EXTENSION_2)) {
 		setFeature(desc, J9PORT_S390_FEATURE_MISCELLANEOUS_INSTRUCTION_EXTENSION_2);
@@ -964,15 +1130,33 @@ getS390Description(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc)
 	}
 
 	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_VECTOR_PACKED_DECIMAL)) {
-		setFeature(desc, J9PORT_S390_FEATURE_VECTOR_PACKED_DECIMAL);
+#if defined(J9ZOS390)
+		/* Vector packed decimal requires hardware and OS support (for OS, checking for VEF is sufficient) */
+		if (getS390zOS_supportsVectorExtensionFacility())
+#elif (defined(S390) && defined(LINUX)) /* defined(J9ZOS390) */
+	/* OS Support for Linux on Z */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_VXRS_BCD))
+#endif /* defined(S390) && defined(LINUX) */
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_VECTOR_PACKED_DECIMAL);
 
-		desc->processor = PROCESSOR_S390_GP12;
+			desc->processor = PROCESSOR_S390_GP12;
+		}
 	}
 
 	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_VECTOR_FACILITY_ENHANCEMENT_1)) {
-		setFeature(desc, J9PORT_S390_FEATURE_VECTOR_FACILITY_ENHANCEMENT_1);
+#if defined(J9ZOS390)
+		/* Vector facility enhancement 1 requires hardware and OS support (for OS, checking for VEF is sufficient) */
+		if (getS390zOS_supportsVectorExtensionFacility())
+#elif (defined(S390) && defined(LINUX)) /* defined(J9ZOS390) */
+	/* OS Support for Linux on Z */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_VXRS_EXT))
+#endif /* defined(S390) && defined(LINUX) */
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_VECTOR_FACILITY_ENHANCEMENT_1);
 
-		desc->processor = PROCESSOR_S390_GP12;
+			desc->processor = PROCESSOR_S390_GP12;
+		}
 	}
 
 	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_MSA_EXTENSION_8)) {
@@ -980,19 +1164,71 @@ getS390Description(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc)
 
 		desc->processor = PROCESSOR_S390_GP12;
 	}
+	
+    /* z15 facility and processor detection */
+
+	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_MISCELLANEOUS_INSTRUCTION_EXTENSION_3)) {
+		setFeature(desc, J9PORT_S390_FEATURE_MISCELLANEOUS_INSTRUCTION_EXTENSION_3);
+
+		desc->processor = PROCESSOR_S390_GP13;
+	}
+
+	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_VECTOR_FACILITY_ENHANCEMENT_2)) {
+#if defined(J9ZOS390)
+		if (getS390zOS_supportsVectorExtensionFacility())
+#elif defined(LINUX) && !defined(J9ZTPF) /* defined(J9ZOS390) */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_VXRS))
+#endif /* defined(LINUX) && !defined(J9ZTPF) */
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_VECTOR_FACILITY_ENHANCEMENT_2);
+
+			desc->processor = PROCESSOR_S390_GP13;
+		}
+	}
+
+	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_VECTOR_PACKED_DECIMAL_ENHANCEMENT_FACILITY)) {
+#if defined(J9ZOS390)
+		if (getS390zOS_supportsVectorExtensionFacility())
+#elif defined(LINUX) && !defined(J9ZTPF) /* defined(J9ZOS390) */
+		if (J9_ARE_ALL_BITS_SET(auxvFeatures, J9PORT_HWCAP_S390_VXRS))
+#endif /* defined(LINUX) && !defined(J9ZTPF) */
+		{
+			setFeature(desc, J9PORT_S390_FEATURE_VECTOR_PACKED_DECIMAL_ENHANCEMENT_FACILITY);
+
+			desc->processor = PROCESSOR_S390_GP13;
+		}
+	}
 
 	/* Set Side Effect Facility without setting GP12. This is because
 	 * this GP12-only STFLE bit can also be enabled on zEC12 (GP10)
-	 */ 
+	 */
 	if (testSTFLE(portLibrary, J9PORT_S390_FEATURE_SIDE_EFFECT_ACCESS)) {
 		setFeature(desc, J9PORT_S390_FEATURE_SIDE_EFFECT_ACCESS);
 	}
-	
+
 	desc->physicalProcessor = desc->processor;
 
 	return 0;
 }
 #endif /* (defined(S390) || defined(J9ZOS390)) */
+
+#if defined(RISCV64)
+/**
+ * @internal
+ * Populates J9ProcessorDesc *desc on RISC-V
+ *
+ * @param[in] desc pointer to the struct that will contain the CPU type and features.
+ *
+ * @return 0 on success, -1 on failure
+ */
+static intptr_t
+getRISCV64Description(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc)
+{
+	desc->processor = PROCESOR_RISCV64_UNKNOWN;
+	desc->physicalProcessor = desc->processor;
+	return 0;
+}
+#endif /* defined(RISCV64) */
 
 BOOLEAN
 j9sysinfo_processor_has_feature(struct J9PortLibrary *portLibrary, J9ProcessorDesc *desc, uint32_t feature)
@@ -1101,13 +1337,13 @@ openAndReadInfo(struct J9PortLibrary *portLibrary, char* pathBuffer, size_t path
 				status = J9PORT_ERROR_FILE_OPFAILED;
 			} else {
 				readBuffer[nRead] = '\0';
-			}		
+			}
 		}
 	}
 	return status;
 }
 
-#if (defined(J9X86) || defined(J9HAMMER))
+#if (defined(J9X86) || defined(J9HAMMER) || defined(RISCV64))
 
 char const *cpuPathPattern = "/sys/devices/system/cpu/cpu%d/cache/";
 char const *indexPattern = "index%d/";
@@ -1350,18 +1586,23 @@ getCacheLevels(struct J9PortLibrary *portLibrary, const int32_t cpu)
 	} while (!finish);
 	return result;
 }
-/*  (defined(J9X86) || defined(J9HAMMER) ) */
+/*  (defined(J9X86) || defined(J9HAMMER) || defined(RISCV64)) */
 #elif  defined(AIXPPC)
-static int32_t 
+static int32_t
 getCacheLevels(struct J9PortLibrary *portLibrary,
-	const int32_t cpu) 
+	const int32_t cpu)
 {
 	return 2;
 }
+/* getsystemcfg() isn't supported on i 7.1 so there's no need to define the 
+ * functions `getCacheTypes` & `getCacheSize` on the i-series platforms
+ */
+#if !defined(J9OS_I5_V6R1)
 
-static int32_t 
+
+static int32_t
 getCacheTypes(struct J9PortLibrary *portLibrary,
-	const int32_t cpu, const int32_t level) 
+	const int32_t cpu, const int32_t level)
 {
 	int32_t result = J9PORT_ERROR_SYSINFO_NOT_SUPPORTED;
 	if (1 == level) {
@@ -1382,7 +1623,6 @@ getCacheSize(struct J9PortLibrary *portLibrary,
 	const int32_t cpu, const int32_t level, const int32_t cacheType, const J9CacheQueryCommand query)
 {
 	int32_t result = J9PORT_ERROR_SYSINFO_NOT_SUPPORTED;
-
 	switch (level) {
 	case 1: {
 		/* Note: AIX has split I/D level 1 cache.  Querying UCACHE is invalid. */
@@ -1422,6 +1662,7 @@ getCacheSize(struct J9PortLibrary *portLibrary,
 	}
 	return result;
 }
+#endif /* defined(J9OS_I5_V6R1) */
 #endif /* defined(AIXPPC) */
 
 /*
@@ -1435,11 +1676,66 @@ j9sysinfo_get_cache_info(struct J9PortLibrary *portLibrary, const J9CacheInfoQue
 	int32_t result = J9PORT_ERROR_SYSINFO_NOT_SUPPORTED;
 	Trc_PRT_sysinfo_get_cache_info_enter(query->cmd, query->cpu, query->level, query->cacheType);
 
-#if (defined(J9X86) || defined(J9HAMMER) || defined(AIXPPC))
+#if defined(RISCV64)
+	{
+		/* We need to avoid checking the cache directory as the cache info doesn't exist
+		 * on Linux booted via QEMU (the emulator) while is literally supported on the
+		 * hardware (e.g. HiFive U540). In such case, there is no padding adjustment for
+		 * class objects even if the -XX:-RestrictContended option is specified on the
+		 * command line.
+		 */
+		DIR* cacheDir = opendir("/sys/devices/system/cpu/cpu0/cache");
+		if (NULL != cacheDir) {
+			closedir(cacheDir);
+		} else {
+			Trc_PRT_sysinfo_get_cache_info_exit(result);
+			return result;
+		}
+	}
+#endif
+
+#if defined(OSX)
+	OMRPORT_ACCESS_FROM_J9PORT(portLibrary);
+	switch (query->cmd) {
+	case J9PORT_CACHEINFO_QUERY_LINESIZE:
+		/* ignore the cache type and level, since there is only one line size on MacOS */
+		omrcpu_get_cache_line_size(&result);
+		break;
+	case J9PORT_CACHEINFO_QUERY_CACHESIZE: /* FALLTHROUGH */
+	case J9PORT_CACHEINFO_QUERY_TYPES: /* FALLTHROUGH */
+	case J9PORT_CACHEINFO_QUERY_LEVELS: /* FALLTHROUGH */
+	default:
+		result = J9PORT_ERROR_SYSINFO_NOT_SUPPORTED;
+		break;
+	}
+#elif defined(J9OS_I5_V6R1)
+	switch (query->cmd) {
+	case J9PORT_CACHEINFO_QUERY_LEVELS:
+		result =  getCacheLevels(portLibrary, query->cpu);
+		break;
+	case J9PORT_CACHEINFO_QUERY_LINESIZE:
+	case J9PORT_CACHEINFO_QUERY_CACHESIZE:
+	case J9PORT_CACHEINFO_QUERY_TYPES:
+	default:
+		result = J9PORT_ERROR_SYSINFO_NOT_SUPPORTED;
+		break;
+	}
+#elif (defined(J9X86) || defined(J9HAMMER) || defined(AIXPPC) || defined(RISCV64))
 	switch (query->cmd) {
 	case J9PORT_CACHEINFO_QUERY_LINESIZE:
 	case J9PORT_CACHEINFO_QUERY_CACHESIZE:
 		result =  getCacheSize(portLibrary, query->cpu, query->level, query->cacheType, query->cmd);
+
+#if defined(RISCV64)
+	/* The L1 data cache at "cache/index1" is set up from "/sys/devices/system/cpu/cpu1" on some Linux distro
+	 * (e.g. Debian_riscv) rather than "/sys/devices/system/cpu/cpu0" in which "cache/index1" doesn't exist.
+	 * Note: this is a temporary solution specific to Debian_riscv which won't be used or simply
+	 * removed once we confirm "cpu0/cache/index1" does exist on the latest version of Debian_riscv.
+	 */
+	if (result < 0) {
+		result =  getCacheSize(portLibrary, query->cpu + 1, query->level, query->cacheType, query->cmd);
+	}
+#endif /* defined(RISCV64) */
 		break;
 	case J9PORT_CACHEINFO_QUERY_TYPES:
 		result =  getCacheTypes(portLibrary, query->cpu, query->level);
@@ -1461,6 +1757,24 @@ j9sysinfo_get_cache_info(struct J9PortLibrary *portLibrary, const J9CacheInfoQue
 			omrcpu_get_cache_line_size(&result);
 #endif
 		}
+#elif defined(LINUX) && defined(J9AARCH64)
+	if ((query->cmd == J9PORT_CACHEINFO_QUERY_LINESIZE)
+	&& (query->cacheType == J9PORT_CACHEINFO_DCACHE)
+	&& (query->level == 1)
+	) {
+		/* L1 data cache line size */
+		int32_t rc = (int32_t)sysconf(_SC_LEVEL1_DCACHE_LINESIZE);
+		if (rc > 0) {
+			result = rc;
+		} else if (rc == 0) {
+			/*
+			 * Cache line size is unavailable on some systems
+			 * Use 64 as the default value because Arm Cortex ARMv8-A cores
+			 * have L1 data cache lines of that size
+			 */
+			result = 64;
+		}
+	}
 #endif
 	Trc_PRT_sysinfo_get_cache_info_exit(result);
 	return result;

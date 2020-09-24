@@ -1,12 +1,6 @@
 /*[INCLUDE-IF Sidecar19-SE]*/
-/*[IF Sidecar19-SE]*/
-package com.ibm.jvm.traceformat;
-/*[ELSE]
-package com.ibm.jvm;
-/*[ENDIF]*/
-
 /*******************************************************************************
- * Copyright (c) 2010, 2018 IBM Corp. and others
+ * Copyright (c) 2010, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -26,12 +20,15 @@ package com.ibm.jvm;
  *
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
+/*[IF Sidecar19-SE]*/
+package com.ibm.jvm.traceformat;
+/*[ELSE]
+package com.ibm.jvm;
+/*[ENDIF]*/
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.io.RandomAccessFile;
@@ -54,9 +51,7 @@ import com.ibm.jvm.trace.format.api.TracePointImpl;
 import com.ibm.jvm.trace.format.api.TraceThread;
 
 /**
- * !!! WARNING !!!
- * Adding any new top level classes in this file requires modification to jcl\jcl_build.mk
- * to ensure the new classes are included within traceformat.jar for Java 8.
+ * Support for converting binary trace files to a human readable form.
  */
 public class TraceFormat
 {
@@ -84,7 +79,6 @@ public class TraceFormat
 		ProgramOption.addOption(Verbose.class);
 		ProgramOption.addOption(Debug.class);
 		ProgramOption.addOption(Statistics.class);
-		
 		
 		/* The trace context holds the configuration and state for the parsing */
 		TraceContext context;
@@ -166,6 +160,8 @@ public class TraceFormat
 			return;
 		}
 
+		context.setRecordThreadNames(true);
+
 		if (verbose.booleanValue() || debugLevel.intValue() > 0) {
 			/* we don't set these in the constructor otherwise we see error messages during the retry logic if the block
 			 * size estimate is too small */
@@ -235,8 +231,7 @@ public class TraceFormat
 		
 		/* output the summary information */
 		output.println(context.summary());
-		
-		
+
 		if (summary.booleanValue() && !statistics.booleanValue()) {
 			/* we've requested only the summary so exit here */
 			output.close();
@@ -480,7 +475,6 @@ class Verbose extends ProgramOption {
 	
 }
 
-
 class Statistics extends ProgramOption {
 	boolean statistics;
 	
@@ -528,9 +522,15 @@ class MessageFile extends ProgramOption {
 	List messageFiles = new LinkedList();
 
 	String getDescription() {
-		return "A comma separated list of files containing the trace format strings. By default the following files are used:"+System.getProperty("line.separator")+
-			   "		$JAVA_HOME/lib/J9TraceFormat.dat"+System.getProperty("line.separator")+
-			   "		$JAVA_HOME/lib/TraceFormat.dat";
+		String eol = System.getProperty("line.separator", "\n");
+		return "A comma separated list of files containing the trace format strings. By default the following files are used:" + eol
+			 + "  $JAVA_HOME/lib/J9TraceFormat.dat" + eol
+			 + "  $JAVA_HOME/lib/OMRTraceFormat.dat"
+			 /*[IF !Sidecar18-SE-OpenJ9]*/
+			 + eol
+			 + "  $JAVA_HOME/lib/TraceFormat.dat"
+			 /*[ENDIF] !Sidecar18-SE-OpenJ9 */
+			 ;
 	}
 
 	String getName() {
@@ -554,13 +554,11 @@ class MessageFile extends ProgramOption {
 				token = st.nextToken();
 				/* construct files from the tokens. These files must exist */
 				File datFile = new File(token);
-				if( !datFile.exists() ) {
-					throw new FileNotFoundException(token);
+				if (!datFile.exists()) {
+					throw new IllegalArgumentException("dat file \"" + token + "\" not found");
 				}
 				messageFiles.add(datFile);
 			}
-		} catch (FileNotFoundException e) {
-			throw new IllegalArgumentException("dat file \""+token+"\" not found");
 		} catch (SecurityException e) {
 			throw new IllegalArgumentException("The application does not have permission to access the specified dat file, \""+token+"\"");
 		}
@@ -571,11 +569,14 @@ class MessageFile extends ProgramOption {
 		dir = dir.concat(File.separator).concat("lib").concat(File.separator);
 		
 		setValue(dir + "J9TraceFormat.dat");
+		setValue(dir + "OMRTraceFormat.dat");
+		/*[IF !Sidecar18-SE-OpenJ9]*/
 		try {
 			setValue(dir + "TraceFormat.dat");
 		} catch (IllegalArgumentException e) {
 			System.out.println("Warning: " + e.getMessage());
 		}
+		/*[ENDIF] !Sidecar18-SE-OpenJ9 */
 	}
 }
 
@@ -958,7 +959,7 @@ abstract class ProgramOption {
 
 	/* If an option is allowed but isn't specified on the command line the it is still added to the
 	 * options set, but with it's default value. If a subclass describes an optional argument then this
-	 * method should be overriden with a default value.
+	 * method should be overridden with a default value.
 	 */
 	void setDefault() {
 		throw new IllegalArgumentException("No default value available for "+getName());

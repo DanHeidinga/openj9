@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -61,9 +61,33 @@ static char const *statusNames[] = {
 
 static j9object_t setInitStatus(J9VMThread *currentThread, J9Class *clazz, UDATA status, j9object_t initializationLock);
 static void classInitStateMachine(J9VMThread *currentThread, J9Class *clazz, J9ClassInitState desiredState);
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
-static bool verifyNestHost(J9Class *clazz, J9VMThread *vmThread);
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+static BOOLEAN
+compareRAMClasses(void *item, J9StackElement *currentElement)
+{
+	BOOLEAN rc = FALSE;
+
+	if (currentElement->element == item) {
+		rc = TRUE;
+	}
+
+	return rc;
+}
+
+static BOOLEAN
+checkForCyclicalVerification(J9VMThread *currentThread, J9ClassLoader *classLoader, J9Class *ramClass)
+{
+	J9JavaVM *javaVM = currentThread->javaVM;
+	return verifyLoadingOrLinkingStack(currentThread, classLoader, ramClass, &currentThread->verificationStack, &compareRAMClasses, javaVM->verificationMaxStack, javaVM->valueTypeVerificationStackPool, FALSE, FALSE);
+}
+
+static void
+popFromVerificationStack(J9VMThread *currentThread)
+{
+	popLoadingOrLinkingStack(currentThread, &currentThread->verificationStack, currentThread->javaVM->valueTypeVerificationStackPool);
+}
+#endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
 
 void
 initializeImpl(J9VMThread *currentThread, J9Class *clazz)
@@ -93,7 +117,7 @@ initializeImpl(J9VMThread *currentThread, J9Class *clazz)
 	}
 
 	if (J9ROMCLASS_HAS_CLINIT(clazz->romClass)) {
-		sendClinit(currentThread, clazz, 0, 0, 0);
+		sendClinit(currentThread, clazz);
 		clazz = VM_VMHelpers::currentClass(clazz);
 		if (VM_VMHelpers::exceptionPending(currentThread)) {
 			TRIGGER_J9HOOK_VM_CLASS_INITIALIZE_FAILED(vm->hookInterface, currentThread, clazz);
@@ -137,7 +161,9 @@ performVerification(J9VMThread *currentThread, J9Class *clazz)
 		 * - Verify every class whose bytecodes have been modified
 		 * - Do not verify bootstrap classes if the appropriate runtime flag is set
 		 */
-		if (!J9ROMCLASS_IS_UNSAFE(romClass) && (0 == (romClass->optionalFlags & J9_ROMCLASS_OPTINFO_VERIFY_EXCLUDE))) {
+		if ((!J9CLASS_IS_EXEMPT_FROM_VALIDATION(clazz))
+			&& J9_ARE_NO_BITS_SET(romClass->optionalFlags, J9_ROMCLASS_OPTINFO_VERIFY_EXCLUDE)
+		) {
 			J9BytecodeVerificationData * bcvd = vm->bytecodeVerificationData;
 			if ((J9ROMCLASS_HAS_MODIFIED_BYTECODES(romClass) ||
 				(0 == (bcvd->verificationFlags & J9_VERIFY_SKIP_BOOTSTRAP_CLASSES)) ||
@@ -152,7 +178,7 @@ performVerification(J9VMThread *currentThread, J9Class *clazz)
 				clazz = VM_VMHelpers::currentClass(clazz);
 				bcvd->vmStruct = NULL;
 				if (0 != verifyResult) {
-					/* INL had a check for Object here which is unncessary in SE */
+					/* INL had a check for Object here which is unnecessary in SE */
 					if (-2 == verifyResult) {
 						omrthread_monitor_exit(bcvd->verifierMutex);
 						/* vmStruct is already up to date */
@@ -175,11 +201,7 @@ performVerification(J9VMThread *currentThread, J9Class *clazz)
 					setCurrentException(currentThread, J9VMCONSTANTPOOL_JAVALANGVERIFYERROR, (UDATA*)verifyErrorStringObject);
 					goto done;
 				}
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
-				if (false == verifyNestHost(clazz, currentThread)) {
-					goto done;
-				}
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+
 				Trc_VM_verification_End(currentThread, J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(clazz->romClass)), J9UTF8_DATA(J9ROMCLASS_CLASSNAME(clazz->romClass)), clazz->classLoader);
 			} else {
 				Trc_VM_performVerification_unverifiable(currentThread);
@@ -189,68 +211,62 @@ performVerification(J9VMThread *currentThread, J9Class *clazz)
 		Trc_VM_performVerification_noVerify(currentThread);
 	}
 
-	{
+	if (J9_ARE_ALL_BITS_SET(romClass->extraModifiers, J9AccClassNeedsStaticConstantInit)) {
 		/* Prepare the class - the event is sent after the class init status has been updated */
 		Trc_VM_performVerification_prepareClass(currentThread);
 		romClass = clazz->romClass;
-		UDATA *staticAddress = clazz->ramStatics;
+		UDATA *objectStaticAddress = clazz->ramStatics;
+		UDATA *singleStaticAddress = objectStaticAddress + romClass->objectStaticCount;
+		U_64 *doubleStaticAddress = (U_64*)(singleStaticAddress + romClass->singleScalarStaticCount);
+
+#if !defined(J9VM_ENV_DATA64)
+		if (0 != ((UDATA)doubleStaticAddress & (sizeof(U_64) - 1))) {
+			/* Increment by a U_32 to ensure 64 bit aligned */
+			doubleStaticAddress = (U_64*)(((U_32*)doubleStaticAddress) + 1);
+		}
+#endif
+
 		/* initialize object slots first */
 		J9ROMFieldWalkState fieldWalkState;
 		J9ROMFieldShape *field = romFieldsStartDo(romClass, &fieldWalkState);
 		while (field != NULL) {
 			U_32 modifiers = field->modifiers;
-			if (J9_ARE_ALL_BITS_SET(modifiers, (J9AccStatic | J9FieldFlagObject))) {
-				if (J9_ARE_ALL_BITS_SET(modifiers, J9FieldFlagConstant)) {
-					U_32 index = *(U_32*)romFieldInitialValueAddress(field);
-					J9ConstantPool *ramConstantPool = J9_CP_FROM_CLASS(clazz);
-					J9RAMStringRef *ramCPEntry = ((J9RAMStringRef*)ramConstantPool) + index;
-					j9object_t stringObject = ramCPEntry->stringObject;
-					if (NULL == stringObject) {
-						resolveStringRef(currentThread, ramConstantPool, index, J9_RESOLVE_FLAG_RUNTIME_RESOLVE);
-						clazz = VM_VMHelpers::currentClass(clazz);
-						if (VM_VMHelpers::exceptionPending(currentThread)) {
-							goto done;
+			if (J9_ARE_ALL_BITS_SET(modifiers, J9AccStatic)) {
+				const bool hasConstantValue = J9_ARE_ALL_BITS_SET(modifiers, J9FieldFlagConstant);
+			
+				if (J9_ARE_ALL_BITS_SET(modifiers, J9FieldFlagObject)) {
+					if (hasConstantValue) {
+						U_32 index = *(U_32*)romFieldInitialValueAddress(field);
+						J9ConstantPool *ramConstantPool = J9_CP_FROM_CLASS(clazz);
+						J9RAMStringRef *ramCPEntry = ((J9RAMStringRef*)ramConstantPool) + index;
+						j9object_t stringObject = ramCPEntry->stringObject;
+						if (NULL == stringObject) {
+							resolveStringRef(currentThread, ramConstantPool, index, J9_RESOLVE_FLAG_RUNTIME_RESOLVE);
+							clazz = VM_VMHelpers::currentClass(clazz);
+							if (VM_VMHelpers::exceptionPending(currentThread)) {
+								goto done;
+							}
+							stringObject = ramCPEntry->stringObject;
 						}
-						stringObject = ramCPEntry->stringObject;
+						J9STATIC_OBJECT_STORE(currentThread, clazz, (j9object_t*)objectStaticAddress, stringObject);
+						/* Overwriting NULL with a string that is in immortal, so no exception can occur */
 					}
-					J9STATIC_OBJECT_STORE(currentThread, clazz, (j9object_t*)staticAddress, stringObject);
-					/* Overwriting NULL with a string that is in immortal, so no exception can occur */
-				}
-				staticAddress += 1;
-			}
-			field = romFieldsNextDo(&fieldWalkState);
-		}
-		/* initialize single scalar slots next */
-		field = romFieldsStartDo(romClass, &fieldWalkState);
-		while (field != NULL) {
-			U_32 modifiers = field->modifiers;
-			if (J9AccStatic == (modifiers & (J9AccStatic | J9FieldFlagObject | J9FieldSizeDouble))) {
-				if (J9_ARE_ALL_BITS_SET(modifiers, J9FieldFlagConstant)) {
-					*(U_32*)staticAddress = *(U_32*)romFieldInitialValueAddress(field);
-				}
-				staticAddress += 1;
-			}
-			field = romFieldsNextDo(&fieldWalkState);
-		}
-		/* initialize double scalar slots last - 8-align the storage before starting */
-#if !defined(J9VM_ENV_DATA64)
-		if (0 != ((UDATA)staticAddress & (sizeof(U_64) - 1))) {
-			staticAddress += 1;
-		}
-#endif
-		{
-			U_64 *doubleStaticAddress = (U_64*)staticAddress;
-			field = romFieldsStartDo(romClass, &fieldWalkState);
-			while (field != NULL) {
-				U_32 modifiers = field->modifiers;
-				if (J9_ARE_ALL_BITS_SET(modifiers, (J9AccStatic | J9FieldSizeDouble))) {
-					if (J9_ARE_ALL_BITS_SET(modifiers, J9FieldFlagConstant)) {
+					objectStaticAddress += 1;
+				} else if (0 == (modifiers & (J9FieldFlagObject | J9FieldSizeDouble))) {
+					if (hasConstantValue) {
+						*(U_32*)singleStaticAddress = *(U_32*)romFieldInitialValueAddress(field);
+					}
+					singleStaticAddress += 1;
+				} else if (J9_ARE_ALL_BITS_SET(modifiers, J9FieldSizeDouble)) {
+					if (hasConstantValue) {
 						*doubleStaticAddress = *(U_64*)romFieldInitialValueAddress(field);
 					}
 					doubleStaticAddress += 1;
+				} else {
+					// Can't happen now - maybe in the future with valuetypes?
 				}
-				field = romFieldsNextDo(&fieldWalkState);
 			}
+			field = romFieldsNextDo(&fieldWalkState);
 		}
 	}
 done:
@@ -384,9 +400,104 @@ doVerify:
 						goto done;
 					}
 				}
+
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+				/* verify flattenable fields */
+				if (NULL != clazz->flattenedClassCache) {
+					UDATA numberOfFlattenedFields = clazz->flattenedClassCache->numberOfEntries;
+
+					calculateFlattenedFieldAddresses(currentThread, clazz);
+
+					for (UDATA i = 0; i < numberOfFlattenedFields; i++) {
+						J9FlattenedClassCacheEntry *entry = J9_VM_FCC_ENTRY_FROM_CLASS(clazz, i);
+						J9Class *entryClazz = NULL;
+						bool isStatic = J9_VM_FCC_ENTRY_IS_STATIC_FIELD(entry);
+
+						if (isStatic) {
+							J9UTF8 *signature = J9ROMFIELDSHAPE_SIGNATURE(entry->field);
+							U_8 *signatureChars = J9UTF8_DATA(signature);
+
+							PUSH_OBJECT_IN_SPECIAL_FRAME(currentThread, initializationLock);
+							J9Class *valueClass = internalFindClassUTF8(currentThread, signatureChars + 1, J9UTF8_LENGTH(signature) - 2, clazz->classLoader, J9_FINDCLASS_FLAG_THROW_ON_FAIL);
+							initializationLock = POP_OBJECT_IN_SPECIAL_FRAME(currentThread);
+							clazz = VM_VMHelpers::currentClass(clazz);
+							if (NULL == valueClass) {
+								initializationLock = setInitStatus(currentThread, clazz, J9ClassInitUnverified, initializationLock);
+								clazz = VM_VMHelpers::currentClass(clazz);
+								goto done;
+							}
+
+							/* need to check if it has access */
+							J9ROMClass *valueROMClass = valueClass->romClass;
+							bool classIsPublic = J9_ARE_ALL_BITS_SET(valueROMClass->modifiers, J9AccPublic);
+
+							if ((!classIsPublic && (clazz->packageID != valueClass->packageID))
+								|| (classIsPublic && (J9_VISIBILITY_ALLOWED != checkModuleAccess(currentThread, vm, clazz->romClass, clazz->module, valueROMClass, valueClass->module, valueClass->packageID, 0)))
+							) {
+								J9UTF8 *romClassName = J9ROMCLASS_CLASSNAME(valueROMClass);
+								PUSH_OBJECT_IN_SPECIAL_FRAME(currentThread, initializationLock);
+								setCurrentExceptionNLSWithArgs(currentThread, J9NLS_VM_CLASS_LOADING_ERROR_INVISIBLE_CLASS_OR_INTERFACE, J9VMCONSTANTPOOL_JAVALANGILLEGALACCESSERROR, J9UTF8_LENGTH(romClassName), J9UTF8_DATA(romClassName));
+								initializationLock = POP_OBJECT_IN_SPECIAL_FRAME(currentThread);
+								clazz = VM_VMHelpers::currentClass(clazz);
+								initializationLock = setInitStatus(currentThread, clazz, J9ClassInitUnverified, initializationLock);
+								clazz = VM_VMHelpers::currentClass(clazz);
+								goto done;
+							}
+
+							entry->clazz = (J9Class *)((UDATA)valueClass | (UDATA)entry->clazz);
+						}
+						entryClazz = J9_VM_FCC_CLASS_FROM_ENTRY(entry);
+
+						if (isStatic) {
+							omrthread_monitor_enter(vm->valueTypeVerificationMutex);
+							BOOLEAN cycleDetected = checkForCyclicalVerification(currentThread, entryClazz->classLoader, entryClazz);
+							omrthread_monitor_exit(vm->valueTypeVerificationMutex);
+
+							/* It is legal for verification cycles to occur when verifying static flattenable fields
+							 * as direct and indirect recursive definitions of flattenable static fields are allowed.
+							 * When a cycle is detected skip the verification so we don't stack overflow.
+							 */
+							if (cycleDetected) {
+								continue;
+							}
+						}
+
+						Trc_VM_classInitStateMachine_verifyFlattenableField(currentThread, entryClazz);
+						PUSH_OBJECT_IN_SPECIAL_FRAME(currentThread, initializationLock);
+						classInitStateMachine(currentThread, entryClazz, J9_CLASS_INIT_VERIFIED);
+						initializationLock = POP_OBJECT_IN_SPECIAL_FRAME(currentThread);
+						clazz = VM_VMHelpers::currentClass(clazz);
+
+						if (isStatic) {
+							omrthread_monitor_enter(vm->valueTypeVerificationMutex);
+							popFromVerificationStack(currentThread);
+							omrthread_monitor_exit(vm->valueTypeVerificationMutex);
+						}
+
+						if (VM_VMHelpers::exceptionPending(currentThread)) {
+							initializationLock = setInitStatus(currentThread, clazz, J9ClassInitUnverified, initializationLock);
+							clazz = VM_VMHelpers::currentClass(clazz);
+							goto done;
+						}
+					}
+				}
+#endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
+
 				/* Verify this class */
 				PUSH_OBJECT_IN_SPECIAL_FRAME(currentThread, initializationLock);
 				performVerification(currentThread, clazz);
+				/* Validate class relationships if -XX:+ClassRelationshipVerifier is used and if the classfile major version is at least 51 (Java 7) */
+				if (J9_ARE_ANY_BITS_SET(vm->extendedRuntimeFlags2, J9_EXTENDED_RUNTIME2_ENABLE_CLASS_RELATIONSHIP_VERIFIER) && (clazz->romClass->majorVersion >= 51)) {
+					U_8 *clazzName = J9UTF8_DATA(J9ROMCLASS_CLASSNAME(clazz->romClass));
+					UDATA clazzNameLength = J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(clazz->romClass));
+					J9Class *validateResult = j9bcv_validateClassRelationships(currentThread, clazz->classLoader, clazzName, clazzNameLength, clazz);
+					if (NULL != validateResult) {
+						U_8 *resultName = J9UTF8_DATA(J9ROMCLASS_CLASSNAME(validateResult->romClass));
+						UDATA resultNameLength = J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(validateResult->romClass));
+						Trc_VM_classInitStateMachine_classRelationshipValidationFailed(currentThread, clazzNameLength, clazzName, resultNameLength, resultName);
+						setCurrentExceptionNLSWithArgs(currentThread, J9NLS_VM_CLASS_RELATIONSHIP_INVALID, J9VMCONSTANTPOOL_JAVALANGVERIFYERROR, clazzNameLength, clazzName, resultNameLength, resultName);
+					}
+				}
 				initializationLock = POP_OBJECT_IN_SPECIAL_FRAME(currentThread);
 				clazz = VM_VMHelpers::currentClass(clazz);
 				if (VM_VMHelpers::exceptionPending(currentThread)) {
@@ -399,6 +510,24 @@ doVerify:
 				if (NULL == initializationLock) {
 					goto done;
 				}
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+				if (J9_IS_J9CLASS_VALUETYPE(clazz)) {
+					PUSH_OBJECT_IN_SPECIAL_FRAME(currentThread, initializationLock);
+					/* Preparation is the earliest point where the defaultValue would needed. 
+					* I.e pre-filling static fields. Therefore, the defaultValue must be allocated at 
+					* the end of verification 
+					*/
+					j9object_t defaultValue = vm->memoryManagerFunctions->J9AllocateObject(currentThread, clazz, J9_GC_ALLOCATE_OBJECT_TENURED | J9_GC_ALLOCATE_OBJECT_NON_INSTRUMENTABLE);
+					initializationLock = POP_OBJECT_IN_SPECIAL_FRAME(currentThread);
+					clazz = VM_VMHelpers::currentClass(clazz);
+					if (NULL == defaultValue) {
+						setHeapOutOfMemoryError(currentThread);
+						goto done;
+					}
+					j9object_t *defaultValueAddress = &(clazz->flattenedClassCache->defaultValue);
+					J9STATIC_OBJECT_STORE(currentThread, clazz, defaultValueAddress, defaultValue);
+				}
+#endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
 				if (((UDATA)currentThread | J9ClassInitUnverified) == clazz->initializeStatus) {
 					initializationLock = setInitStatus(currentThread, clazz, J9ClassInitUnprepared, initializationLock);
 					clazz = VM_VMHelpers::currentClass(clazz);
@@ -451,6 +580,65 @@ doVerify:
 					}
 					iTable = iTable->next;
 				}
+
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+				/* prepare flattenable fields */
+				if (NULL != clazz->flattenedClassCache) {
+					UDATA numberOfFlattenedFields = clazz->flattenedClassCache->numberOfEntries;
+
+					for (UDATA i = 0; i < numberOfFlattenedFields; i++) {
+						J9FlattenedClassCacheEntry *entry = J9_VM_FCC_ENTRY_FROM_CLASS(clazz, i);
+						J9Class *entryClazz = J9_VM_FCC_CLASS_FROM_ENTRY(entry);
+
+						bool isStatic = J9_VM_FCC_ENTRY_IS_STATIC_FIELD(entry);
+
+						if (isStatic) {
+							initializationLock = enterInitializationLock(currentThread, initializationLock);
+							clazz = VM_VMHelpers::currentClass(clazz);
+
+							if (NULL == initializationLock) {
+								goto done;
+							}
+
+							clazz->initializeStatus = (UDATA)currentThread | J9ClassInitUnprepared;
+							VM_ObjectMonitor::exitObjectMonitor(currentThread, initializationLock);
+						}
+
+						Trc_VM_classInitStateMachine_prepareFlattenableField(currentThread, entryClazz);
+
+						PUSH_OBJECT_IN_SPECIAL_FRAME(currentThread, initializationLock);
+						classInitStateMachine(currentThread, entryClazz, J9_CLASS_INIT_PREPARED);
+						initializationLock = POP_OBJECT_IN_SPECIAL_FRAME(currentThread);
+						clazz = VM_VMHelpers::currentClass(clazz);
+
+						j9object_t exception = currentThread->currentException;
+						if (isStatic) {
+							PUSH_OBJECT_IN_SPECIAL_FRAME(currentThread, exception);
+							initializationLock = enterInitializationLock(currentThread, initializationLock);
+							clazz = VM_VMHelpers::currentClass(clazz);
+
+							if (NULL == initializationLock) {
+								goto done;
+							}
+
+							clazz->initializeStatus = J9ClassInitUnprepared;
+							VM_ObjectMonitor::exitObjectMonitor(currentThread, initializationLock);
+							exception = POP_OBJECT_IN_SPECIAL_FRAME(currentThread);
+						}
+						currentThread->currentException = exception;
+
+						if (VM_VMHelpers::exceptionPending(currentThread)) {
+							goto done;
+						}
+
+						if (isStatic) {
+							classPrepareWithWithUnflattenedFlattenables(currentThread, clazz, entry, entryClazz);
+						}
+					}
+				}
+
+#endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
+
 				/* Prepare this class */
 				initializationLock = enterInitializationLock(currentThread, initializationLock);
 				clazz = VM_VMHelpers::currentClass(clazz);
@@ -471,7 +659,14 @@ doVerify:
 				break;
 			}
 			case J9ClassInitFailed: {
-				sendInitializationAlreadyFailed(currentThread, clazz, 0, 0, 0);
+				/* J9ClassInitFailed can only be set when unlockedStatus is J9ClassInitNotInitialized, and desiredState is J9_CLASS_INIT_INITIALIZED.
+				 * J9ClassInitFailed can be ignored if desiredState is not J9_CLASS_INIT_INITIALIZED, i.e., J9_CLASS_INIT_VERIFIED or J9_CLASS_INIT_PREPARED.
+				 */
+				if (desiredState < J9_CLASS_INIT_INITIALIZED) {
+					Trc_VM_classInitStateMachine_desiredStateReached(currentThread);
+				} else {
+					sendInitializationAlreadyFailed(currentThread, clazz);
+				}
 				goto done;
 			}
 			case J9ClassInitNotInitialized: {
@@ -540,6 +735,28 @@ doVerify:
 						iTable = iTable->next;
 					}
 				}
+
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+				/* init flattenable fields */
+				if (NULL != clazz->flattenedClassCache) {
+					UDATA numberOfFlattenedFields = clazz->flattenedClassCache->numberOfEntries;
+
+					for (UDATA i = 0; i < numberOfFlattenedFields; i++) {
+						J9FlattenedClassCacheEntry *entry = J9_VM_FCC_ENTRY_FROM_CLASS(clazz, i);
+						J9Class *entryClazz = J9_VM_FCC_CLASS_FROM_ENTRY(entry);
+						Trc_VM_classInitStateMachine_initFlattenableField(currentThread, entryClazz);
+						PUSH_OBJECT_IN_SPECIAL_FRAME(currentThread, initializationLock);
+						classInitStateMachine(currentThread, entryClazz, J9_CLASS_INIT_INITIALIZED);
+						initializationLock = POP_OBJECT_IN_SPECIAL_FRAME(currentThread);
+						clazz = VM_VMHelpers::currentClass(clazz);
+
+						if (VM_VMHelpers::exceptionPending(currentThread)) {
+							goto initFailed;
+						}
+					}
+				}
+#endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
+
 				/* Initialize this class */
 				PUSH_OBJECT_IN_SPECIAL_FRAME(currentThread, initializationLock);
 				initializeImpl(currentThread, clazz);
@@ -551,7 +768,7 @@ initFailed:
 					j9object_t throwable = currentThread->currentException;
 					currentThread->currentException = NULL;
 					PUSH_OBJECT_IN_SPECIAL_FRAME(currentThread, initializationLock);
-					sendRecordInitializationFailure(currentThread, clazz, throwable, 0, 0);
+					sendRecordInitializationFailure(currentThread, clazz, throwable);
 					initializationLock = POP_OBJECT_IN_SPECIAL_FRAME(currentThread);
 					clazz = VM_VMHelpers::currentClass(clazz);
 					initializationLock = setInitStatus(currentThread, clazz, J9ClassInitFailed, initializationLock);
@@ -619,60 +836,4 @@ done:
 	Trc_VM_classInitStateMachine_Exit(currentThread);
 	return;
 }
-
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
-static bool
-verifyNestHost(J9Class *clazz, J9VMThread *vmThread)
-{
-	J9Class *nestHost = clazz->nestHost;
-	bool verified = false;
-
-	/* Verification only needed if class's nest host is not itself */
-	if (clazz == nestHost) {
-		verified = true;
-	} else {
-		J9ROMClass *romClass = clazz->romClass;
-		J9UTF8 *className = J9ROMCLASS_CLASSNAME(romClass);
-		U_32 moduleName = 0;
-		U_32 nlsNumber = 0;
-
-		/* Nest host must have same classloader & package */
-		if (clazz->classLoader != nestHost->classLoader) {
-			Trc_VM_CreateRAMClassFromROMClass_nestHostNotSameClassLoader(vmThread, nestHost, nestHost->classLoader, clazz->classLoader);
-			moduleName = J9NLS_VM_NEST_HOST_HAS_DIFFERENT_CLASSLOADER__MODULE;
-			nlsNumber = J9NLS_VM_NEST_HOST_HAS_DIFFERENT_CLASSLOADER__ID;
-		} else if (clazz->packageID != nestHost->packageID) {
-			Trc_VM_CreateRAMClassFromROMClass_nestHostNotSamePackage(vmThread, nestHost, nestHost->classLoader, clazz->classLoader);
-			moduleName = J9NLS_VM_NEST_HOST_HAS_DIFFERENT_PACKAGE__MODULE;
-			nlsNumber = J9NLS_VM_NEST_HOST_HAS_DIFFERENT_PACKAGE__ID;
-		} else {
-			/* The nest host must have a nestmembers attribute that includes this class. */
-			J9SRP *nestMembers = J9ROMCLASS_NESTMEMBERS(nestHost->romClass);
-			U_16 nestMemberCount = nestHost->romClass->nestMemberCount;
-			for (U_16 i = 0; i < nestMemberCount; i++) {
-				J9UTF8 *nestMemberName = NNSRP_GET(nestMembers[i], J9UTF8*);
-				if (J9UTF8_EQUALS(className, nestMemberName)) {
-					verified = true;
-					break;
-				}
-			}
-			if (!verified) {
-				Trc_VM_CreateRAMClassFromROMClass_nestHostNotVerified(vmThread, nestHost, nestHost->classLoader, clazz->classLoader, className);
-				moduleName = J9NLS_VM_NEST_MEMBER_NOT_CLAIMED_BY_NEST_HOST__MODULE;
-				nlsNumber = J9NLS_VM_NEST_MEMBER_NOT_CLAIMED_BY_NEST_HOST__ID;
-			}
-		}
-
-		if (!verified) {
-			J9UTF8 *nestHostName = J9ROMCLASS_NESTHOSTNAME(romClass);
-			setCurrentExceptionNLSWithArgs(vmThread,
-					moduleName, nlsNumber,
-					J9VMCONSTANTPOOL_JAVALANGVERIFYERROR,
-					J9UTF8_LENGTH(className),J9UTF8_DATA(className),
-					J9UTF8_LENGTH(nestHostName), J9UTF8_DATA(className));
-		}
-	}
-	return verified;
-}
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
 } /* extern "C" */

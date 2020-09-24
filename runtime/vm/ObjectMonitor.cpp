@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2018 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -53,10 +53,15 @@ static bool
 spinOnTryEnter(J9VMThread *currentThread, J9ObjectMonitor *objectMonitor, j9objectmonitor_t volatile *lwEA, j9object_t object);
 
 void
-clearLockWord(J9VMThread *currentThread, j9objectmonitor_t *lockWord)
+monitorExitWriteBarrier()
 {
 	VM_AtomicSupport::writeBarrier();
-	*lockWord = 0;
+}
+
+void
+incrementCancelCounter(J9Class *clazz)
+{
+	VM_ObjectMonitor::incrementCancelCounter(clazz);
 }
 
 /*
@@ -127,19 +132,20 @@ restoreBlockingEnterObject(J9VMThread *currentThread, bool collapseFrame)
  *
  * @return the object
  */
-IDATA
+UDATA
 objectMonitorEnterBlocking(J9VMThread *currentThread)
 {
 	Trc_VM_objectMonitorEnterBlocking_Entry(currentThread);
-	IDATA result = 0;
+	UDATA result = 0;
 	j9object_t object = J9VMTHREAD_BLOCKINGENTEROBJECT(currentThread, currentThread);
+	J9Class *ramClass = J9OBJECT_CLAZZ(currentThread, object);
 	/* Throughout this function, note that inlineGetLockAddress cannot run into out of memory case because
 	 * an entry in monitor table will have been created by the earlier call in objectMonitorEnterNonBlocking.
 	 */
 #if defined(J9VM_THR_LOCK_RESERVATION)
 	{
 		j9objectmonitor_t volatile *lwEA = VM_ObjectMonitor::inlineGetLockAddress(currentThread, object);
-		while (OBJECT_HEADER_LOCK_RESERVED == (*lwEA & (OBJECT_HEADER_LOCK_RESERVED + OBJECT_HEADER_LOCK_INFLATED))) {
+		while (OBJECT_HEADER_LOCK_RESERVED == (J9_LOAD_LOCKWORD(currentThread, lwEA) & (OBJECT_HEADER_LOCK_RESERVED + OBJECT_HEADER_LOCK_INFLATED))) {
 			Trc_VM_objectMonitorEnterBlocking_reservedOnEntry(currentThread);
 			cancelLockReservation(currentThread);
 			/* calculate the new lock word, since the object may have moved */
@@ -195,11 +201,37 @@ restart:
 			}
 			/* In a Concurrent GC where monitor object can *move* in a middle of GC cycle,
 			 * we need a proper barrier to get an up-to-date location of the monitor object */
-			j9objectmonitor_t volatile *lwEA = VM_ObjectMonitor::inlineGetLockAddress(currentThread, J9MONITORTABLE_OBJECT_LOAD(currentThread, &((J9ThreadMonitor*)monitor)->userData));
-			j9objectmonitor_t lockInLoop = *lwEA;
+			j9objectmonitor_t volatile *lwEA = VM_ObjectMonitor::inlineGetLockAddress(currentThread, J9WEAKROOT_OBJECT_LOAD(currentThread, &((J9ThreadMonitor*)monitor)->userData));
+			j9objectmonitor_t lockInLoop = J9_LOAD_LOCKWORD(currentThread, lwEA);
+			/* Change lockword from Learning to Flat if in Learning state. */
+			while (OBJECT_HEADER_LOCK_LEARNING == (lockInLoop & (OBJECT_HEADER_LOCK_LEARNING | OBJECT_HEADER_LOCK_INFLATED))) {
+				j9objectmonitor_t newFlatLock;
+				if (0 == J9_FLATLOCK_COUNT(lockInLoop)) {
+					/* Lock is currently unlocked so convert to Flat-Unlocked which is all 0s. */
+					newFlatLock = (j9objectmonitor_t)(UDATA)0;
+				} else {
+					/* Clears the Learning bit to convert the lock to Flat state.
+					 * First clears the bits under OBJECT_HEADER_LOCK_RECURSION_MASK then fills in the new RC.
+					 * This is done to reclaim the bits used for the learning counter that are no longer used under Flat.
+					 * For the same logical recursion count, the value encoded in the RC bits is one lower under
+					 * Flat compared to Learning so the new RC field is one lower than before the conversion to flat. */
+					newFlatLock = (lockInLoop & ~(j9objectmonitor_t)(OBJECT_HEADER_LOCK_LEARNING | OBJECT_HEADER_LOCK_RECURSION_MASK)) |
+					              ((J9_FLATLOCK_COUNT(lockInLoop) - 1) << OBJECT_HEADER_LOCK_V2_RECURSION_OFFSET);
+				}
+
+				j9objectmonitor_t const oldValue = lockInLoop;
+				lockInLoop = VM_ObjectMonitor::compareAndSwapLockword(currentThread, lwEA, lockInLoop, newFlatLock);
+				if (oldValue == lockInLoop) {
+					/* Transition from Learning to Flat occurred so the Cancel Counter in the object's J9Class is incremented by 1. */
+					VM_ObjectMonitor::incrementCancelCounter(ramClass);
+					break;
+				}
+			}
+			lockInLoop = J9_LOAD_LOCKWORD(currentThread, lwEA);
 #if defined(J9VM_THR_LOCK_RESERVATION)
 			/* has the lock become reserved? */
-			if (OBJECT_HEADER_LOCK_RESERVED == (*lwEA & (OBJECT_HEADER_LOCK_RESERVED + OBJECT_HEADER_LOCK_INFLATED))) {
+			/* TODO: Use lockInLoop instead of another read? */
+			if (OBJECT_HEADER_LOCK_RESERVED == (J9_LOAD_LOCKWORD(currentThread, lwEA) & (OBJECT_HEADER_LOCK_RESERVED + OBJECT_HEADER_LOCK_INFLATED))) {
 				Trc_VM_objectMonitorEnterBlocking_reservedInLoop(currentThread);
 				SET_IGNORE_ENTER(monitor);
 				omrthread_monitor_exit_using_threadId(monitor, osThread);
@@ -212,7 +244,7 @@ restart:
 				while (0 != lockInLoop) {
 					j9objectmonitor_t const flcBitSet = lockInLoop | OBJECT_HEADER_LOCK_FLC;
 					j9objectmonitor_t const oldValue = lockInLoop;
-					lockInLoop = VM_ObjectMonitor::compareAndSwapLockword(lwEA, lockInLoop, flcBitSet);
+					lockInLoop = VM_ObjectMonitor::compareAndSwapLockword(currentThread, lwEA, lockInLoop, flcBitSet);
 					if (oldValue == lockInLoop) {
 						break;
 					}
@@ -227,7 +259,9 @@ restart:
 				 * other threads are behind us in the queue. Set the FLC bit to
 				 * make sure that this thread signals them when it is done.
 				 */
-				*lwEA |= OBJECT_HEADER_LOCK_FLC;
+				j9objectmonitor_t lock = J9_LOAD_LOCKWORD(currentThread, lwEA);
+				lock |= OBJECT_HEADER_LOCK_FLC;
+				J9_STORE_LOCKWORD(currentThread, lwEA, lock);
 				goto done;
 			}
 			internalReleaseVMAccessSetStatus(currentThread, J9_PUBLIC_FLAGS_THREAD_BLOCKED);
@@ -270,43 +304,137 @@ success:
  * 	1 if blocking is necessary
  * 	0 if out of memory
  */
-IDATA
+UDATA
 objectMonitorEnterNonBlocking(J9VMThread *currentThread, j9object_t object)
 {
-	IDATA result = (IDATA)(UDATA)object;
+	UDATA result = (UDATA)object;
 	j9objectmonitor_t volatile *lwEA = VM_ObjectMonitor::inlineGetLockAddress(currentThread, object);
-	
+
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+	J9Class * objClass = J9OBJECT_CLAZZ(currentThread, object);
+	if (J9_IS_J9CLASS_VALUETYPE(objClass)) {
+		result = J9_OBJECT_MONITOR_VALUE_TYPE_IMSE;
+		goto done;
+	}
+#endif /* J9VM_OPT_VALHALLA_VALUE_TYPES */	
+restart:
 	if (NULL == lwEA) {
 		/* out of memory */
-		result = 0;
+		result = J9_OBJECT_MONITOR_OOM;
 		goto done;
 	} else {
 		/* check for a recursive flat lock */
-		j9objectmonitor_t const lock = *lwEA;
+		j9objectmonitor_t const lock = J9_LOAD_LOCKWORD(currentThread, lwEA);
+
+		/* Global Lock Reservation is currently only supported on Power. Learning bit should be clear on other platforms if Inflated bit is not set. */
+#if !(defined(AIXPPC) || defined(LINUXPPC))
+		Assert_VM_false(OBJECT_HEADER_LOCK_LEARNING == (lock & (OBJECT_HEADER_LOCK_LEARNING | OBJECT_HEADER_LOCK_INFLATED)));
+#endif /* !(defined(AIXPPC) || defined(LINUXPPC)) */
+
 		/* try incrementing first to ensure that we won't overflow the recursion counter */
-		j9objectmonitor_t incremented = lock + OBJECT_HEADER_LOCK_FIRST_RECURSION_BIT;
+		j9objectmonitor_t incremented = lock + ((lock & OBJECT_HEADER_LOCK_LEARNING) ? OBJECT_HEADER_LOCK_LEARNING_FIRST_RECURSION_BIT : OBJECT_HEADER_LOCK_FIRST_RECURSION_BIT);
 		if (J9_FLATLOCK_OWNER(incremented) == currentThread) {
-			/* recursive flat lock. Still at least one bit of count left - recurse without inflating */
-			*lwEA = incremented;
+			/*
+			 * Lock can potentially be Flat, Reserved or Learning.
+			 * In all three cases it is confirmed that the RC count will not overflow after being incremented and so the lock will not inflate.
+			 * In the Flat case, this is also guaranteed to be a nested lock.
+			 * In the Reserved and Learning case, this can be either a non-nested or nested lock.
+			 */
+			if (0 == (lock & OBJECT_HEADER_LOCK_LEARNING)) {
+				/* Flat and Reserved state case */
+				J9_STORE_LOCKWORD(currentThread, lwEA, incremented);
+			} else {
+				/*
+				 * Learning state case
+				 * The Learning Counter is only used in the Learning state.
+				 * It starts at 0 the first time an object is locked. If the same thread locks the object again, the counter is incremented.
+				 * When the Learning Counter reaches reservedTransitionThreshold, the object transitions from Learning to Reserved.
+				 * reservedTransitionThreshold is being checked against a 2 bit value so values of 4 or higher will prevent transitions to Reserved.
+				 */
+				U_32 reservedTransitionThreshold = currentThread->javaVM->reservedTransitionThreshold;
+				bool reservedTransition = false;
+				if (((lock & OBJECT_HEADER_LOCK_LEARNING_LC_MASK) >> OBJECT_HEADER_LOCK_LEARNING_LC_OFFSET) >= reservedTransitionThreshold) {
+					/*
+					 * Clears the Learning bit and sets the Reserved bit to change the state to Reserved.
+					 * Clears the bits under OBJECT_HEADER_LOCK_RECURSION_MASK then fills in the new RC.
+					 * This is done to reclaim the bits used for the Learning Counter that are no longer used under Reserved.
+					 */
+					incremented = (incremented & ~(j9objectmonitor_t)(OBJECT_HEADER_LOCK_LEARNING | OBJECT_HEADER_LOCK_RECURSION_MASK)) |
+					              (J9_FLATLOCK_COUNT(incremented) << OBJECT_HEADER_LOCK_V2_RECURSION_OFFSET) |
+					              OBJECT_HEADER_LOCK_RESERVED;
+					reservedTransition = true;
+				} else {
+					/* LC field overflow check. Don't increment if it will overflow the counter. */
+					if ((lock & OBJECT_HEADER_LOCK_LEARNING_LC_MASK) != OBJECT_HEADER_LOCK_LEARNING_LC_MASK) {
+						incremented = incremented + OBJECT_HEADER_LOCK_LEARNING_FIRST_LC_BIT;
+					}
+				}
+
+				if (lock == VM_ObjectMonitor::compareAndSwapLockword(currentThread, lwEA, lock, incremented, false)) {
+					if (0 == J9_FLATLOCK_COUNT(lock)) {
+						VM_AtomicSupport::readBarrier();
+					}
+					if (reservedTransition) {
+						/* Transition from Learning to Reserved occurred so the Reserved Counter in the object's J9Class is incremented by 1. */
+						VM_ObjectMonitor::incrementReservedCounter(J9OBJECT_CLAZZ(currentThread, object));
+					}
+				} else {
+					/*
+					 * Another thread has attempted to get the lock and atomically changed the state to Flat.
+					 * Start over and read the new lockword. The lock can not go back to Learning so this will
+					 * only happen once.
+					 */
+					goto restart;
+				}
+			}
 			/* no barrier is required in the recursive case */
 		} else {
-#if defined(J9VM_THR_LOCK_NURSERY)
 			/* check to see if object is unlocked (JIT did not do initial inline sequence due to insufficient static type info) */
-			if ((0 == lock) && VM_ObjectMonitor::inlineFastInitAndEnterMonitor(currentThread, lwEA)) {
+			if (J9_ARE_NO_BITS_SET(lock, ~(j9objectmonitor_t)(OBJECT_HEADER_LOCK_RESERVED | OBJECT_HEADER_LOCK_LEARNING)) &&
+				VM_ObjectMonitor::inlineFastInitAndEnterMonitor(currentThread, lwEA, false, lock)
+			) {
 				/* compare and swap succeeded - barrier already performed */
-			} else
-#endif /* J9VM_THR_LOCK_NURSERY */
-			{
+				if (lock == OBJECT_HEADER_LOCK_RESERVED) {
+					/* Object in New-AutoReserve was locked so the Reserved Counter in the object's J9Class is incremented by 1. */
+					VM_ObjectMonitor::incrementReservedCounter(J9OBJECT_CLAZZ(currentThread, object));
+				}
+			} else {
 				J9ObjectMonitor *objectMonitor = NULL;
 				/* check if the monitor is flat */
 				if (!J9_LOCK_IS_INFLATED(lock)) {
 					/* lock is flat, am I the owner? */
 					if (J9_FLATLOCK_OWNER(lock) == currentThread) {
+						/* Convert Learning to Flat instead Inflated for dealing with RC overflow.*/
+						if (OBJECT_HEADER_LOCK_LEARNING == (lock & (OBJECT_HEADER_LOCK_LEARNING | OBJECT_HEADER_LOCK_INFLATED))) {
+							j9objectmonitor_t newFlatLock;
+							if (0 == J9_FLATLOCK_COUNT(lock)) {
+								/* Lock is currently unlocked so convert to Flat unlocked which is all 0s. */
+								newFlatLock = (j9objectmonitor_t)(UDATA)0;
+							} else {
+								/*
+								 * Clears the Learning bit to convert the lock to Flat state.
+								 * First clears the bits under OBJECT_HEADER_LOCK_RECURSION_MASK then fills in the new RC.
+								 * This is done to reclaim the bits used for the learning counter that are no longer used under Flat.
+								 * For the same logical recursion count, the value encoded in the RC bits is one lower under
+								 * Flat compared to Learning so the new RC field is one lower than before the conversion to flat.
+								 */
+								newFlatLock = (lock & ~(j9objectmonitor_t)(OBJECT_HEADER_LOCK_LEARNING | OBJECT_HEADER_LOCK_RECURSION_MASK)) |
+								              ((J9_FLATLOCK_COUNT(lock) - 1) << OBJECT_HEADER_LOCK_V2_RECURSION_OFFSET);
+							}
+
+							/* If CAS fails, some other thread changed the lock from Learning to Flat so the code needs to start over anyways. */
+							if (lock == VM_ObjectMonitor::compareAndSwapLockword(currentThread, lwEA, lock, newFlatLock)) {
+								/* Transition from Learning to Flat occurred so the Cancel Counter in the object's J9Class is incremented by 1. */
+								VM_ObjectMonitor::incrementCancelCounter(J9OBJECT_CLAZZ(currentThread, object));
+							}
+							goto restart;
+						}
+
 						/* recursive flat lock - count is full */
 						objectMonitor = objectMonitorInflate(currentThread, object, lock);
 						if (NULL == objectMonitor) {
 							/* out of memory */
-							result = 0;
+							result = J9_OBJECT_MONITOR_OOM;
 							goto done;
 						}
 					} else {
@@ -314,14 +442,14 @@ objectMonitorEnterNonBlocking(J9VMThread *currentThread, j9object_t object)
 						if (spinOnFlatLock(currentThread, lwEA, object)) {
 							goto done;
 						}
-						/* Preemptively create the obhect monitor but do not assign it.
+						/* Preemptively create the object monitor but do not assign it.
 						 * This makes it impossible to fail in objectMonitorEnterBlocking.
 						 * This only affects reserved locks, as the non-reserved path in
 						 * the blocking code immediately calls monitorTableAt.
 						 */
 						if (NULL == monitorTableAt(currentThread, object)) {
 							/* out of memory */
-							result = 0;
+							result = J9_OBJECT_MONITOR_OOM;
 							goto done;
 						}
 						goto wouldBlock;
@@ -340,7 +468,7 @@ objectMonitorEnterNonBlocking(J9VMThread *currentThread, j9object_t object)
 wouldBlock:
 	/* unable to get thin lock by spinning - follow blocking path */
 	J9VMTHREAD_SET_BLOCKINGENTEROBJECT(currentThread, currentThread, object);
-	result = 1;
+	result = J9_OBJECT_MONITOR_BLOCKING;
 done:
 	return result;
 }
@@ -400,18 +528,47 @@ spinOnFlatLock(J9VMThread *currentThread, j9objectmonitor_t volatile *lwEA, j9ob
 				goto done;
 			}
 			/* do not spin if the FLC, inflated or reserved bits are already set */
-			if (J9_ARE_NO_BITS_SET(*lwEA, bits)
-					&& J9_ARE_NO_BITS_SET(currentThread->publicFlags, J9_PUBLIC_FLAGS_HALT_THREAD_EXCLUSIVE))
-			{
+			j9objectmonitor_t const lock = J9_LOAD_LOCKWORD(currentThread, lwEA);
+			if (J9_ARE_NO_BITS_SET(lock, bits) && J9_ARE_NO_BITS_SET(currentThread->publicFlags, J9_PUBLIC_FLAGS_HALT_THREAD_EXCLUSIVE)) {
+				/* If the Learning bit is set, need to handle Learning state. */
+				if (0 != (lock & OBJECT_HEADER_LOCK_LEARNING)) {
+					/* Check if RC is 0, if so it is possible to just atomically lock the object now. */
+					if (0 == J9_FLATLOCK_COUNT(lock)) {
+						if (lock == VM_ObjectMonitor::compareAndSwapLockword(currentThread, lwEA, lock, (j9objectmonitor_t)(UDATA)currentThread, false)) {
+							/* compare and swap succeeded */
+							VM_AtomicSupport::readBarrier();
+							rc = true;
+
+							/* Transition from Learning to Flat occurred so the Cancel Counter in the object's J9Class is incremented by 1. */
+							VM_ObjectMonitor::incrementCancelCounter(J9OBJECT_CLAZZ(currentThread, object));
+							goto done;
+						}
+					} else {
+						/*
+						 * Attempt to atomically change the lock for Learning to Flat. Try again next iteration if this doesn't work.
+						 * Clears the Learning bit to convert the lock to Flat state.
+						 * Clears the bits under OBJECT_HEADER_LOCK_RECURSION_MASK then fills in the new RC.
+						 * This is done to reclaim the bits used for the learning counter that are no longer used under Flat.
+						 * For the same logical recursion count, the value encoded in the RC bits is one lower under
+						 * Flat compared to Learning so the new RC field is one lower than before the conversion to flat.
+						 */
+						j9objectmonitor_t const newLock = (lock & ~(j9objectmonitor_t)(OBJECT_HEADER_LOCK_LEARNING | OBJECT_HEADER_LOCK_RECURSION_MASK)) |
+						                                  ((J9_FLATLOCK_COUNT(lock) - 1) << OBJECT_HEADER_LOCK_V2_RECURSION_OFFSET);
+
+						if (lock == VM_ObjectMonitor::compareAndSwapLockword(currentThread, lwEA, lock, newLock, false)) {
+							/* Transition from Learning to Flat occurred so the Cancel Counter in the object's J9Class is incremented by 1. */
+							VM_ObjectMonitor::incrementCancelCounter(J9OBJECT_CLAZZ(currentThread, object));
+						}
+					}
+				}
+
 				if (nestedPath) {
 					VM_AtomicSupport::yieldCPU();
-					if (0 != spinCount1) {
-						VM_AtomicSupport::dropSMTThreadPriority();
-						for (UDATA _spinCount1 = spinCount1; _spinCount1 > 0; _spinCount1--) {
-							VM_AtomicSupport::nop();
-						} /* end tight loop */
-						VM_AtomicSupport::restoreSMTThreadPriority();
-					}
+					VM_AtomicSupport::dropSMTThreadPriority();
+					for (UDATA _spinCount1 = spinCount1; _spinCount1 > 0; _spinCount1--) {
+						VM_AtomicSupport::nop();
+					} /* end tight loop */
+					VM_AtomicSupport::restoreSMTThreadPriority();
 				}
 			} else {
 				goto done;
@@ -487,26 +644,28 @@ spinOnTryEnter(J9VMThread *currentThread, J9ObjectMonitor *objectMonitor, j9obje
 	}
 #endif /* OMR_THR_JLM */
 
+#if defined(OMR_THR_THREE_TIER_LOCKING) && defined(OMR_THR_SPIN_WAKE_CONTROL)
+	bool tryEnterSpin = true;
+	if (OMRTHREAD_IGNORE_SPIN_THREAD_BOUND != lib->maxSpinThreads) {
+		if (monitor->spinThreads < lib->maxSpinThreads) {
+			VM_AtomicSupport::add(&monitor->spinThreads, 1);
+		} else {
+			tryEnterSpinCount1 = 1;
+			tryEnterSpinCount2 = 1;
+			tryEnterYieldCount = 1;
+			tryEnterSpin = false;
+		}
+	}
+#endif /* defined(OMR_THR_THREE_TIER_LOCKING) && defined(OMR_THR_SPIN_WAKE_CONTROL) */
+
 	/* Need to store the original value of tryEnterSpinCount2 since it gets overridden during non-nested spinning */
 	UDATA tryEnterSpinCount2Init = tryEnterSpinCount2;
 
 	UDATA _tryEnterYieldCount = tryEnterYieldCount;
 	UDATA _tryEnterSpinCount2 = tryEnterSpinCount2;
 
-#if defined(OMR_THR_THREE_TIER_LOCKING) && defined(OMR_THR_SPIN_WAKE_CONTROL)
-	if (monitor->spinThreads < lib->maxSpinThreads) {
-		VM_AtomicSupport::add(&monitor->spinThreads, 1);
-	} else {
-		goto exit;
-	}
-#endif /* defined(OMR_THR_THREE_TIER_LOCKING) && defined(OMR_THR_SPIN_WAKE_CONTROL) */
-	
 	/* we have the monitor object from the lock word so prime the cache with the monitor so we do not later look it up from the monitor table */
-#if defined(J9VM_THR_LOCK_NURSERY)
 	cacheObjectMonitorForLookup(vm, currentThread, objectMonitor);
-#else /* J9VM_THR_LOCK_NURSERY */
-	currentThread->cachedMonitor = objectMonitor;
-#endif /* J9VM_THR_LOCK_NURSERY */
 
 	for (; _tryEnterYieldCount > 0; _tryEnterYieldCount--) {
 		for (_tryEnterSpinCount2 = tryEnterSpinCount2; _tryEnterSpinCount2 > 0; _tryEnterSpinCount2--) {
@@ -518,7 +677,7 @@ spinOnTryEnter(J9VMThread *currentThread, J9ObjectMonitor *objectMonitor, j9obje
 					objectMonitor->proDeflationCount += 1;
 				}
 #endif /* J9VM_THR_SMART_DEFLATION */
-				if (J9_LOCK_IS_INFLATED(*lwEA)) {
+				if (J9_LOCK_IS_INFLATED(J9_LOAD_LOCKWORD(currentThread, lwEA))) {
 					/* try_enter succeeded - monitor is inflated */
 					rc = true;
 				} else {
@@ -592,10 +751,11 @@ update_jlm:
 #endif /* OMR_THR_JLM */
 
 #if defined(OMR_THR_THREE_TIER_LOCKING) && defined(OMR_THR_SPIN_WAKE_CONTROL)
-	VM_AtomicSupport::subtract(&monitor->spinThreads, 1);
-
-exit:
+	if (tryEnterSpin && (OMRTHREAD_IGNORE_SPIN_THREAD_BOUND != lib->maxSpinThreads)) {
+		VM_AtomicSupport::subtract(&monitor->spinThreads, 1);
+	}
 #endif /* defined(OMR_THR_THREE_TIER_LOCKING) && defined(OMR_THR_SPIN_WAKE_CONTROL) */
+
 	return rc;
 }
 

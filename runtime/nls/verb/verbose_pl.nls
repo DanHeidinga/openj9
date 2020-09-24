@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2000, 2017 IBM Corp. and others
+# Copyright (c) 2000, 2020 IBM Corp. and others
 #
 # This program and the accompanying materials are made available under
 # the terms of the Eclipse Public License 2.0 which accompanies this
@@ -31,7 +31,7 @@
 # Note to translators:
 #
 # This file uses printf style substitutions. Sequences such as %s, %.*s, %10d
-# etc. will be subsituted at runtime. The special case of %% is not a substitution.
+# etc. will be substituted at runtime. The special case of %% is not a substitution.
 # It indicates a single percent sign. Please do not modify the format specifiers, or
 # change their order. For instance, in a message like "from %d to %s", %d
 # MUST appear before %s in any translated message, or a run-time crash
@@ -49,7 +49,7 @@ J9NLS.HEADER=verbosenls.h
 J9NLS_VERB_STACK_USAGE=Stos szczeg\u00f3\u0142owy: \"%2$.*1$s\" wykorzysta\u0142 b%3$zd/%4$zd bajt\u00f3w na stosach Java/C
 # START NON-TRANSLATABLE
 J9NLS_VERB_STACK_USAGE.sample_input_1=11
-J9NLS_VERB_STACK_USAGE.sample_input_2=Gc Slave Thread
+J9NLS_VERB_STACK_USAGE.sample_input_2=Gc Worker Thread
 J9NLS_VERB_STACK_USAGE.sample_input_3=232
 J9NLS_VERB_STACK_USAGE.sample_input_4=2308
 J9NLS_VERB_STACK_USAGE.explanation=Indicates how much stack was used on each stack for a thread when -verbose:stack is specified
@@ -161,21 +161,21 @@ J9NLS_VERB_SIZES_XMX.system_action=
 J9NLS_VERB_SIZES_XMX.user_response=
 # END NON-TRANSLATABLE
 
-J9NLS_VERB_SIZES_XSCMX=wielko\u015b\u0107 pami\u0119ci podr\u0119cznej klasy wsp\u00f3\u0142u\u017cytkowanej
+J9NLS_VERB_SIZES_XSCMX=wielko\u015b\u0107 wsp\u00f3\u0142u\u017cytkowanej pami\u0119ci podr\u0119cznej klas
 # START NON-TRANSLATABLE
 J9NLS_VERB_SIZES_XSCMX.explanation=NOTAG
 J9NLS_VERB_SIZES_XSCMX.system_action=
 J9NLS_VERB_SIZES_XSCMX.user_response=
 # END NON-TRANSLATABLE
 
-J9NLS_VERB_SIZES_XSCMINAOT=minimalny zarezerwowany obszar pami\u0119ci podr\u0119cznej klasy wsp\u00f3\u0142u\u017cytkowanej dla AOT
+J9NLS_VERB_SIZES_XSCMINAOT=minimalny zarezerwowany obszar wsp\u00f3\u0142u\u017cytkowanej pami\u0119ci podr\u0119cznej klas dla AOT
 # START NON-TRANSLATABLE
 J9NLS_VERB_SIZES_XSCMINAOT.explanation=NOTAG
 J9NLS_VERB_SIZES_XSCMINAOT.system_action=
 J9NLS_VERB_SIZES_XSCMINAOT.user_response=
 # END NON-TRANSLATABLE
 
-J9NLS_VERB_SIZES_XSCMAXAOT=maksymalny dozwolony obszar pami\u0119ci podr\u0119cznej klasy wsp\u00f3\u0142u\u017cytkowanej dla AOT
+J9NLS_VERB_SIZES_XSCMAXAOT=maksymalny dozwolony obszar wsp\u00f3\u0142u\u017cytkowanej pami\u0119ci podr\u0119cznej klas dla AOT
 # START NON-TRANSLATABLE
 J9NLS_VERB_SIZES_XSCMAXAOT.explanation=NOTAG
 J9NLS_VERB_SIZES_XSCMAXAOT.system_action=
@@ -263,7 +263,7 @@ J9NLS_VERB_STACK_USAGE_FOR_RUNNING_THREADS.explanation=Indicates how much stack 
 J9NLS_VERB_STACK_USAGE_FOR_RUNNING_THREADS.system_action=None
 J9NLS_VERB_STACK_USAGE_FOR_RUNNING_THREADS.user_response=None
 J9NLS_VERB_STACK_USAGE_FOR_RUNNING_THREADS.sample_input_1=11
-J9NLS_VERB_STACK_USAGE_FOR_RUNNING_THREADS.sample_input_2=Gc Slave Thread
+J9NLS_VERB_STACK_USAGE_FOR_RUNNING_THREADS.sample_input_2=Gc Worker Thread
 J9NLS_VERB_STACK_USAGE_FOR_RUNNING_THREADS.sample_input_3=232
 J9NLS_VERB_STACK_USAGE_FOR_RUNNING_THREADS.sample_input_4=2308
 # END NON-TRANSLATABLE
@@ -275,35 +275,35 @@ J9NLS_VERB_STACK_USAGE_FOR_RUNNING_THREADS_FAILURE_1.system_action=None
 J9NLS_VERB_STACK_USAGE_FOR_RUNNING_THREADS_FAILURE_1.user_response=None
 # END NON-TRANSLATABLE
 
-J9NLS_VERB_SIZES_XSCMINJIT=minimalny zarezerwowany obszar pami\u0119ci podr\u0119cznej klasy wsp\u00f3\u0142u\u017cytkowanej dla JIT
+J9NLS_VERB_SIZES_XSCMINJIT=minimalny zarezerwowany obszar wsp\u00f3\u0142u\u017cytkowanej pami\u0119ci podr\u0119cznej klas dla JIT
 # START NON-TRANSLATABLE
 J9NLS_VERB_SIZES_XSCMINJIT.explanation=NOTISSUED
 J9NLS_VERB_SIZES_XSCMINJIT.system_action=
 J9NLS_VERB_SIZES_XSCMINJIT.user_response=
 # END NON-TRANSLATABLE
 
-J9NLS_VERB_SIZES_XSCMAXJIT=maksymalny dozwolony obszar pami\u0119ci podr\u0119cznej klasy wsp\u00f3\u0142u\u017cytkowanej dla JIT
+J9NLS_VERB_SIZES_XSCMAXJIT=maksymalny dozwolony obszar wsp\u00f3\u0142u\u017cytkowanej pami\u0119ci podr\u0119cznej klas dla JIT
 # START NON-TRANSLATABLE
 J9NLS_VERB_SIZES_XSCMAXJIT.explanation=NOTISSUED
 J9NLS_VERB_SIZES_XSCMAXJIT.system_action=
 J9NLS_VERB_SIZES_XSCMAXJIT.user_response=
 # END NON-TRANSLATABLE
 
-J9NLS_VERB_SIZES_XSCDMX=zarezerwowany obszar pami\u0119ci podr\u0119cznej klasy wsp\u00f3\u0142u\u017cytkowanej dla atrybut\u00f3w debugowania klasy
+J9NLS_VERB_SIZES_XSCDMX=zarezerwowany obszar pami\u0119ci podr\u0119cznej wsp\u00f3\u0142u\u017cytkowanej pami\u0119ci podr\u0119cznej klas dla atrybut\u00f3w debugowania klasy
 # START NON-TRANSLATABLE
 J9NLS_VERB_SIZES_XSCDMX.explanation=NOTAG
 J9NLS_VERB_SIZES_XSCDMX.system_action=
 J9NLS_VERB_SIZES_XSCDMX.user_response=
 # END NON-TRANSLATABLE
 
-J9NLS_VERB_SIZES_XSCMINJITDATA=minimalny zarezerwowany obszar pami\u0119ci podr\u0119cznej klasy wsp\u00f3\u0142u\u017cytkowanej dla danych JIT
+J9NLS_VERB_SIZES_XSCMINJITDATA=minimalny zarezerwowany obszar wsp\u00f3\u0142u\u017cytkowanej pami\u0119ci podr\u0119cznej klas dla danych JIT
 # START NON-TRANSLATABLE
 J9NLS_VERB_SIZES_XSCMINJITDATA.explanation=NOTAG
 J9NLS_VERB_SIZES_XSCMINJITDATA.system_action=
 J9NLS_VERB_SIZES_XSCMINJITDATA.user_response=
 # END NON-TRANSLATABLE
 
-J9NLS_VERB_SIZES_XSCMAXJITDATA=maksymalny dozwolony obszar pami\u0119ci podr\u0119cznej klasy wsp\u00f3\u0142u\u017cytkowanej dla danych JIT
+J9NLS_VERB_SIZES_XSCMAXJITDATA=maksymalny dozwolony obszar wsp\u00f3\u0142u\u017cytkowanej pami\u0119ci podr\u0119cznej klas dla danych JIT
 # START NON-TRANSLATABLE
 J9NLS_VERB_SIZES_XSCMAXJITDATA.explanation=NOTAG
 J9NLS_VERB_SIZES_XSCMAXJITDATA.system_action=
@@ -325,21 +325,21 @@ J9NLS_VERB_SIZES_AVAILABLE_XLP_CODECACHE.system_action=
 J9NLS_VERB_SIZES_AVAILABLE_XLP_CODECACHE.user_response=
 # END NON-TRANSLATABLE
 
-J9NLS_VERB_SIZES_XMCRS=pocz\u0105tkowa wielko\u015b\u0107 metadanych skompresowanych referencji
+J9NLS_VERB_SIZES_XMCRS=Pocz\u0105tkowa wielko\u015b\u0107 skompresowanych metadanych referencji
 # START NON-TRANSLATABLE
 J9NLS_VERB_SIZES_XMCRS.explanation=NOTAG
 J9NLS_VERB_SIZES_XMCRS.system_action=
 J9NLS_VERB_SIZES_XMCRS.user_response=
 # END NON-TRANSLATABLE
 
-J9NLS_VERB_SIZES_XXSHARED_CACHE_HARD_LIMIT_EQUALS=wielko\u015b\u0107 pami\u0119ci podr\u0119cznej klasy wsp\u00f3\u0142u\u017cytkowanej
+J9NLS_VERB_SIZES_XXSHARED_CACHE_HARD_LIMIT_EQUALS=wielko\u015b\u0107 wsp\u00f3\u0142u\u017cytkowanej pami\u0119ci podr\u0119cznej klas
 # START NON-TRANSLATABLE
 J9NLS_VERB_SIZES_XXSHARED_CACHE_HARD_LIMIT_EQUALS.explanation=NOTAG
 J9NLS_VERB_SIZES_XXSHARED_CACHE_HARD_LIMIT_EQUALS.system_action=
 J9NLS_VERB_SIZES_XXSHARED_CACHE_HARD_LIMIT_EQUALS.user_response=
 # END NON-TRANSLATABLE
 
-J9NLS_VERB_SIZES_XSCMX_V1=maksymalna wielko\u015b\u0107 pami\u0119ci podr\u0119cznej klasy wsp\u00f3\u0142u\u017cytkowanej
+J9NLS_VERB_SIZES_XSCMX_V1=mi\u0119kka maksymalna wielko\u015b\u0107 wsp\u00f3\u0142u\u017cytkowanej pami\u0119ci podr\u0119cznej klas
 # START NON-TRANSLATABLE
 J9NLS_VERB_SIZES_XSCMX_V1.explanation=NOTAG
 J9NLS_VERB_SIZES_XSCMX_V1.system_action=

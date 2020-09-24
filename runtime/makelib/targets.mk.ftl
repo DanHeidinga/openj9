@@ -1,4 +1,4 @@
-# Copyright (c) 1998, 2018 IBM Corp. and others
+# Copyright (c) 1998, 2020 IBM Corp. and others
 #
 # This program and the accompanying materials are made available under
 # the terms of the Eclipse Public License 2.0 which accompanies this
@@ -94,10 +94,7 @@ ifeq ($(UMA_TARGET_TYPE),EXE)
   UMA_EXETARGET:=$(UMA_TARGET_PATH)$(UMA_TARGET_NAME)$(UMA_DOT_EXE)
 endif
 
-CFLAGS+=-DJAVA_SPEC_VERSION=$(VERSION_MAJOR)
-CXXFLAGS+=-DJAVA_SPEC_VERSION=$(VERSION_MAJOR)
-CPPFLAGS+=-DJAVA_SPEC_VERSION=$(VERSION_MAJOR)
-ifdef OPENJ9_BUILD
+ifeq ($(OPENJ9_BUILD),true)
 CFLAGS+=-DOPENJ9_BUILD
 CXXFLAGS+=-DOPENJ9_BUILD
 CPPFLAGS+=-DOPENJ9_BUILD
@@ -148,7 +145,7 @@ UMA_C_INCLUDE_PREFIX=/I
 UMA_C_INCLUDE_PREFIX=-I
 </#if>
 <#if uma.spec.type.windows>
-ifdef USE_MINGW
+ifdef USE_CLANG
   UMA_C_INCLUDE_PREFIX=-I
 endif
 </#if>
@@ -159,31 +156,34 @@ CFLAGS+=$(UMA_C_INCLUDES)
 CXXFLAGS+=$(UMA_C_INCLUDES)
 CPPFLAGS+=$(UMA_C_INCLUDES)
 </#if>
-<#if  uma.spec.type.ztpf &&  uma.spec.properties.crossCompilerPath.defined>
+<#if uma.spec.type.ztpf && uma.spec.properties.crossCompilerPath.defined>
 # Put the required z/TPF tools on the path.
-PATH:=${uma.spec.properties.crossCompilerPath.value}:<#noparse>${PATH}</#noparse>
+space :=
+space +=
+PATH := $(subst $(space),:,$(foreach d,$(TPF_ROOT),$d/linux/bin)):<#noparse>$(PATH)</#noparse>
+
+TPF_INCLUDES := $(foreach d,$(TPF_ROOT),-I$d/base/a2e/headers)
+TPF_INCLUDES += $(foreach d,$(TPF_ROOT),-I$d/base/include)
+TPF_INCLUDES += $(foreach d,$(TPF_ROOT),-I$d/opensource/include)
+TPF_INCLUDES += $(foreach d,$(TPF_ROOT),-I$d/opensource/include46/g++)
+TPF_INCLUDES += $(foreach d,$(TPF_ROOT),-I$d/opensource/include46/g++/backward)
+TPF_INCLUDES += $(foreach d,$(TPF_ROOT),-I$d/noship/include)
+TPF_INCLUDES += $(foreach d,$(TPF_ROOT),-isystem $d/opensource/include)
+TPF_INCLUDES += $(foreach d,$(TPF_ROOT),-isystem $d/noship/include)
+TPF_INCLUDES += $(foreach d,$(TPF_ROOT),-isystem $d)
+
+TPF_FLAGS := -D_GNU_SOURCE -DIBM_ATOE -D_TPF_SOURCE -DZTPF_POSIX_SOCKET -DJ9ZTPF
+TPF_FLAGS += -fexec-charset=ISO-8859-1 -fmessage-length=0 -funsigned-char -fverbose-asm -fno-builtin-abort -fno-builtin-exit -fno-builtin-sprintf -ffloat-store -gdwarf-2 -Wno-format-extra-args -Wno-int-to-pointer-cast -Wno-unknown-pragmas -Wno-unused-but-set-variable -Wno-write-strings
+TPF_FLAGS += -Wno-unused
+TPF_FLAGS += -fno-delete-null-pointer-checks -fno-tree-dse -fno-lifetime-dse -fno-optimize-strlen
+TPF_C_FLAGS := -std=gnu90
 </#if>
 
-<#if uma.spec.type.ztpf && uma.spec.properties.tpfRoot.defined  && uma.spec.properties.tpfProj.defined>
-# Put the proper directories based on cur||commit||svt value in the includes path.
-UMA_ZTPF_ROOT:=${uma.spec.properties.tpfRoot.value}
-UMA_PROJ_ROOT:=${uma.spec.properties.tpfProj.value}
+<#if uma.spec.type.ztpf && uma.spec.properties.tpfRoot.defined && uma.spec.properties.tpfProj.defined>
 
-CPATH+=/ztpf/$(UMA_ZTPF_ROOT)/local_mod/base/include:/ztpf/$(UMA_ZTPF_ROOT)/base/include:/ztpf/$(UMA_ZTPF_ROOT)/local_mod/opensource/include:/ztpf/$(UMA_ZTPF_ROOT)/opensource/include:/ztpf/$(UMA_ZTPF_ROOT)/opensource/include46/g++:/ztpf/$(UMA_ZTPF_ROOT)/opensource/include46/g++/backward:/ztpf/$(UMA_ZTPF_ROOT)/local_mod:/ztpf/$(UMA_ZTPF_ROOT)/base/include
-export $(CPATH)
-
-C_INCLUDE_PATH+=/ztpf/$(UMA_ZTPF_ROOT)/local_mod/base/include:/ztpf/$(UMA_ZTPF_ROOT)/base/include:/ztpf/$(UMA_ZTPF_ROOT)/local_mod/opensource/include:/ztpf/$(UMA_ZTPF_ROOT)/opensource/include:/ztpf/$(UMA_ZTPF_ROOT)/opensource/include46/g++:/ztpf/$(UMA_ZTPF_ROOT)/opensource/include46/g++/backward:/ztpf/$(UMA_ZTPF_ROOT)/local_mod:/ztpf/$(UMA_ZTPF_ROOT)/base/include
-export $(C_INCLUDE_PATH)
-
-UMA_ZTPF_INCLUDES:= -D_TPF_SOURCE -DJ9ZTPF -DLINUX -DS390 -DS39064 -DFULL_ANSI -DMAXMOVE -DZTPF_POSIX_SOCKET -fPIC -fno-strict-aliasing -D_GNU_SOURCE -fexec-charset=ISO-8859-1 -fmessage-length=0 -funsigned-char -Wno-format-extra-args  -fverbose-asm -fno-builtin-abort -fno-builtin-exit -fno-builtin-sprintf -fno-builtin-isdigit -ffloat-store -DIBM_ATOE -fno-strict-aliasing -Wno-unknown-pragmas -Wreturn-type -Wno-unused -Wno-uninitialized -Wno-parentheses -gdwarf-2 -D_PORTABLE_TPF_SIGINFO -I$(UMA_PROJ_ROOT)/base/a2e/headers -I/ztpf/$(UMA_ZTPF_ROOT)/base/a2e/headers -I$(UMA_PROJ_ROOT)/base/include -I/ztpf/$(UMA_ZTPF_ROOT)/base/include -I$(UMA_PROJ_ROOT)/opensource/include -I/ztpf/$(UMA_ZTPF_ROOT)/opensource/include -isystem $(UMA_PROJ_ROOT)/base/a2e/headers -isystem /ztpf/$(UMA_ZTPF_ROOT)/base/a2e/headers -isystem $(UMA_PROJ_ROOT)/base/include -isystem /ztpf/$(UMA_ZTPF_ROOT)/base/include -isystem $(UMA_PROJ_ROOT)/opensource/include -isystem /ztpf/$(UMA_ZTPF_ROOT)/opensource/include -isystem $(UMA_PROJ_ROOT)/noship/include -isystem /ztpf/$(UMA_ZTPF_ROOT)/noship/include -isystem /ztpf/$(UMA_ZTPF_ROOT) -iquote ../include
-#Lotsa opensource include files need to be defined as system headers to gcc, well, tpf-g++ at least in order to avoid
-#compile errors.
-UMA_ZTPF_CXX_INCLUDES:= -D_TPF_SOURCE -DJ9ZTPF -DLINUX -DS390 -DS39064 -DFULL_ANSI -DMAXMOVE -DZTPF_POSIX_SOCKET -fPIC -fno-strict-aliasing -D_GNU_SOURCE -fexec-charset=ISO-8859-1 -fmessage-length=0 -funsigned-char -Wno-format-extra-args  -fverbose-asm -fno-builtin-abort -fno-builtin-exit -fno-builtin-sprintf -fno-builtin-isdigit -ffloat-store -DIBM_ATOE -fno-strict-aliasing -Wno-unknown-pragmas -Wreturn-type -Wno-unused -Wno-uninitialized -Wno-parentheses -gdwarf-2 -D_PORTABLE_TPF_SIGINFO -I$(UMA_PROJ_ROOT)/base/a2e/headers -I/ztpf/$(UMA_ZTPF_ROOT)/base/a2e/headers -I$(UMA_PROJ_ROOT)/base/include -I/ztpf/$(UMA_ZTPF_ROOT)/base/include -I$(UMA_PROJ_ROOT)/opensource/include -I/ztpf/$(UMA_ZTPF_ROOT)/opensource/include -I$(UMA_PROJ_ROOT)/opensource/include46/g++ -I/ztpf/$(UMA_ZTPF_ROOT)/opensource/include46/g++ -I$(UMA_PROJ_ROOT)/opensource/include46/g++/backward -I/ztpf/$(UMA_ZTPF_ROOT)/opensource/include46/g++/backward -isystem $(UMA_PROJ_ROOT)/base/a2e/headers -isystem /ztpf/$(UMA_ZTPF_ROOT)/base/a2e/headers -isystem $(UMA_PROJ_ROOT)/base/include -isystem /ztpf/$(UMA_ZTPF_ROOT)/base/include -isystem $(UMA_PROJ_ROOT)/opensource/include -isystem /ztpf/$(UMA_ZTPF_ROOT)/opensource/include -isystem $(UMA_PROJ_ROOT)/opensource/include46/g++ -isystem /ztpf/$(UMA_ZTPF_ROOT)/opensource/include46/g++ -isystem $(UMA_PROJ_ROOT)/opensource/include46/g++/backward -isystem /ztpf/$(UMA_ZTPF_ROOT)/opensource/include46/g++/backward -isystem $(UMA_PROJ_ROOT)/noship/include -isystem /ztpf/$(UMA_ZTPF_ROOT)/noship/include -isystem /ztpf/$(UMA_ZTPF_ROOT)
-
-CFLAGS+=$(UMA_ZTPF_INCLUDES)
+CFLAGS += $(TPF_FLAGS) $(TPF_C_FLAGS) $(TPF_INCLUDES) -iquote ../include
+CXXFLAGS += $(TPF_FLAGS) $(TPF_INCLUDES)
 CPPFLAGS+= -I$(UMA_PATH_TO_ROOT)oti
-CXXFLAGS+=$(UMA_ZTPF_CXX_INCLUDES)
-
 
 # Add these flags now since we're using a z/tpf spec file.
 UMA_C_INCLUDES:=$(addprefix $(UMA_C_INCLUDE_PREFIX),$(UMA_INCLUDES)) $(UMA_C_INCLUDES)
@@ -191,21 +191,18 @@ CFLAGS+=$(UMA_C_INCLUDES)
 CXXFLAGS+=$(UMA_C_INCLUDES)
 CPPFLAGS+=$(UMA_C_INCLUDES)
 
-#USE projects directory for "temporarily" built libraries we might need
-UMA_LINK_PATH+=-L/ztpf/$(UMA_ZTPF_ROOT)/opensource/stdlib
-UMA_LINK_PATH+=-L/ztpf/$(UMA_ZTPF_ROOT)/opensource/glibc/lib
-UMA_LINK_PATH+=-L/ztpf/$(UMA_ZTPF_ROOT)/base/lib
-UMA_LINK_PATH+=-L/ztpf/$(UMA_ZTPF_ROOT)/base/stdlib
-UMA_LINK_PATH+=-L/ztpf/$(UMA_ZTPF_ROOT)/bss/stdlib
-UMA_LINK_PATH+=-L/ztpf/$(UMA_ZTPF_ROOT)/base/oco/stdlib
+UMA_LINK_PATH += $(foreach d,$(TPF_ROOT),-L$d/base/lib)
+UMA_LINK_PATH += $(foreach d,$(TPF_ROOT),-L$d/base/stdlib)
+UMA_LINK_PATH += $(foreach d,$(TPF_ROOT),-L$d/opensource/stdlib)
+
 </#if>
+
 <#if uma.spec.type.windows>
-ifdef USE_MINGW
-  MINGW_CXXFLAGS+=$(UMA_C_INCLUDES)
-  MINGW_CXXFLAGS+=-I../oti/mingw
+ifdef USE_CLANG
+  CLANG_CXXFLAGS+=$(UMA_C_INCLUDES)
   ifneq ($(OPENJ9_BUILD),true)
-    MINGW_INCLUDES:="$(subst ;," -I",$(INCLUDE))"
-    MINGW_CXXFLAGS+=$(UMA_C_INCLUDE_PREFIX)$(MINGW_INCLUDES)
+    CLANG_INCLUDES:="$(subst ;," -I",$(INCLUDE))"
+    CLANG_CXXFLAGS+=$(UMA_C_INCLUDE_PREFIX)$(CLANG_INCLUDES)
   endif # OPENJ9_BUILD
 endif
 </#if>
@@ -242,15 +239,18 @@ endif
 UMA_LINK_PATH+=-L. -L$(UMA_PATH_TO_ROOT) -L$(UMA_PATH_TO_ROOT)lib/
 UMA_BUILD_LIBRARIES:=$(foreach lib,$(UMA_LIBRARIES),$(if $($(lib)_alllib),$(lib)))
 UMA_LINK_PATH+=$(foreach lib,$(UMA_BUILD_LIBRARIES),-L$($(lib)_path))
-# Remove duplicate paths
+<#if !uma.spec.type.ztpf>
+# Remove duplicate paths and sort, but don't do this for z/TPF because z/TPF is
+# sensitive to link order for some scenarios.
 UMA_LINK_PATH:=$(sort $(UMA_LINK_PATH))
+</#if>
 </#if>
 
 CFLAGS+=$(A_CFLAGS)
 CXXFLAGS+=$(A_CXXFLAGS)
 <#if uma.spec.type.windows>
-ifdef USE_MINGW
-  MINGW_CXXFLAGS+=$(A_CXXFLAGS)
+ifdef USE_CLANG
+  CLANG_CXXFLAGS+=$(A_CXXFLAGS)
 endif
 </#if>
 CPPFLAGS+=$(A_CPPFLAGS)
@@ -267,12 +267,12 @@ UMA_DLL_LINK_FLAGS+=-fprofile-arcs -ftest-coverage
 UMA_EXE_PREFIX_FLAGS+=-fprofile-arcs -ftest-coverage
 </#if>
 
-# Add posibility of debug flags
+# Add possibility of debug flags
 CFLAGS+=$(VMDEBUG)
 CXXFLAGS+=$(VMDEBUG)
 <#if uma.spec.type.windows>
-ifdef USE_MINGW
-  MINGW_CXXFLAGS+=$(VMDEBUG)
+ifdef USE_CLANG
+  CLANG_CXXFLAGS+=$(VMDEBUG)
 endif
 </#if>
 <#if uma.spec.processor.ppc>
@@ -288,20 +288,19 @@ ASFLAGS+=$(VMASMDEBUG)
 </#if>
 <#if uma.spec.type.ztpf>
 #we may need absolute path for debugger and would have to update $@ to include an obj dir: $(PWD)/$@
-LIBCDEFS := $(wildcard /ztpf/$(UMA_ZTPF_ROOT)/base/lib/libCDEFSFORASM.so)
+LIBCDEFS := $(word 1,$(wildcard $(foreach d,$(TPF_ROOT),$d/base/lib/libCDEFSFORASM.so)))
 
 # compilation rule for C files.
 %$(UMA_DOT_O): %.c
 ###	$(CC) $(CFLAGS) -c -o $@ $< > $*.asmlist
 	$(CC) $(CFLAGS) -c -Wa,-alshd=$*.lst -o $@ $<
-
-	tpfobjpp -O $(if $(filter -O%,$(CFLAGS)),$(patsubst -%,%,$(filter -O%,$(CFLAGS))),O3) -g  $(if $(filter -g2,$(CFLAGS)),$(patsubst -%,%,$(filter -g2,$(CFLAGS))),gNotApplicable) -c PUT14.1  $@
+	tpfobjpp -O $(if $(filter -O%,$(CFLAGS)),$(patsubst -%,%,$(filter -O%,$(CFLAGS))),O3) -g $(if $(filter -g2,$(CFLAGS)),$(patsubst -%,%,$(filter -g2,$(CFLAGS))),gNotApplicable) $@
 
 # compilation rule for C++ files.
 %$(UMA_DOT_O): %.cpp
 ###	$(CXX) $(CXXFLAGS) -c $< > $*.asmlist
 	$(CXX) $(CXXFLAGS) -c -Wa,-alshd=$*.lst -o $@ $<
-	tpfobjpp -O $(if $(filter -O%,$(CXXFLAGS)),$(patsubst -%,%,$(filter -O%,$(CXXFLAGS))),O3) -g  $(if $(filter -g2,$(CXXFLAGS)),$(patsubst -%,%,$(filter -g2,$(CXXFLAGS))),gNotApplicable) -c PUT14.1  $@
+	tpfobjpp -O $(if $(filter -O%,$(CXXFLAGS)),$(patsubst -%,%,$(filter -O%,$(CXXFLAGS))),O3) -g $(if $(filter -g2,$(CXXFLAGS)),$(patsubst -%,%,$(filter -g2,$(CXXFLAGS))),gNotApplicable) $@
 
 # compilation rule for precompiled listings, for C and C++ files.
 %$(UMA_DOT_I): %.c
@@ -319,7 +318,7 @@ LIBCDEFS := $(wildcard /ztpf/$(UMA_ZTPF_ROOT)/base/lib/libCDEFSFORASM.so)
 # compilation rule for metal-C files.
 %$(UMA_DOT_O): %.mc
 	cp $< $*.c
-	xlc $(MCFLAGS) -qnosearch  -I /usr/include/metal/ -qmetal -qlongname -S -o $*.s $*.c > $*.asmlist
+	xlc $(MCFLAGS) -qnosearch -I /usr/include/metal/ -qmetal -qlongname -S -o $*.s $*.c > $*.asmlist
 	rm -f $*.c
 	as -mgoff $(UMA_MCASM_INCLUDES) $*.s
 	rm -f $*.s
@@ -346,15 +345,32 @@ LIBCDEFS := $(wildcard /ztpf/$(UMA_ZTPF_ROOT)/base/lib/libCDEFSFORASM.so)
 # We use sed in these scripts to retain only those lines that will be interesting
 # to omr/ddr/tools/getmacros; this reduces the total footprint of all *.i files by
 # over 1GB and reduces the workload of getmacros as it reads them.
+
+DDR_SED_COMMAND := \
+	sed -n -e '/^DDRFILE_BEGIN /,/^DDRFILE_END /s/^/@/' -e '/^@./p'
+
+# On z/OS, CFLAGS and CXXFLAGS contain '-Wc,convlit(ISO8859-1)' and '-Wc,list,offset'
+# which are incompatible with the use of '-E' below, trigger numerous warnings.
+# The solution is to use '-Wc,noconvlit' and '-Wc,nolist,nooffset' to negate those options.
+
+DDR_NOLIST := <#if uma.spec.type.zos>-Wc,noconvlit -Wc,nolist,nooffset</#if>
+
+# On z/OS, also suppress these C preprocessor errors:
+# - CCN3211 Parameter list must be empty, or consist of one or more identifiers separated by commas.
+# - CCN3766 The universal character name "0x**" is not in the allowable range for an identifier.
+
+DDR_C_SUPPRESS := <#if uma.spec.type.zos>-qsuppress=CCN3211:CCN3766</#if>
+
 %.i : %.c
-	$(CC) $(CFLAGS) -E $< | sed -n -e '/^@/p' > $@
+	$(CC) $(CFLAGS) $(DDR_NOLIST) $(DDR_C_SUPPRESS) -E $< | $(DDR_SED_COMMAND) > $@
 
 %.i : %.cpp
-	$(CXX) $(CXXFLAGS) -E $< | sed -n -e '/^@/p' > $@
+	$(CXX) $(CXXFLAGS) $(DDR_NOLIST) -E $< | $(DDR_SED_COMMAND) > $@
 
 # just create empty output files
 %.i : %.asm ; touch $@
 %.i : %.m4  ; touch $@
+%.i : %.mc  ; touch $@
 %.i : %.s   ; touch $@
 
 <#if uma.spec.type.windows>
@@ -380,7 +396,7 @@ LIBCDEFS := $(wildcard /ztpf/$(UMA_ZTPF_ROOT)/base/lib/libCDEFSFORASM.so)
 <#elseif uma.spec.type.ztpf>
 %$(UMA_DOT_O): %.s
 	$(AS) $(ASFLAGS) -alshd=$*.lst -o $@ $<
-	tpfobjpp -O ONotApplicable -g gNotApplicable -c PUT14.1  -f $(LIBCDEFS) $@
+	tpfobjpp -O ONotApplicable -g gNotApplicable -f $(LIBCDEFS) $@
 <#else>
 %$(UMA_DOT_O): %.s
 	$(AS) $(ASFLAGS) -o $@ $<
@@ -388,7 +404,7 @@ LIBCDEFS := $(wildcard /ztpf/$(UMA_ZTPF_ROOT)/base/lib/libCDEFSFORASM.so)
 
 </#if>
 <#if !(uma.spec.type.aix || uma.spec.type.zos)>
-# compileation rule for .asm files
+# compilation rule for .asm files
 <#if uma.spec.type.windows>
 %$(UMA_DOT_O): %.asm
 	$(AS) $(ASFLAGS) $<
@@ -397,7 +413,7 @@ LIBCDEFS := $(wildcard /ztpf/$(UMA_ZTPF_ROOT)/base/lib/libCDEFSFORASM.so)
 	perl $(UMA_PATH_TO_ROOT)compiler/makelib/masm2gas.pl $(UMA_MASM2GAS_FLAGS) $(UMA_C_INCLUDES) $*.asm
 	$(AS) $(ASFLAGS) -alshd=$*.lst -o $*.o $*.s
 	-rm $*.s
-	tpfobjpp -O ONotApplicable -g gNotApplicable -c PUT14.1  -f $(LIBCDEFS) $@
+	tpfobjpp -O ONotApplicable -g gNotApplicable -f $(LIBCDEFS) $@
 <#else>
 %$(UMA_DOT_O): %.asm
 	perl $(UMA_PATH_TO_ROOT)makelib/masm2gas.pl $(UMA_MASM2GAS_FLAGS) $(UMA_C_INCLUDES) $*.asm
@@ -427,9 +443,6 @@ UMA_PASM_INCLUDES:=$(addprefix -I ,$(UMA_INCLUDES))
 
 </#if>
 <#if uma.spec.type.aix>
-# compilation rule for .dbg files
-%$(UMA_DOT_O): %.dbg
-	aspp $(UMA_ASPP_DEBUG) $< $
 
 # compilation rule for .spp files - translate ! to newline
 %$(UMA_DOT_O): %.spp
@@ -477,8 +490,8 @@ UMA_PASM_INCLUDES:=$(addprefix -I ,$(UMA_INCLUDES))
 <#if uma.spec.type.zos>
 #compilation rule for .m4 files
 %$(UMA_DOT_O): %.m4
-	m4 -DJ9ZOS390  -DJ9VM_TIERED_CODE_CACHE $(UMA_M4_FLAGS) $(UMA_C_INCLUDES) $< > $*.s
-	$(AS) -DJ9ZOS390=1 -Wa,goff -Wa,SYSPARM\(BIT64\) $(UMA_ASM_INCLUDES) -c -o $*.o $*.s
+	m4 -DJ9ZOS390 $(UMA_M4_FLAGS) $(UMA_C_INCLUDES) $< > $*.s
+	$(AS) -DJ9ZOS390=1 -Wa,goff -Wa,"SYSPARM(BIT64)" $(UMA_ASM_INCLUDES) -c -o $*.o $*.s
 	-mv -f $*.s $*.hold
 </#if>
 
@@ -487,11 +500,11 @@ UMA_PASM_INCLUDES:=$(addprefix -I ,$(UMA_INCLUDES))
 	m4 $(CPPFLAGS_NOCOV) $(UMA_M4_FLAGS) $*.m4 > $*.s
 	$(AS) $(ASFLAGS) -alshd=$*.lst $*.s
 	-rm $*.s
-	tpfobjpp -O ONotApplicable -g gNotApplicable -c PUT14.1  -f $(LIBCDEFS) $@
+	tpfobjpp -O ONotApplicable -g gNotApplicable -f $(LIBCDEFS) $@
 </#if>
 
 <#if uma.spec.type.windows>
-ifdef USE_MINGW
+ifdef USE_CLANG
 UMA_M4_INCLUDES = $(UMA_C_INCLUDES)
 else
 UMA_M4_INCLUDES = $(patsubst /I%,-I%,$(UMA_C_INCLUDES))
@@ -503,25 +516,34 @@ endif
 	$(AS) $(ASFLAGS) $*.asm
 	-mv -f $*.asm $*.hold
 
-ifdef USE_MINGW
-MINGW_CXXFLAGS+=-mdll -mwin32 -mthreads -fno-rtti -fno-threadsafe-statics -fno-strict-aliasing -fno-exceptions -fno-use-linker-plugin -fno-asynchronous-unwind-tables
+ifdef USE_CLANG
+CLANG_CXXFLAGS+=-fno-rtti -fno-threadsafe-statics -fno-strict-aliasing -fno-exceptions -fno-asynchronous-unwind-tables
 ifdef VS12AndHigher
-MINGW_CXXFLAGS+=-std=c++0x -D_CRT_SUPPRESS_RESTRICT -DVS12AndHigher
+CLANG_CXXFLAGS+=-std=c++0x -D_CRT_SUPPRESS_RESTRICT -DVS12AndHigher
 <#if uma.spec.processor.x86>
-	MINGW_CXXFLAGS+=-D_M_IX86
+	CLANG_CXXFLAGS+=-D_M_IX86
 <#elseif uma.spec.processor.amd64>
-	MINGW_CXXFLAGS+=-D_M_X64
+	CLANG_CXXFLAGS+=-D_M_X64
 </#if>
 endif
-# special handling BytecodeInterpreter.cpp and DebugBytecodeInterpreter.cpp
-BytecodeInterpreter$(UMA_DOT_O):BytecodeInterpreter.cpp
-	$(MINGW_CXX) $(MINGW_CXXFLAGS) -c $< -o $@
+# special handling MHInterpreterFull.cpp, MHInterpreterCompressed.cpp, BytecodeInterpreterFull.cpp, BytecodeInterpreterCompressed.cpp, DebugBytecodeInterpreterFull.cpp and DebugBytecodeInterpreterCompressed.cpp
+BytecodeInterpreterFull$(UMA_DOT_O):BytecodeInterpreterFull.cpp
+	$(CLANG_CXX) $(CLANG_CXXFLAGS) -c $< -o $@
 
-DebugBytecodeInterpreter$(UMA_DOT_O):DebugBytecodeInterpreter.cpp
-	$(MINGW_CXX) $(MINGW_CXXFLAGS) -c $< -o $@
+BytecodeInterpreterCompressed$(UMA_DOT_O):BytecodeInterpreterCompressed.cpp
+	$(CLANG_CXX) $(CLANG_CXXFLAGS) -c $< -o $@
 
-MHInterpreter$(UMA_DOT_O):MHInterpreter.cpp
-	$(MINGW_CXX) $(MINGW_CXXFLAGS) -c $< -o $@
+DebugBytecodeInterpreterFull$(UMA_DOT_O):DebugBytecodeInterpreterFull.cpp
+	$(CLANG_CXX) $(CLANG_CXXFLAGS) -c $< -o $@
+
+DebugBytecodeInterpreterCompressed$(UMA_DOT_O):DebugBytecodeInterpreterCompressed.cpp
+	$(CLANG_CXX) $(CLANG_CXXFLAGS) -c $< -o $@
+
+MHInterpreterFull$(UMA_DOT_O):MHInterpreterFull.cpp
+	$(CLANG_CXX) $(CLANG_CXXFLAGS) -c $< -o $@
+
+MHInterpreterCompressed$(UMA_DOT_O):MHInterpreterCompressed.cpp
+	$(CLANG_CXX) $(CLANG_CXXFLAGS) -c $< -o $@
 
 endif
 </#if>
@@ -531,28 +553,45 @@ cnathelp$(UMA_DOT_O):cnathelp.cpp
 	$(CXX) $(CXXFLAGS) -mstackrealign -c $<
 </#if>
 
+# JIT helper methods require us to disable buffer security checks on Windows
+<#if uma.spec.type.windows>
+cnathelp$(UMA_DOT_O):cnathelp.cpp
+	$(CXX) $(CXXFLAGS) /GS- -c $<
+SharedService$(UMA_DOT_O):SharedService.c
+	$(CC) $(CFLAGS) /GS- -c $<
+</#if>
+
 <#if uma.spec.processor.ppc>
 ifndef USE_PPC_GCC
-# special handling BytecodeInterpreter.cpp and DebugBytecodeInterpreter.cpp
-FLAGS_TO_REMOVE=-O3
+# special handling BytecodeInterpreterFull.cpp, BytecodeInterpreterCompressed.cpp, DebugBytecodeInterpreterFull.cpp and DebugBytecodeInterpreterCompressed.cpp
+FLAGS_TO_REMOVE += -O3
 NEW_OPTIMIZATION_FLAG=-O2 -qdebug=lincomm:ptranl:tfbagg
 <#if uma.spec.type.linux>
-FLAGS_TO_REMOVE+=-qpic=large
+FLAGS_TO_REMOVE += -qpic=large
 NEW_OPTIMIZATION_FLAG+=-qmaxmem=-1 -qpic
 </#if>
 SPECIALCXXFLAGS=$(filter-out $(FLAGS_TO_REMOVE),$(CXXFLAGS))
 
-BytecodeInterpreter$(UMA_DOT_O):BytecodeInterpreter.cpp
+BytecodeInterpreterFull$(UMA_DOT_O):BytecodeInterpreterFull.cpp
 	$(CXX) $(SPECIALCXXFLAGS) $(NEW_OPTIMIZATION_FLAG) -c $<
 
-DebugBytecodeInterpreter$(UMA_DOT_O):DebugBytecodeInterpreter.cpp
+BytecodeInterpreterCompressed$(UMA_DOT_O):BytecodeInterpreterCompressed.cpp
 	$(CXX) $(SPECIALCXXFLAGS) $(NEW_OPTIMIZATION_FLAG) -c $<
 
-MHInterpreter$(UMA_DOT_O):MHInterpreter.cpp
+DebugBytecodeInterpreterFull$(UMA_DOT_O):DebugBytecodeInterpreterFull.cpp
+	$(CXX) $(SPECIALCXXFLAGS) $(NEW_OPTIMIZATION_FLAG) -c $<
+
+DebugBytecodeInterpreterCompressed$(UMA_DOT_O):DebugBytecodeInterpreterCompressed.cpp
+	$(CXX) $(SPECIALCXXFLAGS) $(NEW_OPTIMIZATION_FLAG) -c $<
+
+MHInterpreterFull$(UMA_DOT_O):MHInterpreterFull.cpp
+	$(CXX) $(SPECIALCXXFLAGS) $(NEW_OPTIMIZATION_FLAG) -c $<
+
+MHInterpreterCompressed$(UMA_DOT_O):MHInterpreterCompressed.cpp
 	$(CXX) $(SPECIALCXXFLAGS) $(NEW_OPTIMIZATION_FLAG) -c $<
 
 endif
-<#if uma.spec.flags.env_littleEndian.enabled && !uma.spec.flags.env_gcc.enabled>
+<#if uma.spec.type.linux && !uma.spec.flags.env_gcc.enabled>
 # special handling of fltconv.c
 # This is a work around for a compiler defect (see JAZZ 76038)
 fltconv$(UMA_DOT_O):fltconv.c
@@ -590,6 +629,9 @@ ifndef UMA_NO_CLEAN_TARGET
 clean:
 	$(RM) $(UMA_OBJECTS) $(UMA_BYPRODUCTS) $(TARGETS)
 	-$(RM) *.d $(UMA_OBJECTS:$(UMA_DOT_O)=.i)
+<#if uma.spec.type.ztpf>
+	-$(RM) *.d $(UMA_OBJECTS:$(UMA_DOT_O)=.lst)
+</#if>
 <#if uma.spec.type.windows>
 	$(RM) *.pdb
 </#if>
@@ -619,10 +661,10 @@ show_deps:
 -include $(UMA_DEPS)
 </#if>
 
-EXTRA_FLAGS=-DUT_DIRECT_TRACE_REGISTRATION -D$(TR_HOST)
+EXTRA_FLAGS=-D$(TR_HOST)
 
 CFLAGS+=$(EXTRA_FLAGS)
 CXXFLAGS+=$(EXTRA_FLAGS)
 CPPFLAGS+=$(EXTRA_FLAGS)
-MINGW_CXXFLAGS+=$(EXTRA_FLAGS)
+CLANG_CXXFLAGS+=$(EXTRA_FLAGS)
 PPC_GCC_CXXFLAGS+=$(EXTRA_FLAGS)

@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -30,8 +29,6 @@
 #include "modron.h"
 #include "modronopt.h"
 
-#if defined(J9VM_GC_ARRAYLETS)
-
 #include "Bits.hpp"
 #include "Math.hpp"
 
@@ -44,6 +41,12 @@ class GC_ArrayletObjectModelBase
 * Data members
 */
 private:
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+	bool _compressObjectReferences;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+	bool _enableDoubleMapping; /** Allows arraylets to be double mapped */
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
 protected:
 	OMR_VM *_omrVM; 	/**< used so that we can pull the arrayletLeafSize and arrayletLeafLogSize for arraylet sizing calculations */
 	void * _arrayletRangeBase; /**< The base heap range of where discontiguous arraylets are allowed. */
@@ -79,6 +82,28 @@ protected:
 
 public:
 	/**
+	 * Return back true if object references are compressed
+	 * @return true, if object references are compressed
+	 */
+	MMINLINE bool
+	compressObjectReferences()
+	{
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+#if defined(OMR_GC_FULL_POINTERS)
+#if defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES)
+		return (bool)OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES;
+#else /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+		return _compressObjectReferences;
+#endif /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+#else /* defined(OMR_GC_FULL_POINTERS) */
+		return true;
+#endif /* defined(OMR_GC_FULL_POINTERS) */
+#else /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return false;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+	}
+
+	/**
 	 * Returns the size of an indexable object in elements.
 	 * @param arrayPtr Pointer to the indexable object whose size is required
 	 * @return Size of object in elements
@@ -86,13 +111,20 @@ public:
 	MMINLINE UDATA
 	getSizeInElements(J9IndexableObject *arrayPtr)
 	{
-		UDATA size = ((J9IndexableObjectContiguous *)arrayPtr)->size;
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
-		if (0 == size) {
-			/* Discontiguous */
-			size =((J9IndexableObjectDiscontiguous *)arrayPtr)->size;
+		UDATA size = 0;
+		if (compressObjectReferences()) {
+			size = ((J9IndexableObjectContiguousCompressed *)arrayPtr)->size;
+			if (0 == size) {
+				/* Discontiguous */
+				size = ((J9IndexableObjectDiscontiguousCompressed *)arrayPtr)->size;
+			}
+		} else {
+			size = ((J9IndexableObjectContiguousFull *)arrayPtr)->size;
+			if (0 == size) {
+				/* Discontiguous */
+				size = ((J9IndexableObjectDiscontiguousFull *)arrayPtr)->size;
+			}
 		}
-#endif /* defined(J9VM_GC_HYBRID_ARRAYLETS) */
 		return size;
 	}
 
@@ -104,8 +136,38 @@ public:
 	MMINLINE void
 	setSizeInElementsForContiguous(J9IndexableObject *arrayPtr, UDATA size)
 	{
-		((J9IndexableObjectContiguous *)arrayPtr)->size = (U_32)size;
+		if (compressObjectReferences()) {
+			((J9IndexableObjectContiguousCompressed *)arrayPtr)->size = (U_32)size;
+		} else {
+			((J9IndexableObjectContiguousFull *)arrayPtr)->size = (U_32)size;
+		}
 	}
+
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+	/**
+	 * Sets enable double mapping status. Note that the double map
+	 * status value may differ from the requested one in certain
+	 * circuntances.
+	 *
+	 * @param enableDoubleMapping
+	 */
+	MMINLINE void
+	setEnableDoubleMapping(bool enableDoubleMapping)
+	{
+		_enableDoubleMapping = enableDoubleMapping;
+	}
+
+	/**
+	 * Returns enable double mapping status
+	 * 
+	 * @return true if double mapping status is set to true, false otherwise.
+	 */
+	MMINLINE bool
+	isDoubleMappingEnabled()
+	{
+		return _enableDoubleMapping;
+	}
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
 
 	/**
 	 * Sets size in elements of a discontiguous indexable object .
@@ -115,10 +177,13 @@ public:
 	MMINLINE void
 	setSizeInElementsForDiscontiguous(J9IndexableObject *arrayPtr, UDATA size)
 	{
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
-		((J9IndexableObjectContiguous *)arrayPtr)->size = 0;
-#endif
-		((J9IndexableObjectDiscontiguous *)arrayPtr)->size = (U_32)size;
+		if (compressObjectReferences()) {
+			((J9IndexableObjectDiscontiguousCompressed *)arrayPtr)->mustBeZero = 0;
+			((J9IndexableObjectDiscontiguousCompressed *)arrayPtr)->size = (U_32)size;
+		} else {
+			((J9IndexableObjectDiscontiguousFull *)arrayPtr)->mustBeZero = 0;
+			((J9IndexableObjectDiscontiguousFull *)arrayPtr)->size = (U_32)size;
+		}
 	}
 
 	/**
@@ -132,23 +197,25 @@ public:
 	{
 		bool needAlignment = false;
 
-#if defined(J9VM_GC_COMPRESSED_POINTERS)
-		/* Compressed pointers require that each leaf starts at 8 aligned address.
-		 * Otherwise compressed leaf pointers will not work with shift value of 3.
-		 */
-		needAlignment = true;
-#else
-		/* The alignment padding is only required when the size of the spine pointers are
-		 * not 8 byte aligned.  For example, on a 64-bit non-compressed platform, a single
-		 * spine pointer would be 8 byte aligned, whereas on a 32-bit platform, a single
-		 * spine pointer would not be 8 byte aligned, and would require additional padding.
-		 */
-		if (sizeof(fj9object_t) < sizeof(double)) {
+		if (compressObjectReferences()) {
+			/* Compressed pointers require that each leaf starts at an appropriately-aligned address
+			 * (based on the compressed shift value). If this is not done, compressed leaf pointers
+			 * would be unable to reach all of the heap.
+			 */
+			needAlignment = true;
+#if !defined(J9VM_ENV_DATA64)
+		} else {
+			/* The alignment padding is only required when the size of the spine pointers are
+			 * not 8 byte aligned.  For example, on a 64-bit non-compressed platform, a single
+			 * spine pointer would be 8 byte aligned, whereas on a 32-bit platform, a single
+			 * spine pointer would not be 8 byte aligned, and would require additional padding.
+			 */
 			if (OBJECT_HEADER_SHAPE_DOUBLES == J9GC_CLASS_SHAPE(clazz)) {
 				needAlignment = true;
 			}
+#endif /* !J9VM_ENV_DATA64 */
 		}
-#endif
+
 		return needAlignment;
 	}
 
@@ -177,19 +244,13 @@ public:
 	 * @return the number of arraylets used for an array of dataSizeInBytes bytes
 	 */
 	MMINLINE UDATA
-	numArraylets(UDATA unadjustedDataSizeInBytes)
+	numArraylets(UDATA dataSizeInBytes)
 	{
 		UDATA leafSize = _omrVM->_arrayletLeafSize;
 		UDATA numberOfArraylets = 1;
 		if (UDATA_MAX != leafSize) {
 			UDATA leafSizeMask = leafSize - 1;
 			UDATA leafLogSize = _omrVM->_arrayletLeafLogSize;
-
-			/* We add one to unadjustedDataSizeInBytes to ensure that it's always possible to determine the address
-			 * of the after-last element without crashing. Handle the case of UDATA_MAX specially, since we use that
-			 * for any object whose size overflows the address space.
-			 */
-			UDATA dataSizeInBytes = (UDATA_MAX == unadjustedDataSizeInBytes) ? UDATA_MAX : (unadjustedDataSizeInBytes + 1);
 
 			/* CMVC 135307 : following logic for calculating the leaf count would not overflow dataSizeInBytes.
 			 * the assumption is leaf size is order of 2. It's identical to:
@@ -214,5 +275,4 @@ public:
 	expandArrayletSubSpaceRange(MM_MemorySubSpace* subSpace, void* rangeBase, void* rangeTop, UDATA largestDesirableArraySpineSize);
 };
 
-#endif /*J9VM_GC_ARRAYLETS */
 #endif /* ARRAYLETOBJECTMODELBASE_ */

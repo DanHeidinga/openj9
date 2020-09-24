@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2015, 2018 IBM Corp. and others
+ * Copyright (c) 2015, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -134,6 +134,10 @@ convertToOracleOpcodeString(U_8 j9Opcode, U_8 returnType)
 	case JBreturn0:					/* FALLTHROUGH */
 	case JBreturn1:					/* FALLTHROUGH */
 	case JBreturn2:					/* FALLTHROUGH */
+	case JBreturnC:					/* FALLTHROUGH */
+	case JBreturnS:					/* FALLTHROUGH */
+	case JBreturnB:					/* FALLTHROUGH */
+	case JBreturnZ:					/* FALLTHROUGH */
 	case JBsyncReturn0:				/* FALLTHROUGH */
 	case JBsyncReturn1:				/* FALLTHROUGH */
 	case JBsyncReturn2:
@@ -411,14 +415,15 @@ exit:
 U_8*
 decodeStackmapFrameData(StackMapFrame* stackMapFrame, U_8* nextStackmapFrame, I_32 stackmapFrameIndex, MethodContextInfo* methodInfo, J9BytecodeVerificationData* verifyData)
 {
-	/* Decode the specified 'Stackmap Frame' data from compressed the stackmap table in the class file */
-	if (NULL != methodInfo->stackMapData) {
-		nextStackmapFrame = decodeStackFrameDataFromStackMapTable(stackMapFrame, nextStackmapFrame, methodInfo);
-	} else {
-		/* Decode the specified 'Stackmap frame' data from verifyData->stackMaps (the decompessed stackmap table)
-		 * as the stackmap table doesn't exist in the class file.
+	if (verifyData->createdStackMap) {
+		/* Decode the specified 'Stackmap frame' data from verifyData->stackMaps (the decompressed stackmap table)
+		 * as the stackmap table doesn't exist in the class file or currently in fallback verification
+		 * so the frame is pointing to internal created stackMap
 		 */
 		nextStackmapFrame = decodeConstuctedStackMapFrameData(stackMapFrame, nextStackmapFrame, stackmapFrameIndex, methodInfo, verifyData);
+	} else {
+		/* Decode the specified 'Stackmap Frame' data from the compressed stackmap table in the class file */
+		nextStackmapFrame = decodeStackFrameDataFromStackMapTable(stackMapFrame, nextStackmapFrame, methodInfo);
 	}
 
 	return nextStackmapFrame;
@@ -917,8 +922,8 @@ printTypeInfoToBuffer(MessageBuffer* buf, U_8 tag, J9UTF8Ref* dataType, BOOLEAN 
 	switch(tag) {
 	case CFR_STACKMAP_TYPE_TOP:
 		/* Only print the 2nd slot of long/double type to the error message buffer for the "Reason" section in the error message framework. */
-		if ((0 == strncmp((char*)dataType->bytes, TYPE_LONG, sizeof(TYPE_LONG) - 1))
-		|| (0 == strncmp((char*)dataType->bytes, TYPE_DOUBLE, sizeof(TYPE_DOUBLE) - 1))
+		if (J9UTF8_DATA_EQUALS(TYPE_LONG, sizeof(TYPE_LONG) - 1, dataType->bytes, dataType->length)
+		 || J9UTF8_DATA_EQUALS(TYPE_DOUBLE, sizeof(TYPE_DOUBLE) - 1, dataType->bytes, dataType->length)
 		) {
 			printMessage(buf, "%.*s_2nd", dataType->length, dataType->bytes);
 		} else {

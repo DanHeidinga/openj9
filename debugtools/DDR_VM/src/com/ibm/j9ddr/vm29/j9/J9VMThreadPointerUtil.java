@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2014 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -277,10 +277,12 @@ public class J9VMThreadPointerUtil {
 			thrinfo.lockObject = null;
 			vmstate = getInflatedMonitorState(j9self, j9state, thrinfo);
 		}
-		
-		if(thrinfo.rawLock != null) {
-			if(thrinfo.rawLock.flags().allBitsIn(J9THREAD_MONITOR_OBJECT)) {
-				thrinfo.lockObject = J9ObjectPointer.cast(thrinfo.rawLock.userData());
+
+		if((thrinfo.lockObject == null) || thrinfo.lockObject.isNull()) {
+			if(!((thrinfo.rawLock == null) || thrinfo.rawLock.isNull())) {
+				if(thrinfo.rawLock.flags().allBitsIn(J9THREAD_MONITOR_OBJECT)) {
+					thrinfo.lockObject = J9ObjectPointer.cast(thrinfo.rawLock.userData());
+				}
 			}
 		}
 		
@@ -323,7 +325,7 @@ public class J9VMThreadPointerUtil {
 	
 //	#define TMP_LOCKWORD_OFFSET(object) (dbgReadUDATA((UDATA*)((U_8*)((UDATA)(dbgReadU32((U_32*)(((U_8*)object) + offsetof(J9Object, clazz))))+ offsetof(J9Class,lockOffset)))))
 //	private static UDATA tmpLockwordOffset(J9ObjectPointer object) throws CorruptDataException {
-//		return object.clazz().lockOffset();
+//		return J9ObjectHelper.rawClazz(object).lockOffset();
 //	}
 
 	private static long getInflatedMonitorState(J9ThreadPointer j9self, ThreadState j9state, ThreadInfo thrinfo) {

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -66,7 +66,7 @@ private:
 	MM_AllocationContextBalanced *_nextSibling; /**< Instances of the receiver are built into a circular linked-list.  This points to the next adjacent downstream neighbour in this list (may be pointing to this if there is only one context in the node) */
 	MM_AllocationContextBalanced *_cachedReplenishPoint;	/**< The sibling context which most recently replenished the receiver */
 	MM_AllocationContextBalanced *_stealingCousin;	/**< A context in the "next" node which the receiver will use for spilling memory requests across NUMA nodes.  Points back at the receiver if this is non-NUMA */
-	MM_AllocationContextBalanced *_nextToSteal;	/**< A pointer to the next context we will try to steal from (we steal in a round-robin to try to distribute the heap's assymetry).  Points back at the receiver if this is non-NUMA */
+	MM_AllocationContextBalanced *_nextToSteal;	/**< A pointer to the next context we will try to steal from (we steal in a round-robin to try to distribute the heap's asymmetry).  Points back at the receiver if this is non-NUMA */
 	MM_HeapRegionManager *_heapRegionManager; /**< A cached pointer to the HeapRegionManager */
 	UDATA *_freeProcessorNodes;	/**< The array listing all the NUMA node numbers which account for the nodes with processors but no memory plus an empty slot for each context to use (element 0 is used by this context) - this is used when setting affinity */
 	UDATA _freeProcessorNodeCount;	/**< The length, in elements, of the _freeProcessorNodes array (always at least 1 after startup) */
@@ -82,9 +82,7 @@ public:
 	 */
 	virtual void *allocateTLH(MM_EnvironmentBase *env, MM_AllocateDescription *allocateDescription, MM_ObjectAllocationInterface *objectAllocationInterface, bool shouldCollectOnFailure);
 	virtual void *allocateObject(MM_EnvironmentBase *env, MM_AllocateDescription *allocateDescription, bool shouldCollectOnFailure);
-#if defined(J9VM_GC_ARRAYLETS)
 	virtual void *allocateArrayletLeaf(MM_EnvironmentBase *env, MM_AllocateDescription *allocateDescription, bool shouldCollectOnFailure);
-#endif /* defined(J9VM_GC_ARRAYLETS) */
 
 	/**
 	 * Acquire a new region to be placed in the active set of regions from which to allocate.
@@ -113,7 +111,7 @@ public:
 
 	/**
 	 * Called when the given region has been deemed empty, but is not a FREE region.  The receiver is responsible for changing the region type and ensuring that it is appropriately stored.
-	 * @param env[in] The calling thread (typically the master GC thread)
+	 * @param env[in] The calling thread (typically the main GC thread)
 	 * @param region[in] The region to recycle
 	 */
 	virtual void recycleRegion(MM_EnvironmentVLHGC *env, MM_HeapRegionDescriptorVLHGC *region);
@@ -121,7 +119,7 @@ public:
 	/**
 	 * Called during tear down of a subspace to discard any regions which comprise the subspace.
 	 * The region should be FREE (not IDLE!) on completion of this call.
-	 * @param env[in] The calling thread (typically the master GC thread)
+	 * @param env[in] The calling thread (typically the main GC thread)
 	 * @param region[in] The region to tear down
 	 */
 	virtual void tearDownRegion(MM_EnvironmentBase *env, MM_HeapRegionDescriptorVLHGC *region);
@@ -322,7 +320,7 @@ private:
 	 *
 	 * @param env[in] The thread attempting the allocation
 	 * @param subspace[in] The subSpace to which the allocated pool must be attached
-	 * @paran requestingContext[in] The context requesting a region from the receiver
+	 * @param requestingContext[in] The context requesting a region from the receiver
 	 * @return The region or NULL if there were none available in the heap
 	 */
 	MM_HeapRegionDescriptorVLHGC *acquireMPBPRegionFromHeap(MM_EnvironmentBase *env, MM_MemorySubSpace *subspace, MM_AllocationContextTarok *requestingContext);
@@ -367,7 +365,7 @@ private:
 	 *
 	 * @param env[in] The thread attempting the allocation
 	 * @param subSpace[in] The subSpace to which the allocated pool must be attached
-	 * @paran requestingContext[in] The context requesting a region from the receiver
+	 * @param requestingContext[in] The context requesting a region from the receiver
 	 * @return The region or NULL if there were none available in the receiver
 	 */
 	MM_HeapRegionDescriptorVLHGC *acquireMPBPRegionFromContext(MM_EnvironmentBase *env, MM_MemorySubSpace *subSpace, MM_AllocationContextTarok *requestingContext);
@@ -401,7 +399,6 @@ private:
 	 */
 	void *lockedAllocateObject(MM_EnvironmentBase *env, MM_AllocateDescription *allocateDescription);
 
-#if defined(J9VM_GC_ARRAYLETS)
 	/**
 	 * Allocate an arraylet leaf.  Note that the receiver can assume that either the context is locked or the calling thread has exclusive.
 	 * NOTE:  The returned arraylet leaf is UNINITIALIZED MEMORY (since it can't be zeroed under lock) so the caller must zero it before it
@@ -414,7 +411,6 @@ private:
 	 * @return The address of the leaf
 	 */
 	void *lockedAllocateArrayletLeaf(MM_EnvironmentBase *env, MM_AllocateDescription *allocateDescription, MM_HeapRegionDescriptorVLHGC *freeRegionForArrayletLeaf);
-#endif /* defined(J9VM_GC_ARRAYLETS) */
 
 	/**
 	 * Common implementation for flush() and flushForShutdown()

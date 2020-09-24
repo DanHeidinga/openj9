@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2018 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -90,7 +90,7 @@ cInterpGetStackClassJEP176Iterator(J9VMThread * currentThread, J9StackWalkState 
 
 	Assert_VM_mustHaveVMAccess(currentThread);
 
-	if ((J9_ROM_METHOD_FROM_RAM_METHOD(walkState->method)->modifiers & J9_JAVA_METHOD_FRAME_ITERATOR_SKIP) == J9_JAVA_METHOD_FRAME_ITERATOR_SKIP) {
+	if ((J9_ROM_METHOD_FROM_RAM_METHOD(walkState->method)->modifiers & J9AccMethodFrameIteratorSkip) == J9AccMethodFrameIteratorSkip) {
 		/* Skip methods with java.lang.invoke.FrameIteratorSkip annotation */
 		return J9_STACKWALK_KEEP_ITERATING;
 	}
@@ -99,7 +99,7 @@ cInterpGetStackClassJEP176Iterator(J9VMThread * currentThread, J9StackWalkState 
 	case 1:
 		/* Caller must be annotated with @sun.reflect.CallerSensitive annotation */
 		if (((vm->systemClassLoader != currentClass->classLoader) && (vm->extensionClassLoader != currentClass->classLoader))
-				|| J9_ARE_NO_BITS_SET(J9_ROM_METHOD_FROM_RAM_METHOD(walkState->method)->modifiers, J9_JAVA_METHOD_CALLER_SENSITIVE)
+				|| J9_ARE_NO_BITS_SET(J9_ROM_METHOD_FROM_RAM_METHOD(walkState->method)->modifiers, J9AccMethodCallerSensitive)
 		) {
 			walkState->userData3 = (void *) TRUE;
 			return J9_STACKWALK_STOP_ITERATING;
@@ -147,6 +147,48 @@ convertCStringToByteArray(J9VMThread *currentThread, const char *cString)
 		VM_ArrayCopyHelpers::memcpyToArray(currentThread, result, (UDATA)0, 0, size, (void*)cString);
 	}
 	return result;
+}
+
+J9SFMethodTypeFrame *
+buildMethodTypeFrame(J9VMThread * currentThread, j9object_t methodType)
+{
+#define ROUND_U32_TO(granularity, number) (((number) + (granularity) - 1) & ~((U_32)(granularity) - 1))
+	U_32 argSlots = (U_32)J9VMJAVALANGINVOKEMETHODTYPE_ARGSLOTS(currentThread, methodType);
+	j9object_t stackDescriptionBits = J9VMJAVALANGINVOKEMETHODTYPE_STACKDESCRIPTIONBITS(currentThread, methodType);
+	U_32 descriptionInts = J9INDEXABLEOBJECT_SIZE(currentThread, stackDescriptionBits);
+	U_32 descriptionBytes = ROUND_U32_TO(sizeof(UDATA), descriptionInts * sizeof(I_32));
+	I_32 * description;
+	U_32 i;
+	J9SFMethodTypeFrame * methodTypeFrame;
+	UDATA * newA0 = currentThread->sp + argSlots;
+
+	/* Push the description bits */
+
+	description = (I_32 *) ((U_8 *)currentThread->sp - descriptionBytes);
+	for (i = 0; i < descriptionInts; ++i) {
+		description[i] = J9JAVAARRAYOFINT_LOAD(currentThread, stackDescriptionBits, i);
+	}
+
+	/* Push the frame */
+
+	methodTypeFrame = (J9SFMethodTypeFrame *) ((U_8 *)description - sizeof(J9SFMethodTypeFrame));
+	methodTypeFrame->methodType = methodType;
+	methodTypeFrame->argStackSlots = argSlots;
+	methodTypeFrame->descriptionIntCount = descriptionInts;
+	methodTypeFrame->specialFrameFlags = 0;
+	methodTypeFrame->savedCP = currentThread->literals;
+	methodTypeFrame->savedPC = currentThread->pc;
+	methodTypeFrame->savedA0 = (UDATA *) ((UDATA)currentThread->arg0EA | J9SF_A0_INVISIBLE_TAG);
+
+	/* Update VM thread to point to new frame */
+
+	currentThread->sp = (UDATA *) methodTypeFrame;
+	currentThread->pc = (U_8 *) J9SF_FRAME_TYPE_METHODTYPE;
+	currentThread->literals = NULL;
+	currentThread->arg0EA = newA0;
+
+	return methodTypeFrame;
+#undef ROUND_U32_TO
 }
 
 }

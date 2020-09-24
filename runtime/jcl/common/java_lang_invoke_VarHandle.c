@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2016, 2017 IBM Corp. and others
+ * Copyright (c) 2016, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -76,7 +76,8 @@ accessCheckFieldType(J9VMThread *currentThread, J9Class* lookupClass, J9Class* t
 jlong JNICALL
 Java_java_lang_invoke_FieldVarHandle_lookupField(JNIEnv *env, jobject handle, jclass lookupClass, jstring name, jstring signature, jclass type, jboolean isStatic, jclass accessClass)
 {
-	J9UTF8 *sigUTF = NULL;
+	J9UTF8 *signatureUTF8 = NULL;
+	char signatureUTF8Buffer[256];
 	J9Class *j9LookupClass;			/* J9Class for java.lang.Class lookupClass */
 	J9Class *definingClass = NULL;
 	UDATA field = 0;
@@ -84,35 +85,53 @@ Java_java_lang_invoke_FieldVarHandle_lookupField(JNIEnv *env, jobject handle, jc
 	J9VMThread *vmThread = (J9VMThread *) env;
 	J9JavaVM *vm = vmThread->javaVM;
 	J9InternalVMFunctions *vmFuncs = vm->internalVMFunctions;
+	j9object_t varHandle = NULL;
 	PORT_ACCESS_FROM_ENV(env);
 
 	vmFuncs->internalEnterVMFromJNI(vmThread);
 
-	sigUTF = allocateJ9UTF8(env, signature);
-	if (NULL == sigUTF) {
+	signatureUTF8 = vmFuncs->copyStringToJ9UTF8WithMemAlloc(vmThread, J9_JNI_UNWRAP_REFERENCE(signature), J9_STR_NONE, "", 0, signatureUTF8Buffer, sizeof(signatureUTF8Buffer));
+
+	if (signatureUTF8 == NULL) {
+		vmFuncs->setNativeOutOfMemoryError(vmThread, 0, 0);
 		Assert_JCL_notNull(vmThread->currentException);
 		goto _cleanup;
 	}
 
 	j9LookupClass = J9VM_J9CLASS_FROM_JCLASS(vmThread, lookupClass);
 
-	field = lookupField(env, isStatic, j9LookupClass, name, sigUTF, &definingClass, &romField, accessClass);
+	field = lookupField(env, isStatic, j9LookupClass, name, signatureUTF8, &definingClass, &romField, accessClass);
 
 	if (NULL != vmThread->currentException) {
 		goto _cleanup;
 	}
 
 	/* Check signature for classloader visibility */
-	if (!accessCheckFieldType(vmThread, j9LookupClass, J9VM_J9CLASS_FROM_JCLASS(vmThread, type), sigUTF)) {
-		setClassLoadingConstraintLinkageError(vmThread, definingClass, sigUTF);
+	if (!accessCheckFieldType(vmThread, j9LookupClass, J9VM_J9CLASS_FROM_JCLASS(vmThread, type), signatureUTF8)) {
+		setClassLoadingConstraintLinkageError(vmThread, definingClass, signatureUTF8);
 		goto _cleanup;
 	}
 
-	J9VMJAVALANGINVOKEVARHANDLE_SET_MODIFIERS(vmThread, J9_JNI_UNWRAP_REFERENCE(handle), ((J9ROMFieldShape*) romField)->modifiers);
+	varHandle = J9_JNI_UNWRAP_REFERENCE(handle);
+	J9VMJAVALANGINVOKEVARHANDLE_SET_MODIFIERS(vmThread, varHandle, ((J9ROMFieldShape *)romField)->modifiers);
+
+	/* StaticFieldVarHandle and InstanceFieldVarHandle extend FieldVarHandle. For StaticFieldVarHandle, isStatic
+	 * is true, and the definingClass field is set to the owner of the static field. For InstanceFieldVarHandle,
+	 * isStatic is false, and the definingClass field is set to the lookupClass, which is also the instance class,
+	 * in FieldVarHandle's constructor.
+	 */
+	if (isStatic) {
+		Assert_JCL_notNull(definingClass);
+		J9VMJAVALANGINVOKEFIELDVARHANDLE_SET_DEFININGCLASS(vmThread, varHandle, J9VM_J9CLASS_TO_HEAPCLASS(definingClass));
+	}
 
 _cleanup:
 	vmFuncs->internalExitVMToJNI(vmThread);
-	j9mem_free_memory(sigUTF);
+
+	if (signatureUTF8 != (J9UTF8*)signatureUTF8Buffer) {
+		j9mem_free_memory(signatureUTF8);
+	}
+
 	return field;
 }
 
@@ -140,7 +159,7 @@ Java_java_lang_invoke_FieldVarHandle_unreflectField(JNIEnv *env, jobject handle,
 
 	J9VMJAVALANGINVOKEVARHANDLE_SET_MODIFIERS(vmThread, J9_JNI_UNWRAP_REFERENCE(handle), fieldID->field->modifiers);
 
-	vmFuncs->internalReleaseVMAccess(vmThread);
+	vmFuncs->internalExitVMToJNI(vmThread);
 	return fieldOffset;
 }
 
@@ -204,7 +223,7 @@ Java_java_lang_invoke_VarHandle_compareAndSet(JNIEnv *env, jobject handle, jobje
 }
 
 jboolean JNICALL
-Java_java_lang_invoke_VarHandle_compareAndExchangeVolatile(JNIEnv *env, jobject handle, jobject args)
+Java_java_lang_invoke_VarHandle_compareAndExchange(JNIEnv *env, jobject handle, jobject args)
 {
 	throwNewUnsupportedOperationException(env);
 	return JNI_FALSE;
@@ -245,6 +264,13 @@ Java_java_lang_invoke_VarHandle_weakCompareAndSetRelease(JNIEnv *env, jobject ha
 	return JNI_FALSE;
 }
 
+jboolean JNICALL
+Java_java_lang_invoke_VarHandle_weakCompareAndSetPlain(JNIEnv *env, jobject handle, jobject args)
+{
+	throwNewUnsupportedOperationException(env);
+	return JNI_FALSE;
+}
+
 jobject JNICALL
 Java_java_lang_invoke_VarHandle_getAndSet(JNIEnv *env, jobject handle, jobject args)
 {
@@ -253,7 +279,98 @@ Java_java_lang_invoke_VarHandle_getAndSet(JNIEnv *env, jobject handle, jobject a
 }
 
 jobject JNICALL
+Java_java_lang_invoke_VarHandle_getAndSetAcquire(JNIEnv *env, jobject handle, jobject args)
+{
+	throwNewUnsupportedOperationException(env);
+	return NULL;
+}
+
+jobject JNICALL
+Java_java_lang_invoke_VarHandle_getAndSetRelease(JNIEnv *env, jobject handle, jobject args)
+{
+	throwNewUnsupportedOperationException(env);
+	return NULL;
+}
+
+jobject JNICALL
 Java_java_lang_invoke_VarHandle_getAndAdd(JNIEnv *env, jobject handle, jobject args)
+{
+	throwNewUnsupportedOperationException(env);
+	return NULL;
+}
+
+jobject JNICALL
+Java_java_lang_invoke_VarHandle_getAndAddAcquire(JNIEnv *env, jobject handle, jobject args)
+{
+	throwNewUnsupportedOperationException(env);
+	return NULL;
+}
+
+jobject JNICALL
+Java_java_lang_invoke_VarHandle_getAndAddRelease(JNIEnv *env, jobject handle, jobject args)
+{
+	throwNewUnsupportedOperationException(env);
+	return NULL;
+}
+
+jobject JNICALL
+Java_java_lang_invoke_VarHandle_getAndBitwiseAnd(JNIEnv *env, jobject handle, jobject args)
+{
+	throwNewUnsupportedOperationException(env);
+	return NULL;
+}
+
+jobject JNICALL
+Java_java_lang_invoke_VarHandle_getAndBitwiseAndAcquire(JNIEnv *env, jobject handle, jobject args)
+{
+	throwNewUnsupportedOperationException(env);
+	return NULL;
+}
+
+jobject JNICALL
+Java_java_lang_invoke_VarHandle_getAndBitwiseAndRelease(JNIEnv *env, jobject handle, jobject args)
+{
+	throwNewUnsupportedOperationException(env);
+	return NULL;
+}
+
+jobject JNICALL
+Java_java_lang_invoke_VarHandle_getAndBitwiseOr(JNIEnv *env, jobject handle, jobject args)
+{
+	throwNewUnsupportedOperationException(env);
+	return NULL;
+}
+
+jobject JNICALL
+Java_java_lang_invoke_VarHandle_getAndBitwiseOrAcquire(JNIEnv *env, jobject handle, jobject args)
+{
+	throwNewUnsupportedOperationException(env);
+	return NULL;
+}
+
+jobject JNICALL
+Java_java_lang_invoke_VarHandle_getAndBitwiseOrRelease(JNIEnv *env, jobject handle, jobject args)
+{
+	throwNewUnsupportedOperationException(env);
+	return NULL;
+}
+
+jobject JNICALL
+Java_java_lang_invoke_VarHandle_getAndBitwiseXor(JNIEnv *env, jobject handle, jobject args)
+{
+	throwNewUnsupportedOperationException(env);
+	return NULL;
+}
+
+jobject JNICALL
+Java_java_lang_invoke_VarHandle_getAndBitwiseXorAcquire(JNIEnv *env, jobject handle, jobject args)
+{
+	throwNewUnsupportedOperationException(env);
+	return NULL;
+}
+
+jobject JNICALL
+Java_java_lang_invoke_VarHandle_getAndBitwiseXorRelease(JNIEnv *env, jobject handle, jobject args)
 {
 	throwNewUnsupportedOperationException(env);
 	return NULL;

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -105,6 +105,10 @@
 #define COM_IBM_SHARED_CACHE_MODLEVEL_JAVA7 3
 #define COM_IBM_SHARED_CACHE_MODLEVEL_JAVA8 4
 #define COM_IBM_SHARED_CACHE_MODLEVEL_JAVA9 5
+/* 
+ * No macro is defined for shared cache modLevel starting from Java 10. The value of modLevel equals to the java version number
+ * on which the shared cache is created.
+ */
 
 #define COM_IBM_SHARED_CACHE_ADDRMODE_32 32
 #define COM_IBM_SHARED_CACHE_ADDRMODE_64 64
@@ -265,6 +269,7 @@ typedef struct jvmtiStackInfoExtended {
 #define COM_IBM_ITERATE_SHARED_CACHES_VERSION_2 2
 #define COM_IBM_ITERATE_SHARED_CACHES_VERSION_3 3
 #define COM_IBM_ITERATE_SHARED_CACHES_VERSION_4 4
+#define COM_IBM_ITERATE_SHARED_CACHES_VERSION_5 5
 
 /**
  * The following 5 macros can be used to get address mode and compressedRefs mode from jvmtiSharedCacheInfo.addrMode when COM_IBM_ITERATE_SHARED_CACHES_VERSION_3 or later is specified.
@@ -290,9 +295,10 @@ typedef struct jvmtiStackInfoExtended {
  * lastDetach - time from which last detach has happened
  * cacheType - the type of the cache. This is the new field included when COM_IBM_ITERATE_SHARED_CACHES_VERSION_2 or later is specified
  * softMaxBytes - the soft limit for the available space in the cache. This is the new field included when COM_IBM_ITERATE_SHARED_CACHES_VERSION_4 or later is specified
+ * layer - the shared cache layer number. It is -1 if the shared cache does not have a layer number. This is the new field included when COM_IBM_ITERATE_SHARED_CACHES_VERSION_5 or later is specified
  * 
  * If IBM adds new information to this structure, it will be added
- * to the end to preserve backwards compability, and
+ * to the end to preserve backwards compatibility, and
  * COM_IBM_ITERATE_SHARED_CACHES_VERSION will be incremented.
  */
 typedef struct jvmtiSharedCacheInfo {
@@ -309,6 +315,7 @@ typedef struct jvmtiSharedCacheInfo {
 	jlong lastDetach;
 	jint cacheType;
 	jlong softMaxBytes;
+	jint layer;
 } jvmtiSharedCacheInfo;
 
 /**
@@ -334,26 +341,6 @@ typedef struct jvmtiObjectRenameInfo {
     jlong oldAutoTag;
     jlong newAutoTag;
 } jvmtiObjectRenameInfo;
-
-/**
- * Signature of callback function which may be provided to the jvmtiAutotaggedObjectAlloc callback.
- * This function is callback-safe and it has the same parameters as VMObjectAlloc, plus a pointer to userData.
- * 
- * JNIEnv - the JNI environment of the event (current) thread.
- * thread - thread allocating the object.
- * object - JNI local reference to the object that was allocated.
- * object_klass	- JNI local reference to the class of the object.
- * size	- size of the object (in bytes).
- * userData - pointer received in the jvmtiAutotaggedObjectAlloc callback
- */ 
-typedef void (JNICALL *jvmtiAutotaggedObjectAllocCallbackSafeFunction)(
-	jvmtiEnv *jvmti_env,
-	JNIEnv* jni_env,
-	jthread thread,
-	jobject object,
-	jclass object_klass,
-	jlong size,
-	void *userData);
 
 /*
  * Trace subscriber callback function. This function will be passed records containing trace

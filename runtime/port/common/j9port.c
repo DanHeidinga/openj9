@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2016 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -37,7 +37,7 @@
  * All minor versions append to the end of this table
  */
 
-static J9PortLibrary MasterPortLibraryTable = {
+static J9PortLibrary MainPortLibraryTable = {
 	{NULL}, /* omrPortLibrary */
 	{J9PORT_MAJOR_VERSION_NUMBER, J9PORT_MINOR_VERSION_NUMBER, 0, J9PORT_CAPABILITY_MASK}, /* portVersion */
 	NULL, /* portGlobals */
@@ -52,19 +52,8 @@ static J9PortLibrary MasterPortLibraryTable = {
 	j9sysinfo_get_cache_info, /* sysinfo_get_cache_info */
 	j9sock_startup, /* sock_startup */
 	j9sock_shutdown, /* sock_shutdown */
-	j9sock_htons, /* sock_htons */
-	j9sock_write, /* sock_write */
-	j9sock_sockaddr, /* sock_sockaddr */
-	j9sock_read, /* sock_read */
-	j9sock_socket, /* sock_socket */
-	j9sock_close, /* sock_close */
-	j9sock_connect, /* sock_connect */
 	j9sock_inetaddr, /* sock_inetaddr */
 	j9sock_gethostbyname, /* sock_gethostbyname */
-	j9sock_hostent_addrlist, /* sock_hostent_addrlist */
-	j9sock_sockaddr_init, /* sock_sockaddr_init */
-	j9sock_linger_init, /* sock_linger_init */
-	j9sock_setopt_linger, /* sock_setopt_linger */
 	j9gp_startup, /* gp_startup */
 	j9gp_shutdown, /* gp_shutdown */
 	j9gp_protect, /* gp_protect */
@@ -80,43 +69,7 @@ static J9PortLibrary MasterPortLibraryTable = {
 	j9sysinfo_DLPAR_enabled, /* sysinfo_DLPAR_enabled */
 	j9sysinfo_DLPAR_max_CPUs, /* sysinfo_DLPAR_max_CPUs */
 	j9sysinfo_weak_memory_consistency, /* sysinfo_weak_memory_consistency */
-	j9sock_htonl, /* sock_htonl */
-	j9sock_bind, /* sock_bind */
-	j9sock_accept, /* sock_accept */
-	j9sock_shutdown_input, /* sock_shutdown_input */
-	j9sock_shutdown_output, /* sock_shutdown_output */
-	j9sock_listen, /* sock_listen */
-	j9sock_ntohl, /* sock_ntohl */
-	j9sock_ntohs, /* sock_ntohs */
-	j9sock_getpeername, /* sock_getpeername */
-	j9sock_getsockname, /* sock_getsockname */
-	j9sock_readfrom, /* sock_readfrom */
-	j9sock_select, /* sock_select */
-	j9sock_writeto, /* sock_writeto */
-	j9sock_inetntoa, /* sock_inetntoa */
 	j9sock_gethostbyaddr, /* sock_gethostbyaddr */
-	j9sock_gethostname, /* sock_gethostname */
-	j9sock_hostent_aliaslist, /* sock_hostent_aliaslist */
-	j9sock_hostent_hostname, /* sock_hostent_hostname */
-	j9sock_sockaddr_port, /* sock_sockaddr_port */
-	j9sock_sockaddr_address, /* sock_sockaddr_address */
-	j9sock_fdset_init, /* sock_fdset_init */
-	j9sock_fdset_size, /* sock_fdset_size */
-	j9sock_timeval_init, /* sock_timeval_init */
-	j9sock_getopt_int, /* sock_getopt_int */
-	j9sock_setopt_int, /* sock_setopt_int */
-	j9sock_getopt_bool, /* sock_getopt_bool */
-	j9sock_setopt_bool, /* sock_setopt_bool */
-	j9sock_getopt_byte, /* sock_getopt_byte */
-	j9sock_setopt_byte, /* sock_setopt_byte */
-	j9sock_getopt_linger, /* sock_getopt_linger */
-	j9sock_getopt_sockaddr, /* sock_getopt_sockaddr */
-	j9sock_setopt_sockaddr, /* sock_setopt_sockaddr */
-	j9sock_setopt_ipmreq, /* sock_setopt_ipmreq */
-	j9sock_linger_enabled, /* sock_linger_enabled */
-	j9sock_linger_linger, /* sock_linger_linger */
-	j9sock_ipmreq_init, /* sock_ipmreq_init */
-	j9sock_setflag, /* sock_setflag */
 	j9sock_freeaddrinfo, /* sock_freeaddrinfo */
 	j9sock_getaddrinfo, /* sock_getaddrinfo */
 	j9sock_getaddrinfo_address, /* sock_getaddrinfo_address */
@@ -124,24 +77,8 @@ static J9PortLibrary MasterPortLibraryTable = {
 	j9sock_getaddrinfo_family, /* sock_getaddrinfo_family */
 	j9sock_getaddrinfo_length, /* sock_getaddrinfo_length */
 	j9sock_getaddrinfo_name, /* sock_getaddrinfo_name */
-	j9sock_getnameinfo, /* sock_getnameinfo */
-	j9sock_ipv6_mreq_init, /* sock_ipv6_mreq_init */
-	j9sock_setopt_ipv6_mreq, /* sock_setopt_ipv6_mreq */
-	j9sock_sockaddr_address6, /* sock_sockaddr_address6 */
-	j9sock_sockaddr_family, /* sock_sockaddr_family */
-	j9sock_sockaddr_init6, /* sock_sockaddr_init6 */
-	j9sock_socketIsValid, /* sock_socketIsValid */
-	j9sock_select_read, /* sock_select_read */
-	j9sock_set_nonblocking, /* sock_set_nonblocking */
 	j9sock_error_message, /* sock_error_message */
-	j9sock_get_network_interfaces, /* sock_get_network_interfaces */
-	j9sock_free_network_interface_struct, /* sock_free_network_interface_struct */
-	j9sock_connect_with_timeout,  /* sock_connect_with_timeout */
-	j9sock_fdset_zero, /* sock_fdset_zero */
-	j9sock_fdset_set, /* sock_fdset_set */
-	j9sock_fdset_clr, /* sock_fdset_clr */
-	j9sock_fdset_isset, /* sock_fdset_isset */
-	j9shsem_params_init, /* shsem_paramemeters_init */
+	j9shsem_params_init, /* shsem_parameters_init */
 	j9shsem_startup, /* shsem_startup */
 	j9shsem_shutdown, /* shsem_shutdown */
 	j9shsem_open, /* shsem_open */
@@ -344,7 +281,7 @@ j9port_create_library(struct J9PortLibrary *portLibrary, struct J9PortLibraryVer
 
 	/* Null and initialize the table passed in */
 	memset(portLibrary, 0, size);
-	memcpy(portLibrary, &MasterPortLibraryTable, versionSize);
+	memcpy(portLibrary, &MainPortLibraryTable, versionSize);
 
 	/* Reset capabilities to be what is actually there, not what was requested */
 	portLibrary->portVersion.majorVersionNumber = version->majorVersionNumber;
@@ -489,7 +426,7 @@ cleanup:
  *
  * @return size of port library on success, zero on failure
  *
- * @note The portlibrary version must be compatabile with the that which we are compiled against
+ * @note The portlibrary version must be compatible with the that which we are compiled against
  */
 uintptr_t 
 j9port_getSize(struct J9PortLibraryVersion *version)
@@ -578,7 +515,7 @@ j9port_isCompatible(struct J9PortLibraryVersion *expectedVersion)
  * @param[in] portLibrary The port library.
  * @param[in] offset The offset of the function to be queried.
  * 
- * @return 1 if the function is overriden, else 0.
+ * @return 1 if the function is overridden, else 0.
  *
  * j9port_isFunctionOverridden(portLibrary, offsetof(J9PortLibrary, mem_allocate_memory));
  */
@@ -592,7 +529,7 @@ j9port_isFunctionOverridden(struct J9PortLibrary *portLibrary, uintptr_t offset)
 		return 0;
 	}
 
-	return *((uintptr_t*) &(((uint8_t*) portLibrary)[offset])) != *((uintptr_t*) &(((uint8_t*) &MasterPortLibraryTable)[offset]));
+	return *((uintptr_t*) &(((uint8_t*) portLibrary)[offset])) != *((uintptr_t*) &(((uint8_t*) &MainPortLibraryTable)[offset]));
 }
 /**
  * Allocate a port library.
@@ -608,7 +545,7 @@ j9port_isFunctionOverridden(struct J9PortLibrary *portLibrary, uintptr_t offset)
  * @return 0 on success, negative return value on failure
  *
  * @note portLibrary will be NULL on failure
- * @note The portlibrary version must be compatabile with the that which we are compiled against
+ * @note The portlibrary version must be compatible with the that which we are compiled against
  * @note @ref j9port_shutdown_library will deallocate this memory as part of regular shutdown
  */
 int32_t

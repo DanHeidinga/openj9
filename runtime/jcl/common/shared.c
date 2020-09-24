@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1998, 2017 IBM Corp. and others
+ * Copyright (c) 1998, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -239,7 +239,8 @@ createCPEntries(JNIEnv* env, jint helperID, jint urlCount, J9ClassPathEntry** cp
 	PORT_ACCESS_FROM_VMC((J9VMThread*)env);
 
 	Trc_JCL_com_ibm_oti_shared_createCPEntries_Entry(env, helperID, urlCount);
-	
+	Assert_JCL_true(urlCount > 0);
+
 	cpEntrySize = urlCount * sizeof(struct J9ClassPathEntry);
 	cpEntries = j9mem_allocate_memory(cpEntrySize, J9MEM_CATEGORY_VM_JCL);
 	if (NULL == cpEntries) {
@@ -412,7 +413,7 @@ getURLMethodIDs(JNIEnv* env)
 			(*env)->DeleteLocalRef(env, javaNetURLClassLocalRef);
 			if (NULL == javaNetURLClass) {
 				omrthread_monitor_exit(vm->jclCacheMutex);
-				throwNativeOOMError(env, J9NLS_JCL_OOM_NEW_GLOBAL_REF);
+				vm->internalVMFunctions->throwNativeOOMError(env, J9NLS_JCL_OOM_NEW_GLOBAL_REF);
 				goto _exit;
 			}
 			JCL_CACHE_SET(env, CLS_java_net_URL, javaNetURLClass);
@@ -561,7 +562,7 @@ getCpeTypeForProtocol(char* protocol, jsize protocolLen, const char* pathChars, 
 	}
 	if (strncmp(protocol, "file", 5)==0) {
 		char* endsWith = (char*)(pathChars + (pathLen-4));
-		if ((strncmp(endsWith, ".jar", 4)==0) || (strncmp(endsWith, ".zip", 4)==0)) {
+		if ((strncmp(endsWith, ".jar", 4)==0) || (strncmp(endsWith, ".zip", 4)==0) || strstr(pathChars,"!/") || strstr(pathChars,"!\\")) {
 			Trc_JCL_com_ibm_oti_shared_getCpeTypeForProtocol_ExitJAR();
 			return CPE_TYPE_JAR;
 		} else {
@@ -1016,13 +1017,13 @@ Java_com_ibm_oti_shared_SharedClassAbstractHelper_initializeShareableClassloader
 	if (NULL == nativeClassloader) {
 		nativeClassloader = vm->internalVMFunctions->internalAllocateClassLoader(vm, J9_JNI_UNWRAP_REFERENCE(classloader));
 		if (NULL == nativeClassloader) {
-			vm->internalVMFunctions->internalReleaseVMAccess((J9VMThread *)env);
+			vm->internalVMFunctions->internalExitVMToJNI((J9VMThread *)env);
 			return 0;
 		}
 	}
 
 	nativeClassloader->flags |= J9CLASSLOADER_SHARED_CLASSES_ENABLED;
-	vm->internalVMFunctions->internalReleaseVMAccess((J9VMThread *)env);
+	vm->internalVMFunctions->internalExitVMToJNI((J9VMThread *)env);
 
 	result = sizeof(J9ROMClassCookieSharedClass);
 
@@ -1064,7 +1065,7 @@ Java_com_ibm_oti_shared_SharedClassTokenHelperImpl_findSharedClassImpl2(JNIEnv* 
 
 	vm->internalVMFunctions->internalEnterVMFromJNI(vmThread);
 	classloader = J9VMJAVALANGCLASSLOADER_VMREF(vmThread, J9_JNI_UNWRAP_REFERENCE(loaderObj));
-	vm->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	vm->internalVMFunctions->internalExitVMToJNI(vmThread);
 
 	if (!getStringPair(env, &nameChars, &nameLen, &tokenChars, &tokenLen, classNameObj, tokenObj)) {
 		goto _errorPostNameToken;
@@ -1081,13 +1082,9 @@ Java_com_ibm_oti_shared_SharedClassTokenHelperImpl_findSharedClassImpl2(JNIEnv* 
 	}
 
 	omrthread_monitor_exit(jclCacheMutex);
-	
-	omrthread_monitor_enter(vm->classTableMutex);
-	omrthread_monitor_enter(vm->classMemorySegments->segmentMutex);
 	ALWAYS_TRIGGER_J9HOOK_VM_FIND_LOCALLY_DEFINED_CLASS(vm->hookInterface, (J9VMThread*)env, classloader, NULL,
 			(const char*)nameChars, (UDATA)nameLen, token, 1, -1, NULL, !doFind, !doStore, NULL, romClass);
-	omrthread_monitor_exit(vm->classMemorySegments->segmentMutex);
-	omrthread_monitor_exit(vm->classTableMutex);
+
 
 	releaseStringPair(env, classNameObj, nameChars, tokenObj, tokenChars);
 
@@ -1149,7 +1146,7 @@ Java_com_ibm_oti_shared_SharedClassTokenHelperImpl_storeSharedClassImpl2(JNIEnv*
 	vm->internalVMFunctions->internalEnterVMFromJNI(vmThread);
 	classloader = J9VMJAVALANGCLASSLOADER_VMREF(vmThread, J9_JNI_UNWRAP_REFERENCE(loaderObj));
 	romClass = J9VM_J9CLASS_FROM_JCLASS(vmThread, clazzObj)->romClass;
-	vm->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	vm->internalVMFunctions->internalExitVMToJNI(vmThread);
 
 	if (!getStringChars(env, &tokenChars, &tokenLen, tokenObj)) {
 		goto _error;
@@ -1211,11 +1208,12 @@ Java_com_ibm_oti_shared_SharedClassURLHelperImpl_init(JNIEnv *env, jclass clazz)
 
 jboolean JNICALL 
 Java_com_ibm_oti_shared_SharedClassURLHelperImpl_findSharedClassImpl3(JNIEnv* env, jobject thisObj, jint helperID, jstring partitionObj, 
-		jstring classNameObj, jobject loaderObj, jobject urlObj, jboolean doFind, jboolean doStore, jbyteArray romClassCookie, jboolean minimizeUpdateChecks)
+		jstring classNameObj, jobject loaderObj, jobject urlObj, jboolean doFind, jboolean doStore, jbyteArray romClassCookie, jboolean newJarFile, jboolean minimizeUpdateChecks)
 {
 #if defined(J9VM_OPT_SHARED_CLASSES)
 	J9VMThread* vmThread = ((J9VMThread*)env);
 	J9JavaVM* vm = vmThread->javaVM;
+	J9SharedClassConfig* config = vm->sharedClassConfig;
 	const char* nameChars = NULL;
 	const char* partitionChars = NULL;
 	jsize nameLen = 0;
@@ -1227,16 +1225,14 @@ Java_com_ibm_oti_shared_SharedClassURLHelperImpl_findSharedClassImpl3(JNIEnv* en
 	UDATA cpeType = 0;
 	UDATA oldState;
 	const J9UTF8* partition = NULL;
-	omrthread_monitor_t jclCacheMutex;
+	omrthread_monitor_t jclCacheMutex = config->jclCacheMutex;
 	U_16 cpeStatus = minimizeUpdateChecks ? CPE_STATUS_IGNORE_ZIP_LOAD_STATE : 0;
 	J9ClassLoader* classloader;
 	URLElements urlElements = {0};
 	
 	Trc_JCL_com_ibm_oti_shared_SharedClassURLHelperImpl_findSharedClassImpl_Entry(env, helperID);
 
-	jclCacheMutex = vm->sharedClassConfig->jclCacheMutex;
-
-	if ((helperID > 0xFFFF) || (vm->sharedClassConfig->runtimeFlags & J9SHR_RUNTIMEFLAG_DENY_CACHE_ACCESS)) {
+	if ((helperID > 0xFFFF) || (config->runtimeFlags & J9SHR_RUNTIMEFLAG_DENY_CACHE_ACCESS)) {
 		Trc_JCL_com_ibm_oti_shared_SharedClassURLHelperImpl_findSharedClassImpl_ExitDenyAccess(env);
 		return FALSE;
 	}
@@ -1246,7 +1242,7 @@ Java_com_ibm_oti_shared_SharedClassURLHelperImpl_findSharedClassImpl3(JNIEnv* en
 
 	vm->internalVMFunctions->internalEnterVMFromJNI(vmThread);
 	classloader = J9VMJAVALANGCLASSLOADER_VMREF(vmThread, J9_JNI_UNWRAP_REFERENCE(loaderObj));
-	vm->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	vm->internalVMFunctions->internalExitVMToJNI(vmThread);
 
 	urlGetPathID = JCL_CACHE_GET(env, MID_java_net_URL_getPath);
 	if (NULL == urlGetPathID) {
@@ -1276,7 +1272,7 @@ Java_com_ibm_oti_shared_SharedClassURLHelperImpl_findSharedClassImpl3(JNIEnv* en
 	}
 
 	if (partitionChars) {
-		if (!getCachedString(env, partitionChars, partitionLen, &(vm->sharedClassConfig->jclStringFarm), &partition)) {
+		if (!getCachedString(env, partitionChars, partitionLen, &(config->jclStringFarm), &partition)) {
 			omrthread_monitor_exit(jclCacheMutex);
 			goto _errorPostClassNamePartition;
 		}
@@ -1284,12 +1280,14 @@ Java_com_ibm_oti_shared_SharedClassURLHelperImpl_findSharedClassImpl3(JNIEnv* en
 
 	omrthread_monitor_exit(jclCacheMutex);
 
-	omrthread_monitor_enter(vm->classTableMutex);
-	omrthread_monitor_enter(vm->classMemorySegments->segmentMutex);
+	if (newJarFile && !minimizeUpdateChecks
+	&& !(config->runtimeFlags & J9SHR_RUNTIMEFLAG_ENABLE_URL_TIMESTAMP_CHECK)
+	) {
+		config->updateClasspathOpenState(vm, urlEntry, 0, 1, TRUE);
+	}
+
 	ALWAYS_TRIGGER_J9HOOK_VM_FIND_LOCALLY_DEFINED_CLASS(vm->hookInterface, (J9VMThread*)env, classloader, NULL,
 			(const char*)nameChars, (UDATA)nameLen, urlEntry, 1, -1, partition, !doFind, !doStore, NULL, romClass);
-	omrthread_monitor_exit(vm->classMemorySegments->segmentMutex);
-	omrthread_monitor_exit(vm->classTableMutex);
 
 	releaseStringPair(env, urlElements.pathObj, urlElements.pathChars, urlElements.protocolObj, urlElements.protocolChars);
 	releaseStringPair(env, classNameObj, nameChars, partitionObj, partitionChars);
@@ -1320,11 +1318,12 @@ _error:
 
 jint JNICALL 
 Java_com_ibm_oti_shared_SharedClassURLHelperImpl_storeSharedClassImpl3(JNIEnv* env, jobject thisObj, jint helperID, 
-		jstring partitionObj, jobject loaderObj, jobject urlObj, jclass clazzObj, jboolean minimizeUpdateChecks, jbyteArray nativeFlags)
+		jstring partitionObj, jobject loaderObj, jobject urlObj, jclass clazzObj, jboolean newJarFile, jboolean minimizeUpdateChecks, jbyteArray nativeFlags)
 {
 #if defined(J9VM_OPT_SHARED_CLASSES)
-	J9VMThread *vmThread;
-	J9JavaVM* vm;
+	J9VMThread *vmThread = (J9VMThread *)env;
+	J9JavaVM* vm = vmThread->javaVM;
+	J9SharedClassConfig* config = vm->sharedClassConfig;
 	const char* partitionChars = NULL;
 	jsize partitionLen = 0;
 	jmethodID urlGetPathID = NULL;
@@ -1337,17 +1336,14 @@ Java_com_ibm_oti_shared_SharedClassURLHelperImpl_storeSharedClassImpl3(JNIEnv* e
 	UDATA oldState;
 	jint result;
 	const J9UTF8* partition = NULL;
-	omrthread_monitor_t jclCacheMutex;
+	omrthread_monitor_t jclCacheMutex = config->jclCacheMutex;
+	SCAbstractAPI * sharedapi = (SCAbstractAPI *)(config->sharedAPIObject);
 	U_16 cpeStatus = minimizeUpdateChecks ? CPE_STATUS_IGNORE_ZIP_LOAD_STATE : 0;
 	URLElements urlElements = {0};
 
 	Trc_JCL_com_ibm_oti_shared_SharedClassURLHelperImpl_storeSharedClassImpl_Entry(env, helperID);
 
-	vmThread = (J9VMThread *)env;
-	vm = vmThread->javaVM;
-	jclCacheMutex = vm->sharedClassConfig->jclCacheMutex;
-
-	if ((helperID > 0xFFFF) || (vm->sharedClassConfig->runtimeFlags & J9SHR_RUNTIMEFLAG_DENY_CACHE_UPDATES)) {
+	if ((helperID > 0xFFFF) || (config->runtimeFlags & J9SHR_RUNTIMEFLAG_DENY_CACHE_UPDATES)) {
 		Trc_JCL_com_ibm_oti_shared_SharedClassURLHelperImpl_storeSharedClassImpl_ExitDenyUpdates(env);
 		return FALSE;
 	}
@@ -1358,7 +1354,7 @@ Java_com_ibm_oti_shared_SharedClassURLHelperImpl_storeSharedClassImpl3(JNIEnv* e
 	vm->internalVMFunctions->internalEnterVMFromJNI(vmThread);
 	classloader = J9VMJAVALANGCLASSLOADER_VMREF(vmThread, J9_JNI_UNWRAP_REFERENCE(loaderObj));
 	romClass = J9VM_J9CLASS_FROM_JCLASS(vmThread, clazzObj)->romClass;
-	vm->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	vm->internalVMFunctions->internalExitVMToJNI(vmThread);
 
 	urlGetPathID = JCL_CACHE_GET(env, MID_java_net_URL_getPath);
 	if (NULL == urlGetPathID) {
@@ -1388,7 +1384,7 @@ Java_com_ibm_oti_shared_SharedClassURLHelperImpl_storeSharedClassImpl3(JNIEnv* e
 	}
 
 	if (partitionChars) {
-		if (!getCachedString(env, partitionChars, partitionLen, &(vm->sharedClassConfig->jclStringFarm), &partition)) {
+		if (!getCachedString(env, partitionChars, partitionLen, &(config->jclStringFarm), &partition)) {
 			omrthread_monitor_exit(jclCacheMutex);
 			goto _errorPostPartition;
 		}
@@ -1396,12 +1392,15 @@ Java_com_ibm_oti_shared_SharedClassURLHelperImpl_storeSharedClassImpl3(JNIEnv* e
 
 	omrthread_monitor_exit(jclCacheMutex);
 
-	if (vm->sharedClassConfig != NULL) {
-		SCAbstractAPI * sharedapi = (SCAbstractAPI *)(vm->sharedClassConfig->sharedAPIObject);
-		omrthread_monitor_enter(vm->classTableMutex);
-		newROMClass = sharedapi->jclUpdateROMClassMetaData((J9VMThread*)env, classloader, urlEntry, 1, 0, partition, romClass);
-		omrthread_monitor_exit(vm->classTableMutex);
+	if (newJarFile && !minimizeUpdateChecks
+	&& !(config->runtimeFlags & J9SHR_RUNTIMEFLAG_ENABLE_URL_TIMESTAMP_CHECK)
+	) {
+		config->updateClasspathOpenState(vm, urlEntry, 0, 1, TRUE);
 	}
+
+	omrthread_monitor_enter(vm->classTableMutex);
+	newROMClass = sharedapi->jclUpdateROMClassMetaData((J9VMThread*)env, classloader, urlEntry, 1, 0, partition, romClass);
+	omrthread_monitor_exit(vm->classTableMutex);
 
 	releaseStringPair(env, urlElements.pathObj, urlElements.pathChars, urlElements.protocolObj, urlElements.protocolChars);
 	releaseStringChars(env, partitionObj, partitionChars);
@@ -1410,7 +1409,7 @@ Java_com_ibm_oti_shared_SharedClassURLHelperImpl_storeSharedClassImpl3(JNIEnv* e
 
 	result = (newROMClass != NULL);
 
-	if (!result && (vm->sharedClassConfig->runtimeFlags & J9SHR_RUNTIMEFLAG_BLOCK_SPACE_FULL)) {
+	if (!result && (config->runtimeFlags & J9SHR_RUNTIMEFLAG_BLOCK_SPACE_FULL)) {
 		notifyCacheFull(env, nativeFlags);		
 	}
 
@@ -1482,7 +1481,7 @@ Java_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_storeSharedClassImpl2(
 	vm->internalVMFunctions->internalEnterVMFromJNI(vmThread);
 	classloader = J9VMJAVALANGCLASSLOADER_VMREF(vmThread, J9_JNI_UNWRAP_REFERENCE(loaderObj));
 	romClass = J9VM_J9CLASS_FROM_JCLASS(vmThread, clazzObj)->romClass;
-	vm->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	vm->internalVMFunctions->internalExitVMToJNI(vmThread);
 
 	if (!getStringChars(env, &partitionChars, &partitionLen, partitionObj)) {
 		goto _error;
@@ -1631,7 +1630,7 @@ Java_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_findSharedClassImpl2(J
 
 	vm->internalVMFunctions->internalEnterVMFromJNI(vmThread);
 	classloader = J9VMJAVALANGCLASSLOADER_VMREF(vmThread, J9_JNI_UNWRAP_REFERENCE(loaderObj));
-	vm->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	vm->internalVMFunctions->internalExitVMToJNI(vmThread);
 
 	if (!getStringPair(env, &nameChars, &nameLen, &partitionChars, &partitionLen, classNameObj, partitionObj)) {
 		Trc_JCL_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_findSharedClassImpl_ExitError2_Event(env, helperID);
@@ -1691,12 +1690,8 @@ Java_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_findSharedClassImpl2(J
 
 	omrthread_monitor_exit(jclCacheMutex);
 
-	omrthread_monitor_enter(vm->classTableMutex);
-	omrthread_monitor_enter(vm->classMemorySegments->segmentMutex);
 	ALWAYS_TRIGGER_J9HOOK_VM_FIND_LOCALLY_DEFINED_CLASS(vm->hookInterface, (J9VMThread*)env, classloader, NULL,
 			(const char*)nameChars, (UDATA)nameLen, cpEntries, entryCount, confirmedCount, partition, !doFind, !doStore, &indexFoundAt, romClass);
-	omrthread_monitor_exit(vm->classMemorySegments->segmentMutex);
-	omrthread_monitor_exit(vm->classTableMutex);
 
 	if (NULL != urlArrayElements) {
 		for (i = 0; i < urlCount; i++) {
@@ -1904,7 +1899,7 @@ Java_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_notifyClasspathChange2
 
 	vm->internalVMFunctions->internalEnterVMFromJNI(vmThread);
 	classloader = J9VMJAVALANGCLASSLOADER_VMREF(vmThread, J9_JNI_UNWRAP_REFERENCE(classLoaderObj));
-	vm->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	vm->internalVMFunctions->internalExitVMToJNI(vmThread);
 
 	omrthread_monitor_enter(vm->sharedClassConfig->jclCacheMutex);
 
@@ -1933,6 +1928,119 @@ Java_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_notifyClasspathChange2
 #endif		/* J9VM_OPT_SHARED_CLASSES */
 }
 
+
+/**
+ * Notify the open state to all the jar/zip files on the URL classpath to force a timestamp check once.
+ * @param [in] env              The JNI environment
+ * @param [in] thisObj          The object on which the method was invoked
+ * @param [in] helperID         The ID of the classs loader
+ * @param [in] classLoaderObj   The class loader object
+ * @param [in] urlArrayObj      The object of the URL array
+ * @param [in] urlIndex         The index of URL entry being created/updated
+ * @param [in] urlCount         The total number of URL entries
+ * @param [in] isOpen           A flag indicating the open state for jar/zip files
+ * @return void
+ */
+void JNICALL
+Java_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_notifyClasspathChange3(JNIEnv* env, jobject thisObj, jint helperID, jobject classLoaderObj, jobjectArray urlArrayObj, jint urlIndex, jint urlCount, jboolean isOpen)
+{
+#if defined(J9VM_OPT_SHARED_CLASSES)
+	J9VMThread* vmThread = ((J9VMThread*)env);
+	J9JavaVM* vm = vmThread->javaVM;
+	J9ClassPathEntry* cpEntries = NULL;
+	UDATA entryIndex = (UDATA)urlIndex;
+	UDATA entryCount = (UDATA)urlCount;
+	omrthread_monitor_t jclCacheMutex = vm->sharedClassConfig->jclCacheMutex;
+	J9ClassLoader* classloader = NULL;
+	URLElements* urlArrayElements = NULL;
+	IDATA i = 0;
+	jmethodID urlGetPathID = NULL;
+	jmethodID urlGetProtocolID = NULL;
+
+	PORT_ACCESS_FROM_VMC((J9VMThread*)env);
+
+	Trc_JCL_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_notifyClasspathChange3_Entry(env);
+
+	if (0 == urlCount) {
+		Trc_JCL_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_notifyClasspathChange3_ExitUrlCountZero(env);
+		return;
+	}
+
+	if (vm->sharedClassConfig->runtimeFlags & J9SHR_RUNTIMEFLAG_ENABLE_URL_TIMESTAMP_CHECK) {
+		Trc_JCL_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_notifyClasspathChange3_ExitEnableCheck(env);
+		return;
+	}
+
+	if (helperID > 0xFFFF) {
+		Trc_JCL_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_notifyClasspathChange3_ExitInvalidHelperId(env);
+		return;
+	}
+
+	vm->internalVMFunctions->internalEnterVMFromJNI(vmThread);
+	classloader = J9VMJAVALANGCLASSLOADER_VMREF(vmThread, J9_JNI_UNWRAP_REFERENCE(classLoaderObj));
+	vm->internalVMFunctions->internalExitVMToJNI(vmThread);
+	Assert_JCL_true(NULL == classloader->classPathEntries);
+
+	urlGetPathID = JCL_CACHE_GET(env, MID_java_net_URL_getPath);
+	if (NULL == urlGetPathID) {
+		goto _errorPostUrlID;
+	}
+	urlGetProtocolID = JCL_CACHE_GET(env, MID_java_net_URL_getProtocol);
+	if (NULL == urlGetProtocolID) {
+		goto _errorPostUrlID;
+	}
+
+	urlArrayElements = (URLElements *)j9mem_allocate_memory(urlCount * sizeof(URLElements), J9MEM_CATEGORY_VM_JCL);
+	if (NULL == urlArrayElements) {
+		goto _errorPostUrlID;
+	}
+	memset(urlArrayElements, 0, urlCount * sizeof(URLElements));
+
+	for (i = 0; i < urlCount; i++) {
+		jobject url = (*env)->GetObjectArrayElement(env, urlArrayObj, (jsize)i);
+		if (JNI_TRUE == (*env)->ExceptionCheck(env)) {
+			goto _errorFreeURLElements;
+		}
+
+		if (!getPathProtocolFromURL(env, url, urlGetPathID, urlGetProtocolID, urlArrayElements + i)) {
+			goto _errorFreeURLElements;
+		}
+	}
+
+	omrthread_monitor_enter(jclCacheMutex);
+
+	cpEntries = classloader->classPathEntries;
+	if (!createCPEntries(env, helperID, urlCount, &cpEntries, urlArrayElements)) {
+		if (cpEntries) {
+			j9mem_free_memory(cpEntries);
+		}
+		Trc_JCL_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_notifyClasspathChange3_ExitError_Event(env);
+		goto _errorWithMutex;
+	} else {
+		classloader->classPathEntries = cpEntries;
+	}
+	vm->sharedClassConfig->updateClasspathOpenState(vm, cpEntries, entryIndex, entryCount, isOpen);
+
+_errorWithMutex:
+	omrthread_monitor_exit(jclCacheMutex);
+
+_errorFreeURLElements:
+	if (NULL != urlArrayElements) {
+		for (i = 0; i < urlCount; i++) {
+			/* NULL check is done in releaseStringPair(), no need to do it here */
+			releaseStringPair(env, urlArrayElements[i].pathObj, urlArrayElements[i].pathChars, urlArrayElements[i].protocolObj, urlArrayElements[i].protocolChars);
+		}
+		j9mem_free_memory(urlArrayElements);
+		urlArrayElements = NULL;
+	}
+
+_errorPostUrlID:
+	(*env)->ExceptionClear(env);
+
+	Trc_JCL_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_notifyClasspathChange3_Exit(env);
+
+#endif		/* J9VM_OPT_SHARED_CLASSES */
+}
 
 jobject JNICALL
 Java_com_ibm_oti_shared_SharedDataHelperImpl_findSharedDataImpl(JNIEnv* env, jobject thisObj, jint helperID, jstring tokenObj) 
@@ -2030,7 +2138,7 @@ Java_com_ibm_oti_shared_SharedDataHelperImpl_storeSharedDataImpl(JNIEnv* env, jo
 
 	vm->internalVMFunctions->internalEnterVMFromJNI(vmThread);
 	classloader = J9VMJAVALANGCLASSLOADER_VMREF(vmThread, J9_JNI_UNWRAP_REFERENCE(loaderObj));
-	vm->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	vm->internalVMFunctions->internalExitVMToJNI(vmThread);
 
 	if (!getStringChars(env, &tokenChars, &tokenLen, tokenObj)) {
 		goto _error;
@@ -2095,7 +2203,7 @@ Java_com_ibm_oti_shared_SharedAbstractHelper_getIsVerboseImpl(JNIEnv* env, jobje
 
 	vm = ((J9VMThread*)env)->javaVM;
 	if (vm->sharedClassConfig != NULL) {
-		result = (jboolean)(vm->sharedClassConfig->verboseFlags & J9SHR_VERBOSEFLAG_ENABLE_VERBOSE_HELPER);
+		result = (jboolean)J9_ARE_ALL_BITS_SET(vm->sharedClassConfig->verboseFlags, J9SHR_VERBOSEFLAG_ENABLE_VERBOSE_HELPER);
 	}
 
 #if defined(J9SHR_UNIT_TEST)
@@ -2130,7 +2238,7 @@ Java_com_ibm_oti_shared_SharedClassUtilities_init(JNIEnv *env, jclass clazz) {
 	JCL_CACHE_SET(env, CLS_com_ibm_oti_shared_SharedClassCacheInfo, javaClass);
 
 	/* get methodID of SharedClassCacheInfo constructor */
-	mid = (*env)->GetMethodID(env, javaClass, "<init>", "(Ljava/lang/String;ZZIIJIIZJJIJ)V");
+	mid = (*env)->GetMethodID(env, javaClass, "<init>", "(Ljava/lang/String;ZZIIJIIZJJIJI)V");
 	if (NULL == mid) {
 		return;
 	}
@@ -2194,7 +2302,8 @@ populateSharedCacheInfo(J9JavaVM *vm, J9SharedCacheInfo *event_data, void *user_
 												(-1 == event_data->cacheSize) ? (jlong) -1 : (jlong) event_data->cacheSize,
 												(-1 == event_data->freeBytes) ? (jlong) -1 : (jlong) event_data->freeBytes,
 												(jint)event_data->cacheType,
-												((UDATA)-1 == event_data->softMaxBytes) ? (jlong) -1 : (jlong) event_data->softMaxBytes
+												((UDATA)-1 == event_data->softMaxBytes) ? (jlong) -1 : (jlong) event_data->softMaxBytes,
+												(jint) event_data->layer
 												);
 	if (NULL == sharedCacheInfoObject) {
 		return -1;
@@ -2226,7 +2335,7 @@ Java_com_ibm_oti_shared_SharedClassUtilities_getSharedCacheInfoImpl(JNIEnv *env,
 		dir = (const jbyte *)(*env)->GetStringUTFChars(env, cacheDir, NULL);
 		if (NULL == dir) {
 			(*env)->ExceptionClear(env);
-			throwNativeOOMError(env, 0, 0);
+			vm->internalVMFunctions->throwNativeOOMError(env, 0, 0);
 			result = -1;
 			goto exit;
 		}
@@ -2267,7 +2376,7 @@ Java_com_ibm_oti_shared_SharedClassUtilities_destroySharedCacheImpl(JNIEnv *env,
 			dir = (const jbyte *)(*env)->GetStringUTFChars(env, cacheDir, NULL);
 			if (NULL == dir) {
 				(*env)->ExceptionClear(env);
-				throwNativeOOMError(env, 0, 0);
+				vm->internalVMFunctions->throwNativeOOMError(env, 0, 0);
 				result = -1;
 				goto exit;
 			}
@@ -2277,7 +2386,7 @@ Java_com_ibm_oti_shared_SharedClassUtilities_destroySharedCacheImpl(JNIEnv *env,
 			name = (const jbyte *)(*env)->GetStringUTFChars(env, cacheName, NULL);
 			if (NULL == name) {
 				(*env)->ExceptionClear(env);
-				throwNativeOOMError(env, 0, 0);
+				vm->internalVMFunctions->throwNativeOOMError(env, 0, 0);
 				result = -1;
 				goto exit;
 			}
@@ -2303,14 +2412,18 @@ exit:
 }
 
 jboolean JNICALL
-Java_com_ibm_oti_shared_Shared_isSharingEnabledImpl(JNIEnv* env, jclass clazz)
+Java_com_ibm_oti_shared_Shared_isNonBootSharingEnabledImpl(JNIEnv* env, jclass clazz)
 {
+	jboolean ret = JNI_FALSE;
 #if defined(J9VM_OPT_SHARED_CLASSES)
 	J9JavaVM *vm = ((J9VMThread *)env)->javaVM;
-	return (NULL == vm->sharedClassConfig) ? JNI_FALSE : JNI_TRUE;
-#else
-	return JNI_FALSE;
+	if (NULL != vm->sharedClassConfig) {
+		if (J9_ARE_ALL_BITS_SET(vm->sharedClassConfig->runtimeFlags, J9SHR_RUNTIMEFLAG_ENABLE_CACHE_NON_BOOT_CLASSES)) {
+			ret = JNI_TRUE;
+		}
+	}
 #endif /* defined(J9VM_OPT_SHARED_CLASSES) */
+	return ret;
 }
 
 

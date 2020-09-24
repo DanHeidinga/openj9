@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2016 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -30,6 +29,7 @@
 #include "j9cfg.h"
 #include "j9protos.h"
 #include "j9consts.h"
+#include "j9argscan.h"
 #include "jni.h"
 #include "jvminit.h"
 #include "j9port.h"
@@ -71,6 +71,9 @@
 #define OPT_XMR "-Xmr"
 #define OPT_SOFTMX "-Xsoftmx"
 #define OPT_NUMA_NONE "-Xnuma:none"
+#define OPT_XXMAXRAMPERCENT "-XX:MaxRAMPercentage="
+#define OPT_XXINITIALRAMPERCENT "-XX:InitialRAMPercentage="
+
 /**
  * @}
  */
@@ -251,6 +254,35 @@ option_set_to_opt_integer(J9JavaVM* vm, const char* option, IDATA* optionIndex, 
 
 	if (element >= 0) {
 		returnCode = GET_INTEGER_VALUE(element, option, value);
+		if (OPTION_OK == returnCode) {
+			*address = value;
+		}
+	} 
+	return returnCode;
+}
+
+/**
+ * Find, consume and record an option from the argument list.
+ * Given an option string and the match type, find the argument in the to be consumed list.
+ * If not found, return success.
+ * If found, consume it, verify the memory value.
+ * 
+ * @return OPTION_OK if option is found and consumed or option not present, OPTION_MALFORMED if the option was malformed, OPTION_OVERFLOW if the option overflowed.
+ * @note value stored at address is invalid if failure returned
+ * @note optionIndex contains position of argument on command line if success returned, else -1
+ */
+static IDATA
+option_set_to_opt_double(J9JavaVM* vm, const char* option, IDATA* optionIndex, IDATA match, double* address)
+{
+	IDATA element = -1;
+	IDATA returnCode = OPTION_OK;
+	double value = 0.0;
+
+	element = FIND_AND_CONSUME_ARG2(match, option, NULL);
+	*optionIndex = element;
+
+	if (element >= 0) {
+		returnCode = GET_DOUBLE_VALUE(element, option, value);
 		if (OPTION_OK == returnCode) {
 			*address = value;
 		}
@@ -648,7 +680,7 @@ gcParseXlpOption(J9JavaVM *vm)
 		IDATA result = j9vmem_find_valid_page_size(0, &pageSize, &pageFlags, &isRequestedSizeSupported);
 
 		/*
-		 * j9vmem_find_valid_page_size happend to be changed to always return 0
+		 * j9vmem_find_valid_page_size happened to be changed to always return 0
 		 * However formally the function type still be IDATA so assert if it returns anything else
 		 */
 		Assert_MM_true(0 == result);
@@ -907,19 +939,19 @@ gcParseSovereignArguments(J9JavaVM *vm)
 		goto _error;
 	}
 
-	if(-1 != FIND_ARG_IN_VMARGS(EXACT_MEMORY_MATCH, "-Xgcthreads", NULL)) {
-		result = option_set_to_opt_integer(vm, "-Xgcthreads", &index, EXACT_MEMORY_MATCH, &extensions->gcThreadCount);
+	if(-1 != FIND_ARG_IN_VMARGS(EXACT_MEMORY_MATCH, VMOPT_XGCTHREADS, NULL)) {
+		result = option_set_to_opt_integer(vm, VMOPT_XGCTHREADS, &index, EXACT_MEMORY_MATCH, &extensions->gcThreadCount);
 		if (OPTION_OK != result) {
 			if (OPTION_MALFORMED == result) {
-				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_MUST_BE_NUMBER, "-Xgcthreads");
+				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_MUST_BE_NUMBER, VMOPT_XGCTHREADS);
 			} else {
-				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_OVERFLOWED, "-Xgcthreads");
+				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_OVERFLOWED, VMOPT_XGCTHREADS);
 			}
 			goto _error;
 		}
 
 		if(0 == extensions->gcThreadCount) {
-			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_MUST_BE_ABOVE, "-Xgcthreads", (UDATA)0);
+			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_MUST_BE_ABOVE, VMOPT_XGCTHREADS, (UDATA)0);
 			goto _error;
 		}
 
@@ -965,12 +997,12 @@ gcParseSovereignArguments(J9JavaVM *vm)
 	}
 
 #if defined(OMR_GC_MODRON_CONCURRENT_MARK)
-	result = option_set_to_opt_integer(vm, "-Xconcurrentbackground", &index, EXACT_MEMORY_MATCH, &extensions->concurrentBackground);
+	result = option_set_to_opt_integer(vm, VMOPT_XCONCURRENTBACKGROUND, &index, EXACT_MEMORY_MATCH, &extensions->concurrentBackground);
 	if (OPTION_OK != result) {
 		if (OPTION_MALFORMED == result) {
-			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_MUST_BE_NUMBER, "-Xconcurrentbackground");
+			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_MUST_BE_NUMBER, VMOPT_XCONCURRENTBACKGROUND);
 		} else {
-			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_OVERFLOWED, "-Xconcurrentbackground");
+			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_OVERFLOWED, VMOPT_XCONCURRENTBACKGROUND);
 		}
 		goto _error;
 	}
@@ -1114,7 +1146,7 @@ gcParseSovereignArguments(J9JavaVM *vm)
 	
 #endif /* J9VM_GC_LARGE_OBJECT_AREA) */
 
-	/* If user has specifed any of the following SOV options  then we just silently ignore them 
+	/* If user has specified any of the following SOV options  then we just silently ignore them 
 	 * 
 	 * -Xparroot
 	 * -XloratioN 
@@ -1178,14 +1210,6 @@ gcParseSovereignArguments(J9JavaVM *vm)
 		}
 	}
 
-	if (-1 != FIND_ARG_IN_VMARGS(EXACT_MATCH, "-XX:+HeapManagementMXBeanCompatibility", NULL)) {
-
-		extensions->_HeapManagementMXBeanBackCompatibilityEnabled = true;
-	}
-	
-	if (-1 != FIND_ARG_IN_VMARGS(EXACT_MATCH, "-XX:-HeapManagementMXBeanCompatibility", NULL)) {
-		extensions->_HeapManagementMXBeanBackCompatibilityEnabled = false;
-	}
 	return 1;
 
 _error:
@@ -1193,11 +1217,58 @@ _error:
 
 }
 
+static UDATA
+gcParseXXArguments(J9JavaVM *vm)
+{
+	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(vm);
+
+	{
+		IDATA heapManagementMXBeanCompatibilityIndex = FIND_ARG_IN_VMARGS(EXACT_MATCH, "-XX:+HeapManagementMXBeanCompatibility", NULL);
+		IDATA noHheapManagementMXBeanCompatibilityIndex = FIND_ARG_IN_VMARGS(EXACT_MATCH, "-XX:-HeapManagementMXBeanCompatibility", NULL);
+		if (heapManagementMXBeanCompatibilityIndex != noHheapManagementMXBeanCompatibilityIndex) {
+			/* At least one option is set. Find the right most one. */
+			if (heapManagementMXBeanCompatibilityIndex > noHheapManagementMXBeanCompatibilityIndex) {
+				extensions->_HeapManagementMXBeanBackCompatibilityEnabled = true;
+			} else {
+				extensions->_HeapManagementMXBeanBackCompatibilityEnabled = false;
+			}
+		}
+	}
+
+	{
+		IDATA useGCStartupHintsIndex = FIND_ARG_IN_VMARGS(EXACT_MATCH, "-XX:+UseGCStartupHints", NULL);
+		IDATA noUseGCStartupHintsIndex = FIND_ARG_IN_VMARGS(EXACT_MATCH, "-XX:-UseGCStartupHints", NULL);
+		if (useGCStartupHintsIndex != noUseGCStartupHintsIndex) {
+			/* At least one option is set. Find the right most one. */
+			if (useGCStartupHintsIndex > noUseGCStartupHintsIndex) {
+				extensions->useGCStartupHints = true;
+			} else {
+				extensions->useGCStartupHints = false;
+			}
+		}
+	}
+
+	{
+		IDATA alwaysPreTouchIndex = FIND_ARG_IN_VMARGS(EXACT_MATCH, "-XX:+AlwaysPreTouch", NULL);
+		IDATA notAlwaysPreTouchIndex = FIND_ARG_IN_VMARGS(EXACT_MATCH, "-XX:-AlwaysPreTouch", NULL);
+		if (alwaysPreTouchIndex != notAlwaysPreTouchIndex) {
+			/* At least one option is set. Find the right most one. */
+			if (alwaysPreTouchIndex > notAlwaysPreTouchIndex) {
+				extensions->pretouchHeapOnExpand = true;
+			} else {
+				extensions->pretouchHeapOnExpand = false;
+			}
+		}
+	}
+
+	return 1;
+}
+
 /**
  * Wrapper for scan_udata, that provides readable error messages.
  * @param cursor address of the pointer to the string to parse for the udata
  * @param value address of the storage for the udata to be read
- * @param argName string containing the arguement name to be used in error reporting
+ * @param argName string containing the argument name to be used in error reporting
  * @return true if parsing was successful, false otherwise.
  */
 bool
@@ -1223,7 +1294,7 @@ scan_udata_helper(J9JavaVM *javaVM, char **cursor, UDATA *value, const char *arg
  * Wrapper for scan_udata, that provides readable error messages.
  * @param cursor address of the pointer to the string to parse for the udata
  * @param value address of the storage for the udata to be read
- * @param argName string containing the arguement name to be used in error reporting
+ * @param argName string containing the argument name to be used in error reporting
  * @return true if parsing was successful, false otherwise.
  */
 bool
@@ -1249,7 +1320,7 @@ scan_u32_helper(J9JavaVM *javaVM, char **cursor, U_32 *value, const char *argNam
  * Wrapper for scan_long, that provides readable error messages.
  * @param cursor address of the pointer to the string to parse for the u_64
  * @param value address of the storage for the U_64 to be read
- * @param argName string containing the arguement name to be used in error reporting
+ * @param argName string containing the argument name to be used in error reporting
  * @return true if parsing was successful, false otherwise.
  */
 bool
@@ -1275,7 +1346,7 @@ scan_u64_helper(J9JavaVM *javaVM, char **cursor, U_64 *value, const char *argNam
  * Wrapper for scan_hex, that provides readable error messages.
  * @param cursor address of the pointer to the string to parse for the hex value
  * @param value address of the storage for the hex value to be read
- * @param argName string containing the arguement name to be used in error reporting
+ * @param argName string containing the argument name to be used in error reporting
  * @return true if parsing was successful, false otherwise.
  */
 bool
@@ -1298,83 +1369,49 @@ scan_hex_helper(J9JavaVM *javaVM, char **cursor, UDATA *value, const char *argNa
 }
 
 /**
- * Wrapper for scan_udata_helper, that provides parsing for memory sizes.
- * User should be able to specify the size in GiBs, MiBs, or KiBs (with G,g,M,m,K,k suffixes) or
- * in bytes (no suffix)
+ * Wrapper for scan_udata_memory_size, that provides readable error messages.
+ * @param cursor address of the pointer to the string to parse for the udata.
+ * @param value address of the storage for the udata to be read.
+ * @param argName string containing the argument name to be used in error reporting.
  * @return true if parsing was successful, false otherwise.
  */
 bool
-scan_udata_memory_size_helper(J9JavaVM *javaVM, char **cursor, UDATA *value, const char *argName)
+scan_udata_memory_size_helper(J9JavaVM *javaVM, char **cursor, uintptr_t *value, const char *argName)
 {
 	PORT_ACCESS_FROM_JAVAVM(javaVM);
+	uintptr_t result = scan_udata_memory_size(cursor, value);
 
-	if(!scan_udata_helper(javaVM, cursor, value, argName)) {
-		return false;
+	/* Report Errors */
+	if (1 == result) {
+		j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_MUST_BE_NUMBER, argName);
+	} else if (2 == result) {
+		j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_OVERFLOWED, argName);
 	}
-	
-	if(try_scan(cursor, "G") || try_scan(cursor, "g")) {
-		if (*value <= (((UDATA)-1) >> 30)) {
-			*value <<= 30;
-		} else {
-			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_OVERFLOWED, argName);
-			return false;
-		}
-	} else if(try_scan(cursor, "M") || try_scan(cursor, "m")) {
-		if (*value <= (((UDATA)-1) >> 20)) {
-			*value <<= 20;
-		} else {
-			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_OVERFLOWED, argName);
-			return false;
-		}
-	} else if(try_scan(cursor, "K") || try_scan(cursor, "k")) {
-		if (*value <= (((UDATA)-1) >> 10)) {
-			*value <<= 10;
-		} else {
-			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_OVERFLOWED, argName);
-			return false;
-		}
-	}
-	return true;
+
+	return 0 == result;
 }
 
 /**
- * Wrapper for scan_u64_helper, that provides parsing for memory sizes.
- * User should be able to specify the size in GiBs, MiBs, or KiBs (with G,g,M,m,K,k suffixes) or
- * in bytes (no suffix)
+ * Wrapper for scan_u64_helper, that provides readable error messages.
+ * @param cursor address of the pointer to the string to parse for the udata.
+ * @param value address of the storage for the udata to be read.
+ * @param argName string containing the argument name to be used in error reporting.
  * @return true if parsing was successful, false otherwise.
  */
 bool
-scan_u64_memory_size_helper(J9JavaVM *javaVM, char **cursor, U_64 *value, const char *argName)
+scan_u64_memory_size_helper(J9JavaVM *javaVM, char **cursor, uint64_t *value, const char *argName)
 {
 	PORT_ACCESS_FROM_JAVAVM(javaVM);
+	uintptr_t result = scan_u64_memory_size(cursor, value);
 
-	if(!scan_u64_helper(javaVM, cursor, value, argName)) {
-		return false;
+	/* Report Errors */
+	if (1 == result) {
+		j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_MUST_BE_NUMBER, argName);
+	} else if (2 == result) {
+		j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_OVERFLOWED, argName);
 	}
 
-	if(try_scan(cursor, "G") || try_scan(cursor, "g")) {
-		if (*value <= (((U_64)-1) >> 30)) {
-			*value <<= 30;
-		} else {
-			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_OVERFLOWED, argName);
-			return false;
-		}
-	} else if(try_scan(cursor, "M") || try_scan(cursor, "m")) {
-		if (*value <= (((U_64)-1) >> 20)) {
-			*value <<= 20;
-		} else {
-			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_OVERFLOWED, argName);
-			return false;
-		}
-	} else if(try_scan(cursor, "K") || try_scan(cursor, "k")) {
-		if (*value <= (((U_64)-1) >> 10)) {
-			*value <<= 10;
-		} else {
-			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_OVERFLOWED, argName);
-			return false;
-		}
-	}
-	return true;
+	return 0 == result;
 }
 
 /**
@@ -1401,8 +1438,22 @@ gcParseCommandLineAndInitializeWithValues(J9JavaVM *vm, IDATA *memoryParameters)
 	PORT_ACCESS_FROM_JAVAVM(vm);
 
 	/* Parse the command line 
-	 * Order is important for paramters that match as substrings (-Xmrx/-Xmr)
+	 * Order is important for parameters that match as substrings (-Xmrx/-Xmr)
 	 */
+	{
+		bool enableOriginalJDK8HeapSizeCompatibilityOption = false;
+		/* only parse VMOPT_XXENABLEORIGINALJDK8HEAPSIZECOMPATIBILITY option for Java 8 and below */
+		if (J2SE_18 >= J2SE_VERSION(vm)) {
+
+			IDATA enabled = FIND_AND_CONSUME_ARG(EXACT_MATCH, VMOPT_XXENABLEORIGINALJDK8HEAPSIZECOMPATIBILITY, NULL);
+			IDATA disabled = FIND_AND_CONSUME_ARG(EXACT_MATCH, VMOPT_XXDISABLEORIGINALJDK8HEAPSIZECOMPATIBILITY, NULL);
+			if (enabled > disabled) {
+				enableOriginalJDK8HeapSizeCompatibilityOption = true;
+			}
+		}
+		/* set default max heap for Java */
+		extensions->computeDefaultMaxHeapForJava(enableOriginalJDK8HeapSizeCompatibilityOption);
+	}
 	result = option_set_to_opt(vm, OPT_XMCA, &index, EXACT_MEMORY_MATCH, &vm->ramClassAllocationIncrement);
 	if (OPTION_OK != result) {
 		goto _error;
@@ -1420,20 +1471,22 @@ gcParseCommandLineAndInitializeWithValues(J9JavaVM *vm, IDATA *memoryParameters)
 		goto _error;
 	}
 
-#if defined(J9VM_GC_COMPRESSED_POINTERS)	/* This should be J9VM_INTERP_COMPRESSED_OBJECT_HEADER */
-	if (-1 != index) {
-		extensions->suballocatorInitialSize = optionValue;
-	}
-	if(0 == extensions->suballocatorInitialSize) {
-		j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_MUST_BE_ABOVE, OPT_XMCRS, (UDATA)0);
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+	if (J9JAVAVM_COMPRESS_OBJECT_REFERENCES(vm)) {
+		if (-1 != index) {
+			extensions->suballocatorInitialSize = optionValue;
+		}
+		if(0 == extensions->suballocatorInitialSize) {
+			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_MUST_BE_ABOVE, OPT_XMCRS, (UDATA)0);
 			return JNI_EINVAL;
-	}
+		}
 #define FOUR_GB ((UDATA)4 * 1024 * 1024 * 1024)
-	if(extensions->suballocatorInitialSize >= FOUR_GB) {
-		j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_OVERFLOWED, OPT_XMCRS);
+		if(extensions->suballocatorInitialSize >= FOUR_GB) {
+			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_VALUE_OVERFLOWED, OPT_XMCRS);
 			return JNI_EINVAL;
+		}
 	}
-#endif /* defined(J9VM_GC_COMPRESSED_POINTERS) */
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
 
 	memoryParameters[opt_Xmcrs] = index;
 
@@ -1499,7 +1552,6 @@ gcParseCommandLineAndInitializeWithValues(J9JavaVM *vm, IDATA *memoryParameters)
 		goto _error;
 	}
 	memoryParameters[opt_Xms] = index;
-
 
 #if defined(J9VM_GC_MODRON_SCAVENGER)
 	result = option_set_to_opt(vm, OPT_XMRX, &index, EXACT_MEMORY_MATCH, &optionValue);
@@ -1573,6 +1625,30 @@ gcParseCommandLineAndInitializeWithValues(J9JavaVM *vm, IDATA *memoryParameters)
 		memoryParameters[opt_Xmox] = memoryParameters[opt_Xmo];
 	}
 
+	result = option_set_to_opt_double(vm, OPT_XXMAXRAMPERCENT, &index, EXACT_MEMORY_MATCH, &extensions->maxRAMPercent);
+	if (OPTION_OK != result) {
+		goto _error;
+	}
+	memoryParameters[opt_maxRAMPercent] = index;
+	if (memoryParameters[opt_maxRAMPercent] != -1) {
+		if ((extensions->maxRAMPercent < 0.0) || (extensions->maxRAMPercent > 100.0)) {
+			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_PERCENT_OUT_OF_RANGE, "-XX:MaxRAMPercentage", 0.0, 100.0);
+			return JNI_EINVAL;
+		}
+	}
+
+	result = option_set_to_opt_double(vm, OPT_XXINITIALRAMPERCENT, &index, EXACT_MEMORY_MATCH, &extensions->initialRAMPercent);
+	if (OPTION_OK != result) {
+		goto _error;
+	}
+	memoryParameters[opt_initialRAMPercent] = index;
+	if (memoryParameters[opt_initialRAMPercent] != -1) {
+		if ((extensions->initialRAMPercent < 0.0) || (extensions->initialRAMPercent > 100.0)) {
+			j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_PERCENT_OUT_OF_RANGE, "-XX:InitialRAMPercentage", 0.0, 100.0);
+			return JNI_EINVAL;
+		}
+	}
+
 	/* Parse the option to disable NUMA-awareness.  This is parsed on all platforms but only Balanced currently does anything
 	 * with the result.
 	 * Note that this option does NOT disable heap interleaving since that is considered a harmless and "passive" optimization.
@@ -1595,6 +1671,11 @@ gcParseCommandLineAndInitializeWithValues(J9JavaVM *vm, IDATA *memoryParameters)
 	 * easily disallow -Xgcpolicy options.
 	 */
 	if (0 == gcParseSovereignArguments(vm)) {
+		return JNI_EINVAL;
+	}
+
+	/* parse -XX: option that logicially belong to GC */
+	if (0 == gcParseXXArguments(vm)) {
 		return JNI_EINVAL;
 	}
 

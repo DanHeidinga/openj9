@@ -1,4 +1,4 @@
-dnl Copyright (c) 2017, 2018 IBM Corp. and others
+dnl Copyright (c) 2017, 2020 IBM Corp. and others
 dnl
 dnl This program and the accompanying materials are made available under
 dnl the terms of the Eclipse Public License 2.0 which accompanies this
@@ -29,7 +29,7 @@ define({BEGIN_HELPER},{
 	staddr r0,JIT_GPR_SAVE_SLOT(0)
 	SAVE_LR
 	SAVE_JIT_GOT_REGISTERS
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 })
 
 define({END_HELPER},{
@@ -202,7 +202,7 @@ define({NEW_DUAL_MODE_HELPER},{
 	START_PROC($1)
 	SAVE_LR
 	SAVE_JIT_GOT_REGISTERS
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	CALL_DIRECT(fast_$1)
 	cmpliaddr r3,0
 	beq .L_done_$1
@@ -233,7 +233,7 @@ define({NEW_DUAL_MODE_HELPER_NO_RETURN_VALUE},{
 	START_PROC($1)
 	SAVE_LR
 	SAVE_JIT_GOT_REGISTERS
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	CALL_DIRECT(fast_$1)
 	cmpliaddr r3,0
 	beq .L_done_$1
@@ -296,6 +296,8 @@ END_PROC($1)
 
 dnl Runtime helpers
 
+DUAL_MODE_HELPER(jitNewValue,1)
+DUAL_MODE_HELPER(jitNewValueNoZeroInit,1)
 DUAL_MODE_HELPER(jitNewObject,1)
 DUAL_MODE_HELPER(jitNewObjectNoZeroInit,1)
 DUAL_MODE_HELPER(jitANewArray,2)
@@ -327,6 +329,18 @@ DUAL_MODE_HELPER_NO_RETURN_VALUE(jitTypeCheckArrayStore,2)
 DUAL_MODE_HELPER_NO_RETURN_VALUE(jitTypeCheckArrayStoreWithNullCheck,2)
 FAST_PATH_ONLY_HELPER(jitObjectHashCode,1)
 SLOW_PATH_ONLY_HELPER_NO_RETURN_VALUE(jitReportFinalFieldModified,1)
+SLOW_PATH_ONLY_HELPER_NO_RETURN_VALUE(jitReportInstanceFieldRead,2)
+SLOW_PATH_ONLY_HELPER_NO_RETURN_VALUE(jitReportInstanceFieldWrite,3)
+SLOW_PATH_ONLY_HELPER_NO_RETURN_VALUE(jitReportStaticFieldRead,1)
+SLOW_PATH_ONLY_HELPER_NO_RETURN_VALUE(jitReportStaticFieldWrite,2)
+FAST_PATH_ONLY_HELPER(jitAcmpHelper,2)
+OLD_DUAL_MODE_HELPER(jitGetFlattenableField,2)
+OLD_DUAL_MODE_HELPER(jitWithFlattenableField,3)
+OLD_DUAL_MODE_HELPER_NO_RETURN_VALUE(jitPutFlattenableField,3)
+OLD_DUAL_MODE_HELPER(jitGetFlattenableStaticField,2)
+OLD_DUAL_MODE_HELPER_NO_RETURN_VALUE(jitPutFlattenableStaticField,3)
+OLD_DUAL_MODE_HELPER(jitLoadFlattenableArrayElement,2)
+OLD_DUAL_MODE_HELPER_NO_RETURN_VALUE(jitStoreFlattenableArrayElement,3)
 
 dnl Trap handlers
 
@@ -355,18 +369,27 @@ PICBUILDER_SLOW_PATH_ONLY_HELPER(jitResolveVirtualMethod,2)
 PICBUILDER_SLOW_PATH_ONLY_HELPER(jitResolveMethodType,3)
 PICBUILDER_SLOW_PATH_ONLY_HELPER(jitResolveMethodHandle,3)
 PICBUILDER_SLOW_PATH_ONLY_HELPER(jitResolveInvokeDynamic,3)
+PICBUILDER_SLOW_PATH_ONLY_HELPER(jitResolveConstantDynamic,3)
 PICBUILDER_SLOW_PATH_ONLY_HELPER(jitResolveHandleMethod,3)
+
+dnl Direct call field resolve helpers
+
+SLOW_PATH_ONLY_HELPER(jitResolveFieldDirect,2)
+SLOW_PATH_ONLY_HELPER(jitResolveFieldSetterDirect,2)
+SLOW_PATH_ONLY_HELPER(jitResolveStaticFieldDirect,2)
+SLOW_PATH_ONLY_HELPER(jitResolveStaticFieldSetterDirect,2)
 
 dnl Recompilation helpers
 
 SLOW_PATH_ONLY_HELPER(jitRetranslateCaller,2)
-SLOW_PATH_ONLY_HELPER(jitRetranslateCallerWithPreparation,2)
+SLOW_PATH_ONLY_HELPER(jitRetranslateCallerWithPreparation,3)
 SLOW_PATH_ONLY_HELPER(jitRetranslateMethod,3)
 
 dnl Exception throw helpers
 
 EXCEPTION_THROW_HELPER(jitThrowCurrentException,0)
 EXCEPTION_THROW_HELPER(jitThrowException,1)
+EXCEPTION_THROW_HELPER(jitThrowUnreportedException,1)
 EXCEPTION_THROW_HELPER(jitThrowAbstractMethodError,0)
 EXCEPTION_THROW_HELPER(jitThrowArithmeticException,0)
 EXCEPTION_THROW_HELPER(jitThrowArrayIndexOutOfBounds,0)
@@ -395,6 +418,7 @@ FAST_PATH_ONLY_HELPER_NO_RETURN_VALUE(jitWriteBarrierStoreMetronome,3)
 dnl Misc
 
 SLOW_PATH_ONLY_HELPER(jitInduceOSRAtCurrentPC,0)
+SLOW_PATH_ONLY_HELPER(jitInduceOSRAtCurrentPCAndRecompile,0)
 SLOW_PATH_ONLY_HELPER(jitNewInstanceImplAccessCheck,3)
 SLOW_PATH_ONLY_HELPER_NO_EXCEPTION_NO_RETURN_VALUE(jitCallCFunction,3)
 SLOW_PATH_ONLY_HELPER_NO_EXCEPTION_NO_RETURN_VALUE(jitCallJitAddPicToPatchOnClassUnload,2)
@@ -717,7 +741,7 @@ END_PROC(icallVMprJavaSendInvokeExactL)
 START_PROC(jitDecompileOnReturn0)
 	SWITCH_TO_C_STACK
 	SAVE_PRESERVED_REGS
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	li r0,0
 	staddr r0,J9TR_VMThread_tempSlot(J9VMTHREAD)
 	CALL_C_WITH_VMTHREAD(c_jitDecompileOnReturn)
@@ -728,7 +752,7 @@ START_PROC(jitDecompileOnReturn1)
 	stw r3,J9TR_VMThread_returnValue(J9VMTHREAD)
 	SWITCH_TO_C_STACK
 	SAVE_PRESERVED_REGS
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	li r0,1
 	staddr r0,J9TR_VMThread_tempSlot(J9VMTHREAD)
 	CALL_C_WITH_VMTHREAD(c_jitDecompileOnReturn)
@@ -739,7 +763,7 @@ START_PROC(jitDecompileOnReturnF)
 	stfs fp0,J9TR_VMThread_returnValue(J9VMTHREAD)
 	SWITCH_TO_C_STACK
 	SAVE_PRESERVED_REGS
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	li r0,1
 	staddr r0,J9TR_VMThread_tempSlot(J9VMTHREAD)
 	CALL_C_WITH_VMTHREAD(c_jitDecompileOnReturn)
@@ -750,7 +774,7 @@ START_PROC(jitDecompileOnReturnD)
 	stfd fp0,J9TR_VMThread_returnValue(J9VMTHREAD)
 	SWITCH_TO_C_STACK
 	SAVE_PRESERVED_REGS
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	li r0,2
 	staddr r0,J9TR_VMThread_tempSlot(J9VMTHREAD)
 	CALL_C_WITH_VMTHREAD(c_jitDecompileOnReturn)
@@ -760,7 +784,7 @@ END_PROC(jitDecompileOnReturnD)
 START_PROC(jitReportExceptionCatch)
 	SWITCH_TO_C_STACK
 	SAVE_PRESERVED_REGS
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	CALL_C_WITH_VMTHREAD(c_jitReportExceptionCatch)
 	RESTORE_PRESERVED_REGS
 	SWITCH_TO_JAVA_STACK
@@ -770,42 +794,42 @@ END_PROC(jitReportExceptionCatch)
 START_PROC(jitDecompileAtExceptionCatch)
 	SWITCH_TO_C_STACK
 	SAVE_PRESERVED_REGS
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	CALL_C_WITH_VMTHREAD(c_jitDecompileAtExceptionCatch)
 	BRANCH_VIA_VMTHREAD(J9TR_VMThread_tempSlot)
 END_PROC(jitDecompileAtExceptionCatch)
 
 START_PROC(jitDecompileAtCurrentPC)
 	SWITCH_TO_C_STACK
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	CALL_C_WITH_VMTHREAD(c_jitDecompileAtCurrentPC)
 	BRANCH_VIA_VMTHREAD(J9TR_VMThread_tempSlot)
 END_PROC(jitDecompileAtCurrentPC)
 
 START_PROC(jitDecompileBeforeReportMethodEnter)
 	SWITCH_TO_C_STACK
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	CALL_C_WITH_VMTHREAD(c_jitDecompileBeforeReportMethodEnter)
 	BRANCH_VIA_VMTHREAD(J9TR_VMThread_tempSlot)
 END_PROC(jitDecompileBeforeReportMethodEnter)
 
 START_PROC(jitDecompileBeforeMethodMonitorEnter)
 	SWITCH_TO_C_STACK
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	CALL_C_WITH_VMTHREAD(c_jitDecompileBeforeMethodMonitorEnter)
 	BRANCH_VIA_VMTHREAD(J9TR_VMThread_tempSlot)
 END_PROC(jitDecompileBeforeMethodMonitorEnter)
 
 START_PROC(jitDecompileAfterAllocation)
 	SWITCH_TO_C_STACK
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	CALL_C_WITH_VMTHREAD(c_jitDecompileAfterAllocation)
 	BRANCH_VIA_VMTHREAD(J9TR_VMThread_tempSlot)
 END_PROC(jitDecompileAfterAllocation)
 
 START_PROC(jitDecompileAfterMonitorEnter)
 	SWITCH_TO_C_STACK
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	CALL_C_WITH_VMTHREAD(c_jitDecompileAfterMonitorEnter)
 	BRANCH_VIA_VMTHREAD(J9TR_VMThread_tempSlot)
 END_PROC(jitDecompileAfterMonitorEnter)
@@ -839,6 +863,63 @@ START_PROC(jitFillOSRBufferReturn)
 	CINTERP(J9TR_bcloop_exit_interpreter, 0)
 END_PROC(jitFillOSRBufferReturn)
 
+dnl Expects r3 to already contain the vmThread.
+dnl Expects r4 to already contain the address being loaded from.
+START_PROC(jitSoftwareReadBarrier)
+ifdef({OMR_GC_CONCURRENT_SCAVENGER},{
+	staddr r0,JIT_GPR_SAVE_SLOT(0)
+	SAVE_LR
+	SAVE_JIT_GOT_REGISTERS
+	INIT_JIT_TOC
+	SWITCH_TO_C_STACK
+	SAVE_C_VOLATILE_REGS
+
+	laddr r5,J9TR_VMThread_javaVM(J9VMTHREAD)
+	laddr r5,J9TR_JavaVM_memoryManagerFunctions(r5)
+	laddr FUNC_PTR,J9TR_J9MemoryManagerFunctions_J9ReadBarrier(r5)
+	CALL_INDIRECT
+
+	RESTORE_C_VOLATILE_REGS
+	RESTORE_JIT_GOT_REGISTERS
+	RESTORE_LR
+	SWITCH_TO_JAVA_STACK
+	laddr r0,JIT_GPR_SAVE_SLOT(0)
+	blr
+},{
+dnl jitSoftwareReadBarrier is not supported if OMR_GC_CONCURRENT_SCAVENGER is not set
+	trap
+})
+END_PROC(jitSoftwareReadBarrier)
+
+dnl Expects r3 to already contain vmThread.
+dnl Expects r4 to already contain srcObj.
+dnl Expects r5 to already contain dstObj.
+dnl Expects r6 to already contain srcAddr.
+dnl Expects r7 to already contain dstAddr.
+dnl Expects r8 to already contain length.
+START_PROC(jitReferenceArrayCopy)
+	staddr r0,JIT_GPR_SAVE_SLOT(0)
+	SAVE_LR
+	SAVE_JIT_GOT_REGISTERS
+	INIT_JIT_TOC
+	SWITCH_TO_C_STACK
+	SAVE_ALL_REGS
+
+	laddr r9,J9TR_VMThread_javaVM(J9VMTHREAD)
+	laddr r9,J9TR_JavaVM_memoryManagerFunctions(r9)
+	laddr FUNC_PTR,J9TR_J9MemoryManagerFunctions_referenceArrayCopy(r9)
+	CALL_INDIRECT
+	staddr r3,J9TR_VMThread_returnValue(J9VMTHREAD)
+
+	RESTORE_ALL_REGS
+	RESTORE_JIT_GOT_REGISTERS
+	RESTORE_LR
+	SWITCH_TO_JAVA_STACK
+	laddr r0,JIT_GPR_SAVE_SLOT(0)
+	laddr r3,J9TR_VMThread_returnValue(J9VMTHREAD)
+	blr
+END_PROC(jitReferenceArrayCopy)
+
 ifdef({ASM_J9VM_ENV_DATA64},{
 
 BEGIN_RETURN_POINT(jitExitInterpreterJ)
@@ -855,7 +936,7 @@ START_PROC(jitDecompileOnReturnJ)
 	std r3,J9TR_VMThread_returnValue(J9VMTHREAD)
 	SWITCH_TO_C_STACK
 	SAVE_PRESERVED_REGS
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	li r0,2
 	staddr r0,J9TR_VMThread_tempSlot(J9VMTHREAD)
 	CALL_C_WITH_VMTHREAD(c_jitDecompileOnReturn)
@@ -872,7 +953,7 @@ START_PROC(jitDecompileOnReturnL)
 	std r3,J9TR_VMThread_returnValue(J9VMTHREAD)
 	SWITCH_TO_C_STACK
 	SAVE_PRESERVED_REGS
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	li r0,1
 	staddr r0,J9TR_VMThread_tempSlot(J9VMTHREAD)
 	CALL_C_WITH_VMTHREAD(c_jitDecompileOnReturn)
@@ -898,7 +979,7 @@ START_PROC(jitDecompileOnReturnJ)
 	stw r4,J9TR_VMThread_returnValue2(J9VMTHREAD)
 	SWITCH_TO_C_STACK
 	SAVE_PRESERVED_REGS
-	INIT_GOT(jitTOC)
+	INIT_JIT_TOC
 	li r0,2
 	staddr r0,J9TR_VMThread_tempSlot(J9VMTHREAD)
 	CALL_C_WITH_VMTHREAD(c_jitDecompileOnReturn)

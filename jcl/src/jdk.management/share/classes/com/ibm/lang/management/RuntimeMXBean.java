@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar17]*/
 /*******************************************************************************
- * Copyright (c) 2012, 2017 IBM Corp. and others
+ * Copyright (c) 2012, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -23,20 +23,29 @@
 package com.ibm.lang.management;
 
 /**
- * The IBM-specific interface for the runtime system of the virtual machine.
+ * The OpenJ9 extension interface for the runtime system of the virtual machine.
  */
 public interface RuntimeMXBean extends java.lang.management.RuntimeMXBean {
 
 	/**
-	 * enum type defines the different states of the VM Idle 
+	 * Defines the different states of {@link com.ibm.lang.management.RuntimeMXBean#getVMIdleState()}.
 	 */
 	public enum VMIdleStates {
 		/* Below constant values reflect J9VMRuntimeStateListener.vmRuntimeState
 		 * from the VM and the VM constants J9VM_RUNTIME_STATE_ACTIVE and
 		 * J9VM_RUNTIME_STATE_IDLE. These values need to match the VM values.
 		 */
+		/**
+		 * VM idle state could not be determined.
+		 */
 		INVALID(-1, "Invalid"),
+		/**
+		 * VM idle state is active.
+		 */
 		ACTIVE(1, "Active"),
+		/**
+		 * VM idle state is idle.
+		 */
 		IDLE(2, "Idle");
 
 		private int stateVal;
@@ -113,7 +122,40 @@ public interface RuntimeMXBean extends java.lang.management.RuntimeMXBean {
 	public VMIdleStates getVMIdleState();
 
 	/**
-	 * Return true if JVM state is idle. Otherwise returns false
+	 * @return  true if JVM state is idle. Otherwise returns false
 	 */
 	public boolean isVMIdle();
+	
+	/**
+	 * Query the state of the Attach API. Return false if the Attach API is:
+	 * - still initializing
+	 * - disabled
+	 * - terminated by VM shutdown
+	 * @return true if Attach API is initialized
+	 * @since   1.8
+	 */
+	public boolean isAttachApiInitialized();
+
+	/**
+	 * Query the state of the Attach API. Return true if the Attach API is:
+	 * - disabled
+	 * - terminated by VM shutdown
+	 * and false if it is
+	 * - still initializing
+	 * - initialized and running
+	 * @return true if Attach API is terminated
+	 * @since   1.8
+	 */
+	public boolean isAttachApiTerminated();
+
+	/**
+	 * This is provided for the benefit of applications which use attach API to load JVMTI agents 
+	 * into their own JVMs.
+	 * 
+	 * @return Attach API Virtual Machine ID of this VM
+	 * @since   1.8
+
+	 */
+	public String getVmId();
+
 }

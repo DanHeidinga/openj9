@@ -1,5 +1,5 @@
 <!-- 
-	Copyright (c) 2009, 2018 IBM Corp. and others
+	Copyright (c) 2009, 2020 IBM Corp. and others
 	
 	This program and the accompanying materials are made available under
 	the terms of the Eclipse Public License 2.0 which accompanies this
@@ -103,9 +103,9 @@
 	<export name="Java_com_ibm_jvm_Trace_resumeThisImpl" />
 	<export name="Java_com_ibm_jvm_Trace_getMicros" />
 	
-	<export name="Java_com_ibm_java_lang_management_internal_ClassLoadingMXBeanImpl_getLoadedClassCountImpl" />
+	<export name="Java_openj9_internal_management_ClassLoaderInfoBaseImpl_getLoadedClassCountImpl" />
 	<export name="Java_com_ibm_java_lang_management_internal_ClassLoadingMXBeanImpl_getTotalLoadedClassCountImpl" />
-	<export name="Java_com_ibm_java_lang_management_internal_ClassLoadingMXBeanImpl_getUnloadedClassCountImpl" />
+	<export name="Java_openj9_internal_management_ClassLoaderInfoBaseImpl_getUnloadedClassCountImpl" />
 	<export name="Java_com_ibm_java_lang_management_internal_ClassLoadingMXBeanImpl_isVerboseImpl" />
 	<export name="Java_com_ibm_java_lang_management_internal_ClassLoadingMXBeanImpl_setVerboseImpl" />
 	<export name="Java_com_ibm_java_lang_management_internal_CompilationMXBeanImpl_getTotalCompilationTimeImpl" />
@@ -133,8 +133,8 @@
 	<export name="Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_isVerboseImpl" />
 	<export name="Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_setMaxHeapSizeImpl" />
 	<export name="Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_setVerboseImpl" />
-	<export name="Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_getGCMasterThreadCpuUsedImpl" />
-	<export name="Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_getGCSlaveThreadsCpuUsedImpl" />
+	<export name="Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_getGCMainThreadCpuUsedImpl" />
+	<export name="Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_getGCWorkerThreadsCpuUsedImpl" />
 	<export name="Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_getMaximumGCThreadsImpl" />
 	<export name="Java_com_ibm_java_lang_management_internal_MemoryMXBeanImpl_getCurrentGCThreadsImpl" />
 	<export name="Java_com_ibm_lang_management_internal_MemoryNotificationThread_processNotificationLoop" />
@@ -163,9 +163,9 @@
 	<export name="Java_com_ibm_lang_management_internal_ExtendedOperatingSystemMXBeanImpl_getProcessVirtualMemorySizeImpl" />
 	<export name="Java_com_ibm_lang_management_internal_ExtendedOperatingSystemMXBeanImpl_getProcessPrivateMemorySizeImpl" />
 	<export name="Java_com_ibm_lang_management_internal_ExtendedOperatingSystemMXBeanImpl_getProcessPhysicalMemorySizeImpl" />
+	<export name="Java_com_ibm_lang_management_internal_ExtendedOperatingSystemMXBeanImpl_getSystemCpuLoadImpl" />
 	<export name="Java_com_ibm_lang_management_internal_OperatingSystemNotificationThread_processNotificationLoop" />
 	<export name="Java_com_ibm_lang_management_internal_OperatingSystemNotificationThreadShutdown_sendShutdownNotification" />
-	<export name="Java_com_ibm_lang_management_internal_SysinfoCpuTime_getCpuUtilizationImpl" />
 	<export name="Java_com_ibm_java_lang_management_internal_RuntimeMXBeanImpl_getNameImpl" />
 	<export name="Java_com_ibm_java_lang_management_internal_RuntimeMXBeanImpl_getStartTimeImpl" />
 	<export name="Java_com_ibm_java_lang_management_internal_RuntimeMXBeanImpl_getUptimeImpl" />
@@ -194,6 +194,8 @@
 	<export name="Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_findDeadlockedThreadsImpl" />
 	<export name="Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_getMultiThreadInfoImpl" />
 	<export name="Java_com_ibm_java_lang_management_internal_ThreadMXBeanImpl_dumpAllThreadsImpl" />
+	<export name="Java_openj9_internal_tools_attach_target_DiagnosticUtils_getHeapClassStatisticsImpl" />
+	<export name="Java_openj9_internal_tools_attach_target_DiagnosticUtils_triggerDumpsImpl" />
 	<export name="Java_com_ibm_oti_reflect_AnnotationParser_getAnnotationsData__Ljava_lang_reflect_Field_2" />
 	<export name="Java_com_ibm_oti_reflect_AnnotationParser_getAnnotationsData__Ljava_lang_reflect_Constructor_2" />
 	<export name="Java_com_ibm_oti_reflect_AnnotationParser_getAnnotationsData__Ljava_lang_reflect_Method_2" />
@@ -210,6 +212,7 @@
 	<export name="Java_com_ibm_oti_shared_SharedClassTokenHelperImpl_storeSharedClassImpl2" />
 	<export name="Java_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_findSharedClassImpl2" />
 	<export name="Java_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_notifyClasspathChange2" />
+	<export name="Java_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_notifyClasspathChange3" />
 	<export name="Java_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_storeSharedClassImpl2" />
 	<export name="Java_com_ibm_oti_shared_SharedClassURLHelperImpl_findSharedClassImpl3" />
 	<export name="Java_com_ibm_oti_shared_SharedClassURLHelperImpl_storeSharedClassImpl3" />
@@ -220,7 +223,7 @@
 	<export name="Java_com_ibm_oti_shared_SharedClassUtilities_destroySharedCacheImpl" />
 	<export name="Java_com_ibm_oti_shared_SharedClassURLHelperImpl_init" />
 	<export name="Java_com_ibm_oti_shared_SharedClassURLClasspathHelperImpl_init" />
-	<export name="Java_com_ibm_oti_shared_Shared_isSharingEnabledImpl" />
+	<export name="Java_com_ibm_oti_shared_Shared_isNonBootSharingEnabledImpl" />
 	<export name="Java_com_ibm_oti_vm_VM_allInstances" />
 	<export name="Java_com_ibm_oti_vm_VM_getClassPathCount" />
 	<export name="Java_com_ibm_oti_vm_VM_getPathFromClassPath" />
@@ -292,9 +295,6 @@
 	<export name="Java_com_ibm_virtualization_management_internal_HypervisorMXBeanImpl_isEnvironmentVirtualImpl"/>
 	<export name="Java_com_ibm_virtualization_management_internal_HypervisorMXBeanImpl_getVendorImpl"/>
 	
-	<export name="Java_com_ibm_lang_management_internal_ProcessorMXBeanImpl_getNumberCPUsImpl"/>
-	<export name="Java_com_ibm_lang_management_internal_ProcessorMXBeanImpl_setNumberEntitledCPUsImpl"/>
-
 	<export name="Java_sun_reflect_ConstantPool_getSize0" />
 	<export name="Java_sun_reflect_ConstantPool_getClassAt0" />
 	<export name="Java_sun_reflect_ConstantPool_getClassAtIfLoaded0" />
@@ -314,4 +314,6 @@
 	<export name="Java_com_ibm_virtualization_management_internal_GuestOS_retrieveMemoryUsageImpl"/>
 	
 	<export name="Java_com_ibm_jvm_Stats_getStats" />
+	<export name="Java_openj9_internal_tools_attach_target_DiagnosticUtils_dumpAllThreadsImpl" />
+	
 </exports>

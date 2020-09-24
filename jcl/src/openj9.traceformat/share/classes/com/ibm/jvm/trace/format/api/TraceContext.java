@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar18-SE]*/
 /*******************************************************************************
- * Copyright (c) 2000, 2016 IBM Corp. and others
+ * Copyright (c) 2000, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -81,7 +81,7 @@ public class TraceContext {
 	protected MessageFile messageFile;
 	protected Vector auxiliaryMessageFiles;
 
-	/* The trace headers used to initialise this context */
+	/* The trace headers used to initialize this context */
 	TraceFileHeader metadata;
 
 	PrintStream errorStream = System.out;
@@ -102,6 +102,7 @@ public class TraceContext {
 
 	/* Map of thread IDs to list of associated names */
 	Map knownThreads = new HashMap();
+	private boolean recordThreadNames = false;
 
 	/* The subset of threads we're interested in */
 	Set filteredThreads;
@@ -156,6 +157,33 @@ public class TraceContext {
 		this(data, message, error, warning, debug);
 
 		this.messageFile = MessageFile.getMessageFile(messageFile, this);
+	}
+
+	/**
+	 * Controls whether thread names are captured for inclusion in the
+	 * information returned by {@link TraceContext#summary() summary()}.
+	 *
+	 * By default, thread names are not captured unless enabled via this
+	 * method. Any previously captured names are discarded when subsequently
+	 * disabled.
+	 *
+	 * @param value whether thread names should be captured
+	 */
+	public void setRecordThreadNames(boolean value) {
+		recordThreadNames = value;
+		if (!value) {
+			knownThreads.clear();
+		}
+	}
+
+	/**
+	 * Answer whether thread names are being captured for inclusion in the
+	 * information returned by {@link TraceContext#summary() summary()}.
+	 *
+	 * @return true if thread names are being captured, false otherwise
+	 */
+	public boolean getRecordThreadNames() {
+		return recordThreadNames;
 	}
 
 	/**
@@ -320,6 +348,7 @@ public class TraceContext {
 	 * 
 	 * @deprecated this method is deprecated as it's use implies a problem elsewhere
 	 */
+	@Deprecated
 	public void setTraceType(int type) {
 		boolean validType = true;
 		if (debugStream != null) {
@@ -555,8 +584,10 @@ public class TraceContext {
 		if (debugStream != null) {
 			debug(this, 2, "Thread " + thread + " terminated, removing thread from thread list? " + moreData);
 		}
-		if( !moreData ) {
-			threadMap.remove(Long.valueOf(thread.getThreadID()));
+		if (!moreData) {
+			Long id = Long.valueOf(thread.getThreadID());
+			knownThreads.remove(id);
+			threadMap.remove(id);
 			threads.remove(thread);
 		}
 	}
@@ -584,14 +615,16 @@ public class TraceContext {
 			 */
 		}
 
-		/* record the threads current name for historical reference */
-		if (knownThreads.containsKey(ident)) {
-			Set names = (Set)knownThreads.get(ident);
-			names.add(record.threadName);
-		} else {
-			Set names = new HashSet();
-			names.add(record.threadName);
-			knownThreads.put(ident, names);
+		if (recordThreadNames) {
+			/* record the threads current name for historical reference */
+			if (knownThreads.containsKey(ident)) {
+				Set names = (Set)knownThreads.get(ident);
+				names.add(record.threadName);
+			} else {
+				Set names = new HashSet();
+				names.add(record.threadName);
+				knownThreads.put(ident, names);
+			}
 		}
 		
 		thread = (TraceThread)threadMap.get(ident);

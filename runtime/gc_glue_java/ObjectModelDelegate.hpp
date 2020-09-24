@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2017, 2017 IBM Corp. and others
+ * Copyright (c) 2017, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -51,7 +51,11 @@ private:
 	static const uintptr_t _objectHeaderSlotOffset = 0;
 	static const uintptr_t _objectHeaderSlotFlagsShift = 0;
 
-	const fomrobject_t _delegateHeaderSlotFlagsMask;
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+	bool _compressObjectReferences;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
+
+	const uintptr_t _delegateHeaderSlotFlagsMask;
 
 	GC_ArrayObjectModel *_arrayObjectModel;
 	GC_MixedObjectModel *_mixedObjectModel;
@@ -65,6 +69,39 @@ public:
 private:
 protected:
 public:
+	/**
+	 * Return back true if object references are compressed
+	 * @return true, if object references are compressed
+	 */
+	MMINLINE bool
+	compressObjectReferences()
+	{
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+#if defined(OMR_GC_FULL_POINTERS)
+#if defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES)
+		return (bool)OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES;
+#else /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+		return _compressObjectReferences;
+#endif /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+#else /* defined(OMR_GC_FULL_POINTERS) */
+		return true;
+#endif /* defined(OMR_GC_FULL_POINTERS) */
+#else /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return false;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+	}
+
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+	/**
+	 * Set the compress object references flag.
+	 */
+	MMINLINE void
+	setCompressObjectReferences(bool compress)
+	{
+		_compressObjectReferences = compress;
+	}
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
+
 	/**
 	 * Set the array object model.
 	 */
@@ -112,7 +149,7 @@ public:
 	MMINLINE omrobjectptr_t
 	getIndirectObject(omrobjectptr_t objectPtr)
 	{
-		J9Class *clazz = J9GC_J9OBJECT_CLAZZ(objectPtr);
+		J9Class *clazz = J9GC_J9OBJECT_CLAZZ(objectPtr, this);
 		return J9VM_J9CLASS_TO_HEAPCLASS(clazz);
 	}
 
@@ -133,7 +170,7 @@ public:
 	}
 
 	/**
-	 * Get the fomrobjectptr_t offset of the slot containing the object header.
+	 * Get the offset of the slot containing the object header.
 	 */
 	MMINLINE uintptr_t
 	getObjectHeaderSlotOffset()
@@ -255,8 +292,13 @@ public:
 	MMINLINE uintptr_t
 	getObjectSizeInBytesWithHeader(omrobjectptr_t objectPtr)
 	{
-		uintptr_t flags = ((*((fomrobject_t *)objectPtr)) >> getObjectHeaderSlotFlagsShift()) & _delegateHeaderSlotFlagsMask;
-		bool hasBeenMoved = OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS == (flags & OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS);
+		uintptr_t flags = 0;
+		if (compressObjectReferences()) {
+			flags = *(uint32_t*)objectPtr;
+		} else {
+			flags = *(uintptr_t*)objectPtr;
+		}
+		bool hasBeenMoved = J9_ARE_ANY_BITS_SET((flags >> getObjectHeaderSlotFlagsShift()) & _delegateHeaderSlotFlagsMask, OBJECT_HEADER_HAS_BEEN_MOVED_IN_CLASS);
 		return getObjectSizeInBytesWithHeader(objectPtr, hasBeenMoved);
 	}
 
@@ -282,7 +324,7 @@ public:
 	MMINLINE bool
 	isIndexable(omrobjectptr_t objectPtr)
 	{
-		J9Class* clazz = J9GC_J9OBJECT_CLAZZ(objectPtr);
+		J9Class* clazz = J9GC_J9OBJECT_CLAZZ(objectPtr, this);
 		return J9GC_CLASS_IS_ARRAY(clazz);
 	}
 
@@ -320,24 +362,87 @@ public:
 		J9Class* clazz = (J9Class *)(preservedSlot & ~(UDATA)_delegateHeaderSlotFlagsMask);
 
 		if (J9GC_CLASS_IS_ARRAY(clazz)) {
-#if defined (J9VM_INTERP_COMPRESSED_OBJECT_HEADER)
-			uintptr_t elements = forwardedHeader->getPreservedOverlap();
-#else /* defined (OMR_INTERP_COMPRESSED_OBJECT_HEADER) */
-			uintptr_t elements = ((J9IndexableObjectContiguous *)forwardedHeader->getObject())->size;
-#endif /* defined (OMR_INTERP_COMPRESSED_OBJECT_HEADER) */
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
-			if (0 == elements) {
-				elements = ((J9IndexableObjectDiscontiguous *)forwardedHeader->getObject())->size;
+			uintptr_t elements = 0;
+#if defined (OMR_GC_COMPRESSED_POINTERS)
+			if (compressObjectReferences()) {
+				elements = forwardedHeader->getPreservedOverlap();
+			} else
+#endif /* defined (OMR_GC_COMPRESSED_POINTERS) */
+			{
+				elements = ((J9IndexableObjectContiguousFull *)forwardedHeader->getObject())->size;
 			}
-#endif
+
+			if (0 == elements) {
+				/* Discontiguous */
+				if (compressObjectReferences()) {
+					elements = ((J9IndexableObjectDiscontiguousCompressed *)forwardedHeader->getObject())->size;
+				} else {
+					elements = ((J9IndexableObjectDiscontiguousFull *)forwardedHeader->getObject())->size;
+				}
+			}
+
 			uintptr_t dataSize = _arrayObjectModel->getDataSizeInBytes(clazz, elements);
 			GC_ArrayletObjectModel::ArrayLayout layout = _arrayObjectModel->getArrayletLayout(clazz, dataSize);
 			size = _arrayObjectModel->getSizeInBytesWithHeader(clazz, layout, elements);
 		} else {
-			size = _mixedObjectModel->getSizeInBytesWithoutHeader(clazz) + sizeof(J9Object);
+			size = _mixedObjectModel->getSizeInBytesWithoutHeader(clazz) + J9GC_OBJECT_HEADER_SIZE(this);
 		}
 
 		return size;
+	}
+
+	/**
+	 * Returns the field offset of the hottest field of the object referred to by the forwarded header.
+	 * Valid if scavenger dynamicBreadthFirstScanOrdering is enabled.
+	 *
+	 * @param forwardedHeader pointer to the MM_ForwardedHeader instance encapsulating the object
+	 * @return the offset of the hottest field of the given object referred to by the forwarded header, return U_8_MAX if a hot field does not exist
+	 */
+	MMINLINE uint8_t
+	getHotFieldOffset(MM_ForwardedHeader *forwardedHeader)
+	{
+		J9Class* hotClass = ((J9Class *)(((uintptr_t)(forwardedHeader->getPreservedSlot())) & ~(UDATA)_delegateHeaderSlotFlagsMask));
+		if (hotClass->hotFieldsInfo != NULL) {
+			return hotClass->hotFieldsInfo->hotFieldOffset1;
+		}
+		
+		return U_8_MAX;
+	}
+
+	/**
+	 * Returns the field offset of the second hottest field of the object referred to by the forwarded header.
+	 * Valid if scavenger dynamicBreadthFirstScanOrdering is enabled
+	 *
+	 * @param forwardedHeader pointer to the MM_ForwardedHeader instance encapsulating the object
+	 * @return the offset of the second hottest field of the given object referred to by the forwarded header, return U_8_MAX if the hot field does not exist
+	 */
+	MMINLINE uint8_t
+	getHotFieldOffset2(MM_ForwardedHeader *forwardedHeader)
+	{
+		J9Class* hotClass = ((J9Class *)(((uintptr_t)(forwardedHeader->getPreservedSlot())) & ~(UDATA)_delegateHeaderSlotFlagsMask));
+		if (hotClass->hotFieldsInfo != NULL) {
+			return hotClass->hotFieldsInfo->hotFieldOffset2;
+		}
+		
+		return U_8_MAX;	
+	}
+
+	/**
+	 * Returns the field offset of the third hottest field of the object referred to by the forwarded header.
+	 * Valid if scavenger dynamicBreadthFirstScanOrdering is enabled
+	 *
+	 * @param forwardedHeader pointer to the MM_ForwardedHeader instance encapsulating the object
+	 * @return the offset of the third hottest field of the given object referred to by the forwarded header, return U_8_MAX if the hot field does not exist
+	 */
+	MMINLINE uint8_t
+	getHotFieldOffset3(MM_ForwardedHeader *forwardedHeader)
+	{
+		J9Class* hotClass = ((J9Class *)(((uintptr_t)(forwardedHeader->getPreservedSlot())) & ~(UDATA)_delegateHeaderSlotFlagsMask));
+		if (hotClass->hotFieldsInfo != NULL) {
+			return hotClass->hotFieldsInfo->hotFieldOffset3;
+		}
+		
+		return U_8_MAX;	
 	}
 
 	/**
@@ -373,9 +478,10 @@ public:
 	 * Constructor receives a copy of OMR's object flags mask, normalized to low order byte. Delegate
 	 * realigns it for internal use.
 	 */
-	GC_ObjectModelDelegate(fomrobject_t omrHeaderSlotFlagsMask)
+	GC_ObjectModelDelegate(uintptr_t omrHeaderSlotFlagsMask)
 		: _delegateHeaderSlotFlagsMask(omrHeaderSlotFlagsMask << _objectHeaderSlotFlagsShift)
 	{}
+
 };
 
 #endif /* OBJECTMODELDELEGATE_HPP_ */

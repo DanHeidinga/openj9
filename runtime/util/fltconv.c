@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -38,6 +38,7 @@
 #endif
 
 static int fltconv_indexLeadingOne32 (U_32 u32val);
+static int fltconv_indexLeadingOne64 (U_64 u64val);
 
 
 jfloat 
@@ -277,8 +278,11 @@ jfloat
 helperCConvertIntegerToFloat(I_32 src)
 {
 	jfloat tmpDst;
-	
-#if defined USE_NATIVE_CAST
+
+#if defined(USE_NATIVE_CAST) || defined(ARM)
+	/* Enabling native cast for ARM avoids a compiler bug in
+	 * gcc-linaro-4.9.4-2017.01
+	 */
 	tmpDst = (jfloat)src;
 #else
 	{
@@ -290,7 +294,7 @@ helperCConvertIntegerToFloat(I_32 src)
 		}
 	
 		if (src < 0) {
-			spfInt = (U_32)(0 - src);
+			spfInt = (U_32)0 - (U_32)src;
 			sign = 1;
 		} else {
 			spfInt = (U_32)src;
@@ -383,8 +387,72 @@ helperCConvertLongToFloat(I_64 src)
 {
 	jfloat tmpDst;
 
+/* Every platform but 32-bit Windows can use the cast.
+ * Using VS2017 15.9 the cast doesn't give the expected result.
+ */
+#if !defined(WIN32) || defined(J9VM_ENV_DATA64)
 	tmpDst = (jfloat)src;
-
+#else /* !defined(WIN32) || defined(J9VM_ENV_DATA64) */
+	{
+		int idl1 = 0;
+		int sign = 0;
+		U_64 spfInt = 0;
+	
+		if (0 == src) {
+			return 0.0f;
+		}
+	
+		if (src < 0) {
+			spfInt = (U_64)0 - (U_64)src;
+			sign = 1;
+		} else {
+			spfInt = (U_64)src;
+			sign = 0;
+		}
+		
+		/* Find out where the most significant bit is in the integer value.
+		 * We are only interested in keeping 24 of those bits. 
+		 */
+		idl1 = fltconv_indexLeadingOne64(spfInt);
+		if (idl1 >= 24) {
+			
+			/* If it's more than 24 bits, we shift right and keep track of
+			 * the overflow for some possible rounding. 
+			 */
+			U_64 overflow = spfInt << (64 - (idl1 - 23));
+			spfInt >>= idl1 - 23;
+			spfInt &= 0x007FFFFF;
+			spfInt |= (idl1 + SPEXPONENT_BIAS) << 23;
+			if ((((U_64)1) << 63) < overflow) {
+				spfInt += 1;
+			} else if ((((U_64)1) << 63) == overflow) {
+				if (0 != (spfInt & 1)) {
+					spfInt += 1;
+				}
+			}
+		} else if (idl1 < 23) {
+			
+			/* If it's less than 24 bits, we shift left, and no
+			 * overflow and rounding to worry about. 
+			 */
+			spfInt <<= 23 - idl1;
+			spfInt &= 0x007FFFFF;
+			spfInt |= (idl1 + SPEXPONENT_BIAS) << 23;
+		} else {
+			
+			/* It must be exactly 24 bits, so no shift is required. */
+			spfInt &= 0x007FFFFF;
+			spfInt |= (idl1 + SPEXPONENT_BIAS) << 23;
+		}
+		if (sign) {
+			spfInt |= 0x80000000;
+		}
+		
+		/* Cast tmpDst to an integer to avoid float conversion. */
+		*((U_32 *)&tmpDst) = (U_32)spfInt;
+	}
+#endif /* !defined(WIN32) || defined(J9VM_ENV_DATA64) */
+	
 	return tmpDst;
 }
 
@@ -424,6 +492,11 @@ fltconv_indexLeadingOne32(U_32 u32val)
 		leading = 7;
 		mask = 0x00000080;
 	}
+	/* WARNING This loop will busy hang when compiled with
+	 * gcc-linaro-4.9.4-2017.01 for armhf if the match should happen on
+	 * the first iteration. The loop exit condition is moved to the end of
+	 * the loop and doesn't execute before the first shift of mask.
+	 */
 	while((mask & u32val) == 0) {
 		mask >>= 1;
 		leading--;
@@ -432,6 +505,15 @@ fltconv_indexLeadingOne32(U_32 u32val)
 }
 
 
+static int 
+fltconv_indexLeadingOne64(U_64 u64val)
+{
+	int leading = fltconv_indexLeadingOne32((U_32)(u64val >> 32));
+	if (leading >= 0) {
+		return leading + 32;
+	}
+	return fltconv_indexLeadingOne32((U_32)u64val);
+}
+
+
 #endif /* J9VM_INTERP_FLOAT_SUPPORT */ /* End File Level Build Flags */
-
-

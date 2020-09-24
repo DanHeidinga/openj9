@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2018 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -37,6 +37,7 @@ import static com.ibm.j9ddr.vm29.j9.BCNames.JBfload;
 import static com.ibm.j9ddr.vm29.j9.BCNames.JBfloadw;
 import static com.ibm.j9ddr.vm29.j9.BCNames.JBfstore;
 import static com.ibm.j9ddr.vm29.j9.BCNames.JBfstorew;
+import static com.ibm.j9ddr.vm29.j9.BCNames.JBwithfield;
 import static com.ibm.j9ddr.vm29.j9.BCNames.JBgetfield;
 import static com.ibm.j9ddr.vm29.j9.BCNames.JBgetstatic;
 import static com.ibm.j9ddr.vm29.j9.BCNames.JBgoto;
@@ -83,6 +84,7 @@ import static com.ibm.j9ddr.vm29.j9.BCNames.JBlookupswitch;
 import static com.ibm.j9ddr.vm29.j9.BCNames.JBlstore;
 import static com.ibm.j9ddr.vm29.j9.BCNames.JBlstorew;
 import static com.ibm.j9ddr.vm29.j9.BCNames.JBmultianewarray;
+import static com.ibm.j9ddr.vm29.j9.BCNames.JBdefaultvalue;
 import static com.ibm.j9ddr.vm29.j9.BCNames.JBnew;
 import static com.ibm.j9ddr.vm29.j9.BCNames.JBnewdup;
 import static com.ibm.j9ddr.vm29.j9.BCNames.JBnewarray;
@@ -169,25 +171,19 @@ public class ByteCodeDumper {
 		UDATA start;
 		UDATA pc;
 		UDATA bc;
-		I32 low, high;
-		U32 npairs;
 		J9ROMMethodPointer romMethod = (J9ROMMethodPointer.cast(bytecodes.sub(J9ROMMethod.SIZEOF)));
 		U32 localsCount = new U32(ROMHelp.J9_ARG_COUNT_FROM_ROM_METHOD(romMethod).add(ROMHelp.J9_TEMP_COUNT_FROM_ROM_METHOD(romMethod)));
 		int resultArray[] = new int[8192];
-		String environment = "0";
-		boolean envVarDefined = false;
+		String environment = System.getenv().get("j9bcutil_dumpBytecodes");
+		Integer dumpBytecodes = environment != null ? Integer.valueOf(environment) : null;
 		int result;
 
-		if (System.getenv().containsKey("j9bcutil_dumpBytecodes")) {
-			envVarDefined = true;
-			environment = System.getenv().get("j9bcutil_dumpBytecodes");
-		}
 		pc = new UDATA(walkStartPC);
 		bcIndex = bytecodes.add(pc); // cell address
 		while (pc.lte(walkEndPC)) {
 			if (flags.anyBitsIn(BCT_DumpMaps)) {
 				for (int j = LOCAL_MAP; j < MAP_COUNT; j++) {
-					if (envVarDefined && (!pc.eq(Integer.parseInt(environment)))) {
+					if ((dumpBytecodes != null) && !pc.eq(dumpBytecodes)) {
 						continue;
 					}
 
@@ -242,19 +238,16 @@ public class ByteCodeDumper {
 			start = new UDATA(pc);
 			pc = pc.add(1);
 
-			switch (bc.intValue()) {
-			case JBbipush:
+			int bcIntVal = bc.intValue();
+			if (bcIntVal == JBbipush) {
 				index = new UDATA(_GETNEXT_U8());
 				out.append(String.format("%d\n", new I8(index).intValue()));
 				pc = pc.add(1);
-				break;
-			case JBsipush:
+			} else if (bcIntVal == JBsipush) {
 				index = new UDATA(_GETNEXT_U16());
 				out.append(String.format("%d\n", new I16(index).intValue()));
 				pc = pc.add(2);
-				break;
-			case JBldc:
-			case JBldcw:
+			} else if ((bcIntVal == JBldc) || (bcIntVal == JBldcw)) {
 				if (bc.eq(JBldc)) {
 					index = new UDATA(_GETNEXT_U8());
 					pc = pc.add(1);
@@ -282,84 +275,79 @@ public class ByteCodeDumper {
 					out.append(String.format("(int/float) 0x%08X", romSingleSlotConstantRef.data().longValue()));
 					out.append(nl);
 				}
-				break;
-			case JBldc2lw:
+			} else if (bcIntVal == JBldc2lw) {
 				index = new UDATA(_GETNEXT_U16());
 				out.append(String.format("%d ", index.intValue()));
 				info = constantPool.add(index);
 				out.append(String.format("(long) 0x%08X%08X\n", bigEndian ? info.slot1().longValue() : info.slot2().longValue(), bigEndian ? info.slot2().longValue() : info.slot1().longValue()));
 				pc = pc.add(2);
-				break;
-			case JBldc2dw:
+			} else if (bcIntVal == JBldc2dw) {
 				index = new UDATA(_GETNEXT_U16());
 				out.append(String.format("%d ", index.intValue()));
 				info = constantPool.add(index);
 				/* this will print incorrectly on Linux ARM! FIX ME! */
 				out.append(String.format("(double) 0x%08X%08X\n", bigEndian ? info.slot1().longValue() : info.slot2().longValue(), bigEndian ? info.slot2().longValue() : info.slot1().longValue()));
 				pc = pc.add(2);
-				break;
-
-			case JBiload:
-			case JBlload:
-			case JBfload:
-			case JBdload:
-			case JBaload:
-			case JBistore:
-			case JBlstore:
-			case JBfstore:
-			case JBdstore:
-			case JBastore:
+			} else if ((bcIntVal == JBiload)
+				|| (bcIntVal == JBlload)
+				|| (bcIntVal == JBfload)
+				|| (bcIntVal == JBdload)
+				|| (bcIntVal == JBaload)
+				|| (bcIntVal == JBistore)
+				|| (bcIntVal == JBlstore)
+				|| (bcIntVal == JBfstore)
+				|| (bcIntVal == JBdstore)
+				|| (bcIntVal == JBastore)
+			) {
 				index = new UDATA(_GETNEXT_U8());
 				pc = pc.add(1);
 				out.append(String.format("%d\n", index.intValue()));
-				break;
-			case JBiloadw:
-			case JBlloadw:
-			case JBfloadw:
-			case JBdloadw:
-			case JBaloadw:
-			case JBistorew:
-			case JBlstorew:
-			case JBfstorew:
-			case JBdstorew:
-			case JBastorew:
+			} else if ((bcIntVal == JBiloadw)
+				|| (bcIntVal == JBlloadw)
+				|| (bcIntVal == JBfloadw)
+				|| (bcIntVal == JBdloadw)
+				|| (bcIntVal == JBaloadw)
+				|| (bcIntVal == JBistorew)
+				|| (bcIntVal == JBlstorew)
+				|| (bcIntVal == JBfstorew)
+				|| (bcIntVal == JBdstorew)
+				|| (bcIntVal == JBastorew)
+			) {
 				index = new UDATA(_GETNEXT_U16());
 				incIndex();
 				pc = pc.add(3);
 				out.append(String.format("%d\n", index.intValue()));
-				break;
-			case JBiinc:
+			} else if (bcIntVal == JBiinc) {
 				index = new UDATA(_GETNEXT_U8());
 				out.append(String.format("%d ", index.intValue()));
 				target = new UDATA(_GETNEXT_U8());
 				out.append(String.format("%d\n", new I8(target).intValue()));
 				pc = pc.add(2);
-				break;
-			case JBiincw:
+			} else if (bcIntVal == JBiincw) {
 				index = new UDATA(_GETNEXT_U16());
 				out.append(String.format("%d ", index.intValue()));
 				index = new UDATA(_GETNEXT_U16());
 				out.append(String.format("%d\n", new I16(index).intValue()));
 				incIndex();
 				pc = pc.add(5);
-				break;
-			case JBifeq:
-			case JBifne:
-			case JBiflt:
-			case JBifge:
-			case JBifgt:
-			case JBifle:
-			case JBificmpeq:
-			case JBificmpne:
-			case JBificmplt:
-			case JBificmpge:
-			case JBificmpgt:
-			case JBificmple:
-			case JBifacmpeq:
-			case JBifacmpne:
-			case JBgoto:
-			case JBifnull:
-			case JBifnonnull:
+			} else if ((bcIntVal == JBifeq)
+				|| (bcIntVal == JBifne)
+				|| (bcIntVal == JBiflt)
+				|| (bcIntVal == JBifge)
+				|| (bcIntVal == JBifgt)
+				|| (bcIntVal == JBifle)
+				|| (bcIntVal == JBificmpeq)
+				|| (bcIntVal == JBificmpne)
+				|| (bcIntVal == JBificmplt)
+				|| (bcIntVal == JBificmpge)
+				|| (bcIntVal == JBificmpgt)
+				|| (bcIntVal == JBificmple)
+				|| (bcIntVal == JBifacmpeq)
+				|| (bcIntVal == JBifacmpne)
+				|| (bcIntVal == JBgoto)
+				|| (bcIntVal == JBifnull)
+				|| (bcIntVal == JBifnonnull)
+			) {
 				index = new UDATA(_GETNEXT_U16());
 				pc = pc.add(2);
 				if (OPCODE_RELATIVE_BRANCHES != 0) {
@@ -368,74 +356,51 @@ public class ByteCodeDumper {
 					target = pc.add(new I16(index));
 				}
 				out.append(String.format("%d\n", target.intValue()));
-				break;
-			case JBtableswitch:
-				switch (start.intValue() % 4) {
-				case 0:
-					incIndex();
-					pc = pc.add(1);  // fall through
-				case 1:
-					incIndex();
-					pc = pc.add(1);  // fall through
-				case 2:
-					incIndex();
-					pc = pc.add(1);  // fall through
-				case 3:
-					break;
+			} else if (bcIntVal == JBtableswitch) {
+				int padding = switchPaddingSize(start);
+				if (padding != 0) {
+					bcIndex = bcIndex.add(padding);
+					pc = pc.add(padding);
 				}
-				index = new UDATA(_GETNEXT_U32());
-				target = start.add(index);
-				index = new UDATA(_GETNEXT_U32());
-				low = new I32(index);
-				index = new UDATA(_GETNEXT_U32());
-				high = new I32(index);
+				I32 offset = _GETNEXT_I32();
+				I32 low = _GETNEXT_I32();
+				I32 high = _GETNEXT_I32();
 				pc = pc.add(12);
+				target = start.add(offset);
 				out.append(String.format("low %d high %d\n", low.intValue(), high.intValue()));
 				out.append(String.format("        default %10d\n", target.intValue()));
-				npairs = new U32(high.sub(low).add(1));
+				I32 npairs = high.sub(low).add(1);
 				for (int i = 0; npairs.gt(i); i++) {
-					index = new UDATA(_GETNEXT_U32());
-					target = start.add(index);
+					offset = _GETNEXT_I32();
+					target = start.add(offset);
 					out.append(String.format("     %10d %10d\n", low.add(i).intValue(), target.intValue()));
 					pc = pc.add(4);
 				}
-				break;
-			case JBlookupswitch:
-				switch (start.intValue() % 4) {
-				case 0:
-					incIndex();
-					pc = pc.add(1);
-					break;
-				case 1:
-					incIndex();
-					pc = pc.add(1);
-					break;
-				case 2:
-					incIndex();
-					pc = pc.add(1);
-					break;
-				case 3:
-					break;
+			} else if (bcIntVal == JBlookupswitch) {
+				int padding = switchPaddingSize(start);
+				if (padding != 0) {
+					bcIndex = bcIndex.add(padding);
+					pc = pc.add(padding);
 				}
-				index = new UDATA(_GETNEXT_U32());
-				target = start.add(index);
-				npairs = new U32(_GETNEXT_U32());
+				I32 offset = _GETNEXT_I32();
+				I32 npairs = _GETNEXT_I32();
+				target = start.add(offset);
 				out.append(String.format("pairs %d\n", npairs.intValue()));
 				out.append(String.format("        default %10d\n", target.intValue()));
 				pc = pc.add(8);
 				for (int i = 0; npairs.gt(i); i++) {
-					index = new UDATA(_GETNEXT_U32());
-					out.append(String.format("     %10d", index.intValue()));
-					index = new UDATA(_GETNEXT_U32());
-					target = start.add(index);
-					out.append(String.format(" %10d\n", target.intValue()));
+					I32 key = _GETNEXT_I32();
+					offset = _GETNEXT_I32();
+					target = start.add(offset);
+					out.append(String.format("     %10d %10d\n", key.intValue(), target.intValue()));
 					pc = pc.add(8);
 				}
-				break;
-			case JBgetstatic:
-			case JBputstatic:
-			case JBgetfield:
-			case JBputfield:
+			} else if ((bcIntVal == JBgetstatic)
+				|| (bcIntVal == JBputstatic)
+				|| (bcIntVal == JBgetfield)
+				|| (bcIntVal == JBwithfield)
+				|| (bcIntVal == JBputfield)
+			) {
 				index = new UDATA(_GETNEXT_U16());
 				info = constantPool.add(index);
 				out.append(String.format("%d ", index.intValue()));
@@ -453,17 +418,16 @@ public class ByteCodeDumper {
 				out.append(nl);
 
 				pc = pc.add(2);
-				break;
-			case JBinvokedynamic:
+			} else if (bcIntVal == JBinvokedynamic) {
 				index = new UDATA(_GETNEXT_U16());
 				out.append(String.format("%d ", index.intValue()));
-				
+
 				long callSiteCount = romClass.callSiteCount().longValue();
 				SelfRelativePointer callSiteData = SelfRelativePointer.cast(romClass.callSiteData());
 				U16Pointer bsmIndices = U16Pointer.cast(callSiteData.addOffset(4*callSiteCount));
-				
+
 				nameAndSig = J9ROMNameAndSignaturePointer.cast(callSiteData.add(index).get());
-				
+
 				out.append("bsm #" + String.valueOf(bsmIndices.at(index).longValue()));	/* Bootstrap method index */
 				out.append(":");
 				out.append(J9UTF8Helper.stringValue(nameAndSig.name())); /* dump name */
@@ -471,21 +435,19 @@ public class ByteCodeDumper {
 				out.append(nl);
 
 				pc = pc.add(4);
-				break;
-			case JBinvokeinterface2:
+			} else if (bcIntVal == JBinvokeinterface2) {
 				incIndex();
 				pc = pc.add(1);
 				out.append(nl);
-				break;
-
-			case JBinvokehandle:
-			case JBinvokehandlegeneric:
-			case JBinvokevirtual:
-			case JBinvokespecial:
-			case JBinvokestatic:
-			case JBinvokeinterface:
-			case JBinvokespecialsplit:
-			case JBinvokestaticsplit:
+			} else if ((bcIntVal == JBinvokehandle)
+				|| (bcIntVal == JBinvokehandlegeneric)
+				|| (bcIntVal == JBinvokevirtual)
+				|| (bcIntVal == JBinvokespecial)
+				|| (bcIntVal == JBinvokestatic)
+				|| (bcIntVal == JBinvokeinterface)
+				|| (bcIntVal == JBinvokespecialsplit)
+				|| (bcIntVal == JBinvokestaticsplit)
+			) {
 				if (bcIndex.longValue() == 0) {
 					bcIndex = bcIndex.sub(1);
 				}
@@ -501,7 +463,7 @@ public class ByteCodeDumper {
 
 				/* dump declaringClassName and signature */
 				J9ROMMethodRefPointer romMethodRef = J9ROMMethodRefPointer.cast(info);
-				U32 classRefCPIndex = romMethodRef.classRefCPIndex();
+				UDATA classRefCPIndex = romMethodRef.classRefCPIndex();
 				J9ROMConstantPoolItemPointer cpItem = constantPool.add(classRefCPIndex);
 				J9ROMClassRefPointer romClassRef = J9ROMClassRefPointer.cast(cpItem);
 
@@ -517,21 +479,20 @@ public class ByteCodeDumper {
 																 */
 				out.append(nl);
 				pc = pc.add(2);
-				break;
-
-			case JBnew:
-			case JBnewdup:
-			case JBanewarray:
-			case JBcheckcast:
-			case JBinstanceof:
+			} else if ((bcIntVal == JBnew)
+				|| (bcIntVal == JBnewdup)
+				|| (bcIntVal == JBdefaultvalue)
+				|| (bcIntVal == JBanewarray)
+				|| (bcIntVal == JBcheckcast)
+				|| (bcIntVal == JBinstanceof)
+			) {
 				index = new UDATA(_GETNEXT_U16());
 				info = constantPool.add(index);
 				out.append(String.format("%d ", index.intValue()));
 				out.append(J9UTF8Helper.stringValue(J9ROMStringRefPointer.cast(info).utf8Data()));
 				out.append(nl);
 				pc = pc.add(2);
-				break;
-			case JBnewarray:
+			} else if (bcIntVal == JBnewarray) {
 				index = new UDATA(_GETNEXT_U8());
 				switch (index.intValue()) {
 				case /* T_BOOLEAN */4:
@@ -563,8 +524,7 @@ public class ByteCodeDumper {
 					break;
 				}
 				pc = pc.add(1);
-				break;
-			case JBmultianewarray:
+			} else if (bcIntVal == JBmultianewarray) {
 				index = new UDATA(_GETNEXT_U16());
 				info = constantPool.add(index);
 				out.append(String.format("%d ", index.intValue()));
@@ -574,8 +534,7 @@ public class ByteCodeDumper {
 				out.append(J9UTF8Helper.stringValue(J9ROMStringRefPointer.cast(info).utf8Data()));
 				out.append(nl);
 				pc = pc.add(3);
-				break;
-			case JBgotow:
+			} else if (bcIntVal == JBgotow) {
 				index = new UDATA(_GETNEXT_U32());
 				pc = pc.add(4);
 				if (OPCODE_RELATIVE_BRANCHES != 0) {
@@ -584,19 +543,41 @@ public class ByteCodeDumper {
 					target = pc.add(index);
 				}
 				out.append(String.format("%d\n", target.intValue()));
-				break;
-
-			default:
+			} else {
 				out.append(nl);
-				break;
 			}
-
 		}
 		return new IDATA(BCT_ERR_NO_ERROR);
 	}
 
+	/**
+	 * Given the offset of a tableswitch or lookupswitch bytecode,
+	 * answer the number of padding bytes that follow.
+	 */
+	private static int switchPaddingSize(UDATA start) {
+		return 3 - (start.intValue() % 4);
+	}
+
 	private static void incIndex() {
 		bcIndex = bcIndex.add(1);
+	}
+
+	private static I32 _GETNEXT_I32() throws CorruptDataException {
+		int a = bcIndex.at(0).intValue();
+		int b = bcIndex.at(1).intValue();
+		int c = bcIndex.at(2).intValue();
+		int d = bcIndex.at(3).intValue();
+		int value;
+
+		if (bigEndian) {
+			value = (a << 24) | (b << 16) | (c << 8) | d;
+		} else {
+			value = (d << 24) | (c << 16) | (b << 8) | a;
+		}
+
+		bcIndex = bcIndex.add(4);
+
+		return new I32(value);
 	}
 
 	private static U32 _GETNEXT_U32() throws CorruptDataException {

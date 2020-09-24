@@ -1,8 +1,6 @@
-/*[INCLUDE-IF Sidecar17]*/
-package java.lang;
-
+/*[INCLUDE-IF Sidecar18-SE]*/
 /*******************************************************************************
- * Copyright (c) 2007, 2018 IBM Corp. and others
+ * Copyright (c) 2007, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -22,94 +20,108 @@ package java.lang;
  *
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
+package java.lang;
 
-import java.security.AccessControlContext;
-import java.security.ProtectionDomain;
-import java.io.IOException;
 import java.lang.annotation.Annotation;
-
-import com.ibm.oti.reflect.TypeAnnotationParser;
-
+/*[IF Java15]*/
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodType;
+import jdk.internal.misc.Unsafe;
+import java.lang.StringConcatHelper;
+/*[ENDIF] Java15 */
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Executable;
 import java.lang.reflect.Method;
+import java.security.AccessControlContext;
+import java.util.Map;
+
+import com.ibm.oti.reflect.AnnotationParser;
+import com.ibm.oti.reflect.TypeAnnotationParser;
+
+/*[IF Sidecar19-SE]*/
+import java.io.IOException;
+import java.lang.module.ModuleDescriptor;
 import java.net.URL;
 import java.net.URI;
-import java.util.Map;
+import java.security.ProtectionDomain;
+import java.util.Iterator;
+import java.util.List;
+/*[IF Java15]*/
+import java.util.Set;
+/*[ENDIF] Java15 */
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
-import com.ibm.oti.reflect.AnnotationParser;
-
+/*[IF Java11]*/
+import java.nio.charset.Charset;
+import java.nio.charset.CharacterCodingException;
+/*[ENDIF] Java11 */
+/*[IF Java12]*/
+import jdk.internal.access.JavaLangAccess;
+/*[ELSE] Java12 */
+import jdk.internal.misc.JavaLangAccess;
+/*[ENDIF] Java12 */
+import jdk.internal.module.ServicesCatalog;
+import jdk.internal.reflect.ConstantPool;
+/*[ELSE] Sidecar19-SE */
+import sun.misc.JavaLangAccess;
+import sun.reflect.ConstantPool;
+/*[ENDIF] Sidecar19-SE */
 import sun.nio.ch.Interruptible;
 import sun.reflect.annotation.AnnotationType;
 
-/*[IF Sidecar19-SE]
-/*[IF Sidecar19-SE-OpenJ9]
-import java.lang.Module;
-import java.util.Iterator;
-import java.util.List;
-/*[ELSE]
-import java.lang.reflect.Module;
-/*[ENDIF]*/
-import jdk.internal.misc.JavaLangAccess;
-import jdk.internal.module.ServicesCatalog;
-import jdk.internal.reflect.ConstantPool;
-import java.lang.module.ModuleDescriptor;
-/*[ELSE]*/
-import sun.misc.JavaLangAccess;
-import sun.reflect.ConstantPool;
-/*[ENDIF]*/
-
 /**
  * Helper class to allow privileged access to classes
- * from outside the java.lang package.  The sun.misc.SharedSecrets class 
+ * from outside the java.lang package. The sun.misc.SharedSecrets class
  * uses an instance of this class to access private java.lang members.
  */
-
 final class Access implements JavaLangAccess {
 
 	/** Set thread's blocker field. */
 	public void blockedOn(java.lang.Thread thread, Interruptible interruptable) {
+		/*[IF Java11]*/
+		Thread.blockedOn(interruptable);
+		/*[ELSE] Java11 */
 		thread.blockedOn(interruptable);
+		/*[ENDIF] Java11 */
 	}
-	
-    /**
-     * Get the AnnotationType instance corresponding to this class.
-     * (This method only applies to annotation types.)
-     */
+
+	/**
+	 * Get the AnnotationType instance corresponding to this class.
+	 * (This method only applies to annotation types.)
+	 */
 	public AnnotationType getAnnotationType(java.lang.Class<?> arg0) {
 		return arg0.getAnnotationType();
 	}
-	
+
 	/** Return the constant pool for a class. */
 	public native ConstantPool getConstantPool(java.lang.Class<?> arg0);
-	
-	/** 
+
+	/**
 	 * Return the constant pool for a class. This will call the exact same
-	 * native as 'getConstantPool(java.lang.Class<?> arg0)'. We need this 
+	 * native as 'getConstantPool(java.lang.Class<?> arg0)'. We need this
 	 * version so we can call it with InternRamClass instead of j.l.Class
 	 * (which is required by JAVALANGACCESS).
 	 */
 	public static native ConstantPool getConstantPool(Object arg0);
 
-    /**
-     * Returns the elements of an enum class or null if the
-     * Class object does not represent an enum type;
-     * the result is uncloned, cached, and shared by all callers.
-     */
+	/**
+	 * Returns the elements of an enum class or null if the
+	 * Class object does not represent an enum type;
+	 * the result is uncloned, cached, and shared by all callers.
+	 */
 	public <E extends Enum<E>> E[] getEnumConstantsShared(java.lang.Class<E> arg0) {
 		/*[PR CMVC 189091] Perf: EnumSet.allOf() is slow */
 		return arg0.getEnumConstantsShared();
 	}
-	
+
 	public void registerShutdownHook(int arg0, boolean arg1, Runnable arg2) {
 		Shutdown.add(arg0, arg1, arg2);
 	}
-	
-    /**
-     * Set the AnnotationType instance corresponding to this class.
-     * (This method only applies to annotation types.)
-     */
+
+	/**
+	 * Set the AnnotationType instance corresponding to this class.
+	 * (This method only applies to annotation types.)
+	 */
 	public void setAnnotationType(java.lang.Class<?> arg0, AnnotationType arg1) {
 		arg0.setAnnotationType(arg1);
 	}
@@ -127,7 +139,6 @@ final class Access implements JavaLangAccess {
 	 * @return the array of bytes for the Annotations for clazz, or null if clazz is null
 	 */
 	public byte[] getRawClassAnnotations(Class<?> clazz) {
-
 		return AnnotationParser.getAnnotationsData(clazz);
 	}
 
@@ -138,25 +149,23 @@ final class Access implements JavaLangAccess {
 	public java.lang.StackTraceElement getStackTraceElement(java.lang.Throwable arg0, int arg1) {
 		return arg0.getInternalStackTrace()[arg1];
 	}
-	
-	/*[PR CMVC 199693] Prevent trusted method chain attack.  */
+
+	/*[PR CMVC 199693] Prevent trusted method chain attack. */
 	public Thread newThreadWithAcc(Runnable runnable, AccessControlContext acc) {
 		return new Thread(runnable, acc);
 	}
-	
+
 	/**
-     * Returns a directly present annotation instance of annotationClass type from clazz.
-     * 
-     *  @param clazz Class that will be searched for given annotationClass
-     *  @param annotationClass annotation class that is being searched on the clazz declaration
-     *  
-     *  @return declared annotation of annotationClass type for clazz, otherwise return null
-     * 
-     */
-    public  <A extends Annotation> A getDirectDeclaredAnnotation(Class<?> clazz, Class<A> annotationClass)
-    {
-    	return clazz.getDeclaredAnnotation(annotationClass);
-    }
+	 * Returns a directly present annotation instance of annotationClass type from clazz.
+	 *
+	 * @param clazz Class that will be searched for given annotationClass
+	 * @param annotationClass annotation class that is being searched on the clazz declaration
+	 *
+	 * @return declared annotation of annotationClass type for clazz, otherwise return null
+	 */
+	public <A extends Annotation> A getDirectDeclaredAnnotation(Class<?> clazz, Class<A> annotationClass) {
+		return clazz.getDeclaredAnnotation(annotationClass);
+	}
 
 	@Override
 	public Map<java.lang.Class<? extends Annotation>, Annotation> getDeclaredAnnotationMap(
@@ -187,57 +196,52 @@ final class Access implements JavaLangAccess {
 	/*[IF !Java10]*/
 	/**
 	 * Return a newly created String that uses the passed in char[]
-	 * without copying.  The array must not be modified after creating
+	 * without copying. The array must not be modified after creating
 	 * the String.
-	 * 
+	 *
 	 * @param data The char[] for the String
 	 * @return a new String using the char[].
 	 */
 	@Override
-	/*[PR Jazz 87855] Implement j.l.Access.newStringUnsafe()]*/ 
+	/*[PR Jazz 87855] Implement j.l.Access.newStringUnsafe()]*/
 	public java.lang.String newStringUnsafe(char[] data) {
 		return new String(data, true /*ignored*/);
 	}
-	/*[ENDIF]*/
+	/*[ENDIF] !Java10 */
 
 	@Override
 	public void invokeFinalize(java.lang.Object arg0)
 			throws java.lang.Throwable {
 		/*
-		 *  Not required for J9. 
+		 * Not required for J9.
 		 */
 		throw new Error("invokeFinalize unimplemented"); //$NON-NLS-1$
 	}
-	
+
 /*[IF Sidecar19-SE]*/
 	public Class<?> findBootstrapClassOrNull(ClassLoader classLoader, String name) {
 		return VMAccess.findClassOrNull(name, ClassLoader.bootstrapClassLoader);
-	 }
-	
-	public 
-/*[IF Sidecar19-SE-OpenJ9]	
-	java.lang.ModuleLayer
-/*[ELSE]*/
-	java.lang.reflect.Layer
-/*[ENDIF]*/	
-	getBootLayer() {
+	}
+
+	public ModuleLayer getBootLayer() {
 		return System.bootLayer;
 	}
-	
+
 	public ServicesCatalog createOrGetServicesCatalog(ClassLoader classLoader) {
 		return classLoader.createOrGetServicesCatalog();
 	}
-	
-	/* removed in build 160 */
+
+/*[IF !Java10]*/
 	@Deprecated
 	public ServicesCatalog getServicesCatalog(ClassLoader classLoader) {
 		return classLoader.getServicesCatalog();
 	}
+/*[ENDIF] !Java10 */
 
 	public String fastUUID(long param1, long param2) {
-		return Long.fastUUID(param1, param2); 
+		return Long.fastUUID(param1, param2);
 	}
-	
+
 	public Package definePackage(ClassLoader classLoader, String name, Module module) {
 		if (null == classLoader) {
 			classLoader = ClassLoader.bootstrapClassLoader;
@@ -258,14 +262,12 @@ final class Access implements JavaLangAccess {
 		}
 		return classLoader.packages();
 	}
-	
-	/* removed in build 160 */
-	@Deprecated
+
 	public ConcurrentHashMap<?, ?> createOrGetClassLoaderValueMap(
 			java.lang.ClassLoader classLoader) {
 		return classLoader.createOrGetClassLoaderValueMap();
 	}
-	
+
 	public Method getMethodOrNull(Class<?> clz, String name, Class<?>... parameterTypes) {
 		try {
 			return clz.getMethodHelper(false, false, null, name, parameterTypes);
@@ -274,17 +276,20 @@ final class Access implements JavaLangAccess {
 		}
 	}
 
-	/* TODO add proper implementation: RTC 125523: Implement java.lang.Access.invalidatePackageAccessCache */
 	public void invalidatePackageAccessCache() {
+/*[IF Java10]*/
+		java.lang.SecurityManager.invalidatePackageAccessCache();
+/*[ELSE] Java10 */
 		return;
+/*[ENDIF] Java10 */
 	}
 
 	public Class<?> defineClass(ClassLoader classLoader, String className, byte[] classRep, ProtectionDomain protectionDomain, String str) {
 		ClassLoader targetClassLoader = (null == classLoader) ? ClassLoader.bootstrapClassLoader : classLoader;
-		return targetClassLoader.defineClass(className, classRep, 0, classRep.length, protectionDomain);
+		return targetClassLoader.defineClassInternal(className, classRep, 0, classRep.length, protectionDomain, true /* allowNullProtectionDomain */);
 	}
 
-/*[IF Sidecar19-SE-OpenJ9]*/	
+/*[IF Sidecar19-SE-OpenJ9]*/
 	public Stream<ModuleLayer> layers(ModuleLayer ml) {
 		return ml.layers();
 	}
@@ -292,30 +297,39 @@ final class Access implements JavaLangAccess {
 	public Stream<ModuleLayer> layers(ClassLoader cl) {
 		return ModuleLayer.layers(cl);
 	}
+
 	public Module defineModule(ClassLoader cl, ModuleDescriptor md, URI uri) {
 		return new Module(System.bootLayer, cl, md, uri);
 	}
+
 	public Module defineUnnamedModule(ClassLoader cl) {
 		return new Module(cl);
 	}
+
 	public void addReads(Module fromModule, Module toModule) {
 		fromModule.implAddReads(toModule);
 	}
+
 	public void addReadsAllUnnamed(Module module) {
-		module.implAddReadsAllUnnamed(); 
+		module.implAddReadsAllUnnamed();
 	}
+
 	public void addExports(Module fromModule, String pkg, Module toModule) {
 		fromModule.implAddExports(pkg, toModule);
 	}
+
 	public void addExportsToAllUnnamed(Module fromModule, String pkg) {
 		fromModule.implAddExportsToAllUnnamed(pkg);
 	}
+
 	public void addOpens(Module fromModule, String pkg, Module toModule) {
 		fromModule.implAddOpens(pkg, toModule);
 	}
+
 	public void addOpensToAllUnnamed(Module fromModule, String pkg) {
 		fromModule.implAddOpensToAllUnnamed(pkg);
 	}
+
 	public void addUses(Module fromModule, Class<?> service) {
 		fromModule.implAddUses(service);
 	}
@@ -323,30 +337,31 @@ final class Access implements JavaLangAccess {
 		return ml.getServicesCatalog();
 	}
 
-/*[IF Sidecar19-SE-OpenJ9]*/
 	public void addNonExportedPackages(ModuleLayer ml) {
 		SecurityManager.addNonExportedPackages(ml);
 	}
-/*[ENDIF]*/
-	 
-/*[IF Sidecar19-SE-OpenJ9]*/
+
 	public List<Method> getDeclaredPublicMethods(Class<?> clz, String name, Class<?>... types) {
 		return clz.getDeclaredPublicMethods(name, types);
 	}
-	
-	public void addOpensToAllUnnamed(Module fromModule, Iterator<String> pkgs) {
-		fromModule.implAddOpensToAllUnnamed(pkgs);
+
+	/*[IF Java15]*/
+	public void addOpensToAllUnnamed(Module fromModule, Set<String> concealedPackages, Set<String> exportedPackages) {
+		fromModule.implAddOpensToAllUnnamed(concealedPackages, exportedPackages);
 	}
-	 
+	/*[ELSE] Java15 */
+	public void addOpensToAllUnnamed(Module fromModule, Iterator<String> packages) {
+		fromModule.implAddOpensToAllUnnamed(packages);
+	}
+	/*[ENDIF] Java15 */
+
 	public boolean isReflectivelyOpened(Module fromModule, String pkg, Module toModule) {
 		return fromModule.isReflectivelyOpened(pkg, toModule);
 	}
-	
+
 	public boolean isReflectivelyExported(Module fromModule, String pkg, Module toModule) {
 		return fromModule.isReflectivelyExported(pkg, toModule);
 	}
-/*[ENDIF]*/	
-	 
 /*[ENDIF] Sidecar19-SE-OpenJ9 */
 
 /*[IF Java10]*/
@@ -362,7 +377,65 @@ final class Access implements JavaLangAccess {
 	public void blockedOn(Interruptible interruptible) {
 		Thread.blockedOn(interruptible);
 	}
-/*[ENDIF]*/
+	public byte[] getBytesNoRepl(String str, Charset charset) throws CharacterCodingException {
+		return StringCoding.getBytesNoRepl(str, charset);
+	}
+	public String newStringNoRepl(byte[] bytes, Charset charset) throws CharacterCodingException {
+		return StringCoding.newStringNoRepl(bytes, charset);
+	}
+/*[ENDIF] Java11 */
+
+/*[IF Java12]*/
+	public void setCause(Throwable throwable, Throwable cause) {
+		throwable.setCause(cause);
+	}
+/*[ENDIF] Java12 */
+
+/*[IF Java14]*/
+	public void loadLibrary(Class<?> caller, String library) {
+		System.loadLibrary(library);
+	}
+/*[ENDIF] Java14 */
+
+/*[IF Java15]*/
+	public Class<?> defineClass(ClassLoader classLoader, Class<?> clazz, String className, byte[] classRep, ProtectionDomain protectionDomain, boolean init, int flags, Object classData) {
+		ClassLoader targetClassLoader = (null == classLoader) ? ClassLoader.bootstrapClassLoader : classLoader;
+		return targetClassLoader.defineClassInternal(clazz, className, classRep, protectionDomain, init, flags, classData);
+	}
+
+	/**
+	 * Returns the classData stored in the class.
+	 * 
+	 * @param the class from where to retrieve the classData.
+	 * 
+	 * @return the classData (Object).
+	 */
+	public Object classData(Class<?> clazz) {
+		return clazz.getClassData();
+	}
+
+	public ProtectionDomain protectionDomain(Class<?> clazz) {
+		return clazz.getProtectionDomain();
+	}
+
+	public MethodHandle stringConcatHelper(String arg0, MethodType type) {
+		return StringConcatHelper.lookupStatic(arg0, type);
+	}
+
+	public long stringConcatInitialCoder() {
+		return StringConcatHelper.initialCoder();
+	}
+
+	public long stringConcatMix(long arg0, String string) {
+		return StringConcatHelper.mix(arg0, string);
+	}
+/*[ENDIF] Java15 */
 	
+	/*[IF Java16]*/
+	public void bindToLoader(ModuleLayer ml, ClassLoader cl) {
+		ml.bindToLoader(cl);
+	}
+	/*[ENDIF] Java16 */
+
 /*[ENDIF] Sidecar19-SE */
 }

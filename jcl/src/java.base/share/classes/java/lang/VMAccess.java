@@ -1,8 +1,6 @@
 /*[INCLUDE-IF Sidecar16]*/
-package java.lang;
-
 /*******************************************************************************
- * Copyright (c) 2012, 2018 IBM Corp. and others
+ * Copyright (c) 2012, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -22,6 +20,8 @@ package java.lang;
  *
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
+
+package java.lang;
 
 import java.util.Objects;
 import java.util.Properties;
@@ -196,9 +196,9 @@ final class VMAccess implements VMLangAccess {
 	}
 	
 	/**
-	 * Returns a ConstanPool object
+	 * Returns a ConstantPool object
 	 * @param internalRamClass An object ref to a j9class
-	 * @return ContanstPool instance
+	 * @return ConstantPool instance
 	 */
 	@Override
 	public ConstantPool getConstantPool(Object internalRamClass) {
@@ -216,4 +216,13 @@ final class VMAccess implements VMLangAccess {
 	}
 	/*[ENDIF] Sidecar19-SE */
 
+	@Override
+	public Thread createThread(Runnable runnable, String threadName, boolean isSystemThreadGroup, boolean inheritThreadLocals, boolean isDaemon, ClassLoader contextClassLoader) {
+		return new Thread(runnable, threadName, isSystemThreadGroup, inheritThreadLocals, isDaemon, contextClassLoader);
+	}
+
+	@Override
+	public void prepare(Class<?> theClass) {
+		J9VMInternals.prepare(theClass);
+	}
 }

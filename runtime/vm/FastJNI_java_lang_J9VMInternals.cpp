@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2017 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -69,7 +69,9 @@ Fast_java_lang_J9VMInternals_primitiveClone(J9VMThread *currentThread, j9object_
 	}
 	if (flags & J9AccClassArray) {
 		U_32 size = J9INDEXABLEOBJECT_SIZE(currentThread, original);
-		copy = objectAllocate.inlineAllocateIndexableObject(currentThread, objectClass, size, false, false, false);
+		
+		copy = VM_VMHelpers::inlineAllocateIndexableObject(currentThread, &objectAllocate, objectClass, size, false, false, false);
+
 		if (NULL == copy) {
 			VM_VMHelpers::pushObjectInSpecialFrame(currentThread, original);
 			copy = currentThread->javaVM->memoryManagerFunctions->J9AllocateIndexableObject(currentThread, objectClass, size, J9_GC_ALLOCATE_OBJECT_NON_INSTRUMENTABLE);

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2003, 2018 IBM Corp. and others
+ * Copyright (c) 2003, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -57,6 +57,10 @@
 
 #include "ut_j9dmp.h"
 
+#if defined(J9VM_OPT_JITSERVER)
+#include "omrformatconsts.h"
+#endif /* defined(J9VM_OPT_JITSERVER) */
+
 #if defined(J9VM_ENV_DATA64)
 #define SEGMENT_HEADER             "NULL           segment            start              alloc              end                type       size\n"
 #else
@@ -75,7 +79,7 @@
 
 /* Callback Function prototypes */
 UDATA writeFrameCallBack          (J9VMThread* vmThread, J9StackWalkState* state);
-UDATA writeExceptionFrameCallBack (J9VMThread* vmThread, void* userData, J9ROMClass* romClass, J9ROMMethod* romMethod, J9UTF8* sourceFile, UDATA lineNumber, J9ClassLoader* classLoader);
+UDATA writeExceptionFrameCallBack (J9VMThread* vmThread, void* userData, UDATA bytecodeOffset, J9ROMClass* romClass, J9ROMMethod* romMethod, J9UTF8* sourceFile, UDATA lineNumber, J9ClassLoader* classLoader, J9Class* ramClass);
 void  writeLoaderCallBack         (void* classLoader, void* userData);
 void  writeLibrariesCallBack      (void* classLoader, void* userData);
 void  writeClassesCallBack        (void* classLoader, void* userData);
@@ -86,7 +90,7 @@ static UDATA innerMemCategoryCallBack (U_32 categoryCode, const char * categoryN
 static jvmtiIterationControl heapIteratorCallback   (J9JavaVM* vm, J9MM_IterateHeapDescriptor*   heapDescriptor,    void* userData);
 static jvmtiIterationControl spaceIteratorCallback  (J9JavaVM* vm, J9MM_IterateSpaceDescriptor*  spaceDescriptor,   void* userData);
 static jvmtiIterationControl regionIteratorCallback (J9JavaVM* vm, J9MM_IterateRegionDescriptor* regionDescription, void* userData);
-static UDATA getObjectMonitorCount	(J9JavaVM *vm);
+static UDATA getObjectMonitorCount(J9JavaVM *vm);
 static UDATA getAllocatedVMThreadCount (J9JavaVM *vm);
 
 /* sig_protect functions and handlers */
@@ -106,7 +110,7 @@ UDATA handlerGetVMThreadName        (struct J9PortLibrary *, U_32, void *, void 
 UDATA handlerGetVMThreadObjectState (struct J9PortLibrary *, U_32, void *, void *);
 UDATA handlerGetVMThreadRawState    (struct J9PortLibrary *, U_32, void *, void *);
 UDATA protectedWriteGCHistoryLines  (struct J9PortLibrary *, void *);
-UDATA protectedIterateStackTrace	(struct J9PortLibrary *, void *);
+UDATA protectedIterateStackTrace    (struct J9PortLibrary *, void *);
 UDATA protectedWriteThreadBlockers  (struct J9PortLibrary *, void *);
 UDATA protectedGetOwnedObjectMonitors  (struct J9PortLibrary *, void *);
 UDATA protectedWriteJavaLangThreadInfo (struct J9PortLibrary *, void *);
@@ -120,7 +124,7 @@ UDATA handlerIterateStackTrace      (struct J9PortLibrary *, U_32, void *, void 
 UDATA handlerWriteJavaLangThreadInfo(struct J9PortLibrary *, U_32, void *, void *);
 UDATA handlerWriteStacks            (struct J9PortLibrary *, U_32, void *, void *);
 
-/* associated structures for passing arguements are below the JavaCoreDumpWriter declaration */
+/* associated structures for passing arguments are below the JavaCoreDumpWriter declaration */
 }
 
 static IDATA vmthread_comparator(struct J9AVLTree *tree, struct J9AVLTreeNode *insertNode, struct J9AVLTreeNode *walkNode);
@@ -133,9 +137,9 @@ static UDATA lockHashEqualFunction(void* left, void* right, void* user);
 static UDATA rasDumpPreemptLock = 0;
 
 typedef struct regioniterationblock {
-	bool              	      _newIteration;
-	const void*       	      _regionStart;
-	UDATA                     _regionSize;
+	bool _newIteration;
+	const void *_regionStart;
+	UDATA _regionSize;
 } regioniterationblock;
 
 typedef struct vmthread_avl_node {
@@ -154,6 +158,11 @@ typedef struct blocked_thread_record {
 	UDATA waitingThreadState;
 } blocked_thread_record;
 
+typedef struct memcategory_max_indexes {
+	U_32 omrMaxIndex;
+	U_32 languageMaxIndex;
+} memcategory_max_indexes;
+
 typedef struct memcategory_total {
 	U_32 *category_bitmask;
 	UDATA liveBytes;
@@ -171,7 +180,7 @@ typedef struct memcategory_data_frame
 
 /* Macros for working with the category_bitmask in the memcategory_total structure. The range of category codes is not contiguous, so we have
  * to map entries from the end of the range (unknown & port library) onto the end of the entries from the start of the range*/
-#define MAP_CATEGORY_TO_BITMASK_ENTRY(category) ( ((category) >= OMRMEM_LANGUAGE_CATEGORY_LIMIT) ? ((writer->_TotalCategories - 1) - (OMRMEM_OMR_CATEGORY_INDEX_FROM_CODE(category))): (category) )
+#define MAP_CATEGORY_TO_BITMASK_ENTRY(category) ( ((category) > OMRMEM_LANGUAGE_CATEGORY_LIMIT) ? ((writer->_MaxCategoryBits - 1) - (OMRMEM_OMR_CATEGORY_INDEX_FROM_CODE(category))): (category) )
 
 #define CATEGORY_WORD_INDEX(category) (MAP_CATEGORY_TO_BITMASK_ENTRY(category) / 32)
 #define CATEGORY_WORD_MASK(category) (1 << ( MAP_CATEGORY_TO_BITMASK_ENTRY(category) % 32 ))
@@ -215,7 +224,7 @@ private :
 
 	/* Allow the callback functions access */
 	friend UDATA writeFrameCallBack          (J9VMThread* vmThread, J9StackWalkState* state);
-	friend UDATA writeExceptionFrameCallBack (J9VMThread* vmThread, void* userData, J9ROMClass* romClass, J9ROMMethod* romMethod, J9UTF8* sourceFile, UDATA lineNumber, J9ClassLoader* classLoader);
+	friend UDATA writeExceptionFrameCallBack (J9VMThread* vmThread, void* userData, UDATA bytecodeOffset, J9ROMClass* romClass, J9ROMMethod* romMethod, J9UTF8* sourceFile, UDATA lineNumber, J9ClassLoader* classLoader, J9Class* ramClass);
 	friend void  writeLoaderCallBack         (void* classLoader, void* userData);
 	friend void  writeLibrariesCallBack      (void* classLoader, void* userData);
 	friend void  writeClassesCallBack        (void* classLoader, void* userData);
@@ -232,7 +241,7 @@ private :
 	friend UDATA handlerJavaThreadWalk       (struct J9PortLibrary *, U_32, void *, void *);
 	friend UDATA protectedWalkJavaStack      (struct J9PortLibrary *, void *);
 	friend UDATA protectedWriteGCHistoryLines (struct J9PortLibrary *, void *);
-	friend UDATA protectedIterateStackTrace	 (struct J9PortLibrary *, void *);
+	friend UDATA protectedIterateStackTrace  (struct J9PortLibrary *, void *);
 	friend UDATA protectedWriteThreadBlockers (struct J9PortLibrary *, void *);
 	friend UDATA protectedGetOwnedObjectMonitors (struct J9PortLibrary *, void *);
 	friend UDATA protectedWriteJavaLangThreadInfo(struct J9PortLibrary *, void *);
@@ -252,11 +261,11 @@ private :
 
 	/* Directed node in lock graph */
 	struct DeadLockGraphNode {
-		J9VMThread*              thread;
-		DeadLockGraphNode*       next;
-		J9ThreadAbstractMonitor* lock;
-		j9object_t				 lockObject;
-		UDATA                    cycle;
+		J9VMThread *thread;
+		DeadLockGraphNode *next;
+		J9ThreadAbstractMonitor *lock;
+		j9object_t lockObject;
+		UDATA cycle;
 	};
 
 	/* Internal convenience method for testing the context */
@@ -281,6 +290,10 @@ private :
 	void writeSharedClassIPCInfo(const char* textStart, const char* textEnd, IDATA id, UDATA padToLength);
 	void writeSharedClassLockInfo(const char* lockName, IDATA lockSemid, void* lockTID);
 	void writeSharedClassSection(void);
+	void writeSharedClassSectionTopLayerStatsHelper(J9SharedClassJavacoreDataDescriptor* javacoreData, bool multiLayerStats);
+	void writeSharedClassSectionTopLayerStatsSummaryHelper(J9SharedClassJavacoreDataDescriptor* javacoreData);
+	void writeSharedClassSectionAllLayersStatsHelper(J9SharedClassJavacoreDataDescriptor* javacoreData);
+
 #endif
 	void writeTrailer(void);
 
@@ -312,10 +325,13 @@ private :
 	void        writeUserRequestedTitle      (void);
 	void        writeNativeAllocator         (const char * name, U_32 depth, BOOLEAN isRoot, UDATA liveBytes, UDATA liveAllocations);
 	IDATA       getOwnedObjectMonitors       (J9VMThread* vmThread, J9ObjectMonitorInfo* monitorInfos);
-	void 		writeJavaLangThreadInfo		 (J9VMThread* vmThread);
-	void		writeCPUinfo				 (void);
-	void 		writeThreadsWithNativeStacks(void);
-	void 		writeThreadsJavaOnly(void);
+	void        writeJavaLangThreadInfo      (J9VMThread* vmThread);
+	void        writeCPUinfo                 (void);
+#if defined(LINUX)
+	void        writeCgroupMetrics(void);
+#endif
+	void        writeThreadsWithNativeStacks(void);
+	void        writeThreadsJavaOnly(void);
 	void        writeThreadTime              (const char * timerName, I_64 nanoTime);
 	void        writeThreadsUsageSummary     (void);
 	void        writeHookInfo                (struct OMRHookInfo4Dump *hookInfo);
@@ -341,7 +357,8 @@ private :
 	memcategory_data_frame* _CategoryStack;
 	U_32              _CategoryStackTop;
 	const char *      _SpaceDescriptorName;
-	I_32              _TotalCategories;
+	U_32              _TotalCategories;
+	U_32              _MaxCategoryBits;
 	UDATA             _AllocatedVMThreadCount;
 
 	/* Static declared data */
@@ -420,14 +437,15 @@ JavaCoreDumpWriter::JavaCoreDumpWriter(
 	_PreemptLocked(false),
 	_ThreadsWalkStarted(false),
 	_Agent(agent),
-	_TotalCategories(-1)
+	_TotalCategories(0),
+	_MaxCategoryBits(0)
 {
 	PORT_ACCESS_FROM_PORT(_PortLibrary);
 	bool bufferWrites=false;
 	_AllocatedVMThreadCount = getAllocatedVMThreadCount(_VirtualMachine);
 
-	/* Determine whether getting further locks should be avoided 
-	 * There is a small timing window where we can crash close to 
+	/* Determine whether getting further locks should be avoided
+	 * There is a small timing window where we can crash close to
 	 * startup and the vmThreadListMutex is NULL.
 	 * Failing to check for NULL leads to a endless spin.*/
 	if(NULL == _VirtualMachine->vmThreadListMutex) {
@@ -526,7 +544,7 @@ JavaCoreDumpWriter::JavaCoreDumpWriter(
 	} else {
 		j9nls_printf(PORTLIB, J9NLS_INFO | J9NLS_STDERR, J9NLS_DMP_NO_CREATE, _FileName);
 		Trc_dump_reportDumpEnd_Event2("Java", "stderr");
-	}		
+	}
 }
 
 /**************************************************************************************************/
@@ -828,7 +846,7 @@ JavaCoreDumpWriter::writeUserRequestedTitle(void)
 		_OutputStream.writeCharacters(" Through ");
 		_OutputStream.writeCharacters(eventData->detailData, eventData->detailLength);
 	}
-	
+
 	_OutputStream.writeCharacters("\n");
 }
 
@@ -1041,21 +1059,47 @@ JavaCoreDumpWriter::writeEnvironmentSection(void)
 
 	_OutputStream.writeCharacters("\n");
 #endif
-		
+
 	/* Write the running mode data */
 	_OutputStream.writeCharacters("1CIRUNNINGAS   Running as ");
 
 	/* NB : I can't find any code for making this decision in the existing implementation */
 #ifdef J9VM_BUILD_J2SE
+	/* If JITServer enabled, print running mode as JITServer and client UID*/
+#ifdef J9VM_OPT_JITSERVER
+	if (_VirtualMachine->internalVMFunctions->isJITServerEnabled(_VirtualMachine))
+		_OutputStream.writeCharacters("a JITServer Server");
+	else if (0 != jitConfig->clientUID)
+		_OutputStream.writeCharacters("a JITServer Client");
+	else
+		_OutputStream.writeCharacters("a standalone");
+#else /* !J9VM_OPT_JITSERVER */
 	_OutputStream.writeCharacters("a standalone");
-#else
+#endif
+#else /* !J9VM_BUILD_J2SE */
 	_OutputStream.writeCharacters("an embedded");
 #endif
 	_OutputStream.writeCharacters(" JVM\n");
 
+#if defined(J9VM_OPT_JITSERVER)
+	if (0 != jitConfig->clientUID) {
+		_OutputStream.writeCharacters("1CICLIENTID    Client UID ");
+		_OutputStream.writeInteger64(jitConfig->clientUID, "%" OMR_PRIu64);
+		_OutputStream.writeCharacters("\n");
+	}
+#endif /* J9VM_OPT_JITSERVER */
+
 	_OutputStream.writeCharacters("1CIVMIDLESTATE VM Idle State: ");
 	writeVMRuntimeState(_VirtualMachine->internalVMFunctions->getVMRuntimeState(_VirtualMachine));
 	_OutputStream.writeCharacters("\n");
+
+	OMRPORT_ACCESS_FROM_J9PORT(_PortLibrary);
+	BOOLEAN inContainer = omrsysinfo_is_running_in_container();
+	_OutputStream.writeCharacters("1CICONTINFO    Running in container : ");
+	_OutputStream.writeCharacters( inContainer ? "TRUE\n" : "FALSE\n");
+	uint64_t availableSubsystems = omrsysinfo_cgroup_get_enabled_subsystems();
+	_OutputStream.writeCharacters("1CICGRPINFO    JVM support for cgroups enabled : ");
+	_OutputStream.writeCharacters((availableSubsystems > 0) ? "TRUE\n" : "FALSE\n");
 
 	PORT_ACCESS_FROM_JAVAVM(_VirtualMachine);
 
@@ -1233,7 +1277,7 @@ JavaCoreDumpWriter::writeEnvironmentSection(void)
 			}
 		}
 	} else {
-		/* the iterator didn't initialise so no user limits to print */
+		/* the iterator didn't initialize so no user limits to print */
 		_OutputStream.writeCharacters("2CIULIMITERR   Not supported on this platform\n");
 	}
 
@@ -1335,6 +1379,11 @@ JavaCoreDumpWriter::writeEnvironmentSection(void)
 
 	/* Write section for entitled CPU information */
 	writeCPUinfo();
+
+#if defined(LINUX)
+	/* Write section for Cgroup Information */
+	writeCgroupMetrics();
+#endif
 
 	/* Write the section trailer */
 	_OutputStream.writeCharacters(
@@ -1456,13 +1505,25 @@ JavaCoreDumpWriter::writeMemorySection(void)
 static UDATA
 countMemoryCategoriesCallback (U_32 categoryCode, const char * categoryName, UDATA liveBytes, UDATA liveAllocations, BOOLEAN isRoot, U_32 parentCategoryCode, OMRMemCategoryWalkState * state)
 {
-	(*(I_32 *)state->userData1)++;
+	(*(U_32 *)state->userData1)++;
+	
+	memcategory_max_indexes *max_indexes = (memcategory_max_indexes *)state->userData2;
+	if (categoryCode > OMRMEM_LANGUAGE_CATEGORY_LIMIT) {
+		U_32 omrCode = OMRMEM_OMR_CATEGORY_INDEX_FROM_CODE(categoryCode);
+		if (max_indexes->omrMaxIndex < omrCode) {
+			max_indexes->omrMaxIndex = omrCode;
+		}
+	} else {
+		if (max_indexes->languageMaxIndex < categoryCode) {
+			max_indexes->languageMaxIndex = categoryCode;
+		}
+	}
 	return J9MEM_CATEGORIES_KEEP_ITERATING;
 }
 
 /**
  * Callback for "inner" walk of memory categories (called by outer walk)
- * 
+ *
  * Maintains a total count of all categories beneath total->codeToMatch
  */
 static UDATA
@@ -1494,7 +1555,7 @@ innerMemCategoryCallBack (U_32 categoryCode, const char * categoryName, UDATA li
 
 /**
  * Callback for "outer" walk of memory categories.
- * 
+ *
  * Starts the inner walk and prints the ASCII art lines to the file.
  */
 static UDATA
@@ -1545,8 +1606,9 @@ outerMemCategoryCallBack (U_32 categoryCode, const char * categoryName, UDATA li
 	 * for all children of this node.
 	 */
 	memset(&total, 0, sizeof(memcategory_total));
-	total.category_bitmask = (U_32*)alloca(writer->_TotalCategories * sizeof(U_32));
-	memset(total.category_bitmask, 0, writer->_TotalCategories * sizeof(U_32));
+	U_32 bitmask_size = ((writer->_MaxCategoryBits + 31) / 32) * sizeof(U_32);
+	total.category_bitmask = (U_32*)alloca(bitmask_size);
+	memset(total.category_bitmask, 0, bitmask_size);
 	total.liveBytes = liveBytes;
 	total.liveAllocations = liveAllocations;
 	total.codeToMatch = categoryCode;
@@ -1596,7 +1658,10 @@ JavaCoreDumpWriter::writeMemoryCountersSection(void)
 	_TotalCategories = 0;
 	walkState.walkFunction = countMemoryCategoriesCallback;
 	walkState.userData1 = &_TotalCategories;
+	memcategory_max_indexes max_indexes = {0, 0};
+	walkState.userData2 = &max_indexes;
 	j9mem_walk_categories(&walkState);
+	_MaxCategoryBits = (max_indexes.omrMaxIndex + 1) + (max_indexes.languageMaxIndex + 1);
 
 	_CategoryStack = (memcategory_data_frame*) alloca(_TotalCategories * sizeof(memcategory_data_frame*));
 
@@ -1626,7 +1691,7 @@ JavaCoreDumpWriter::writeMemoryCountersSection(void)
 
 /**
  * Builds the ASCII-art table for native memory categories.
- * 
+ *
  * Called by innerMemCategoryCallBack
  */
 void
@@ -1732,7 +1797,7 @@ JavaCoreDumpWriter::writeMonitorSection(void)
 		UDATA stateFault = stateClean;
 
 		if (i == 0) {
-			// The walk may have started or restarted which is why initialisation is in the loop.
+			// The walk may have started or restarted which is why initialization is in the loop.
 			memset(threadStore, 0, (_AllocatedVMThreadCount+1) * sizeof(blocked_thread_record));
 		}
 
@@ -1837,6 +1902,7 @@ JavaCoreDumpWriter::writeThreadSection(void)
 	_OutputStream.writeInteger(_VirtualMachine->daemonThreadCount, "%i");
 	_OutputStream.writeCharacters("\n");
 
+#if !defined(OSX)
 	/* if thread preempt is enabled, and we have the lock, then collect the native stacks */
 	if ((_Agent->requestMask & J9RAS_DUMP_DO_PREEMPT_THREADS) && _PreemptLocked
 #if defined(WIN32)
@@ -1845,7 +1911,7 @@ JavaCoreDumpWriter::writeThreadSection(void)
 		 */
 		&& !(_Context->eventFlags & J9RAS_DUMP_ON_THREAD_START)
 		&& !(_Context->eventFlags & J9RAS_DUMP_ON_THREAD_END)
-#endif
+#endif /* defined(WIN32) */
 	) {
 		struct walkClosure closure;
 		UDATA sink = 0;
@@ -1856,6 +1922,7 @@ JavaCoreDumpWriter::writeThreadSection(void)
 				J9PORT_SIG_FLAG_SIGALLSYNC|J9PORT_SIG_FLAG_MAY_RETURN,
 				&sink);
 	}
+#endif /* !defined(OSX) */
 
 	if( !_ThreadsWalkStarted ) {
 		struct walkClosure closure;
@@ -1949,7 +2016,7 @@ JavaCoreDumpWriter::writeThreadsUsageSummary(void)
 	_OutputStream.writeCharacters("\n3XMTHDCATEGORY |  +--");
 	writeThreadTime("JIT", (cpuUsage.jitCpuTime*1000));
 	_OutputStream.writeCharacters("\n1XMTHDCATEGORY |");
-	/* Print application time even if it is zero, 
+	/* Print application time even if it is zero,
 	 * however print user defined categories only if they are greater than zero */
 	if (cpuUsage.applicationCpuTime >= 0) {
 		_OutputStream.writeCharacters("\n2XMTHDCATEGORY +--");
@@ -1989,23 +2056,25 @@ JavaCoreDumpWriter::writeHookInfo(struct OMRHookInfo4Dump *hookInfo)
 	char timeStamp[_MaximumTimeStampLength + 1];
 	OMRPORT_ACCESS_FROM_OMRVM(_VirtualMachine->omrVM);
 
-	_OutputStream.writeCharacters("4HKCALLSITE           ");
+	_OutputStream.writeCharacters("4HKCALLSITE        ");
 	if (NULL != hookInfo->callsite) {
 		_OutputStream.writeCharacters(hookInfo->callsite);
 	} else {
 		_OutputStream.writePointer(hookInfo->func_ptr);
 	}
 	_OutputStream.writeCharacters("\n");
-	_OutputStream.writeCharacters("4HKSTARTTIME          Start Time: ");
-	omrstr_ftime(timeStamp, _MaximumTimeStampLength, "%Y-%m-%dT%H:%M:%S", hookInfo->startTime);
+	_OutputStream.writeCharacters("4HKSTARTTIME       Start Time: ");
+	/* convert time from microseconds to milliseconds */
+	uint64_t startTimeMs = hookInfo->startTime / 1000;
+	omrstr_ftime(timeStamp, _MaximumTimeStampLength, "%Y-%m-%dT%H:%M:%S", startTimeMs);
 	/* nul-terminate timestamp in case omrstr_ftime didn't have enough room to do so */
 	timeStamp[_MaximumTimeStampLength] = '\0';
 	_OutputStream.writeCharacters(timeStamp);
-	_OutputStream.writeInteger64(hookInfo->startTime % 1000, ".%03llu");
+	_OutputStream.writeInteger64(startTimeMs % 1000, ".%03llu");
 	_OutputStream.writeCharacters("\n");
-	_OutputStream.writeCharacters("4HKDURATION           DurationMs: ");
+	_OutputStream.writeCharacters("4HKDURATION        Duration: ");
 	_OutputStream.writeInteger64(hookInfo->duration, "%llu");
-	_OutputStream.writeCharacters("\n");
+	_OutputStream.writeCharacters("us\n");
 }
 
 void
@@ -2022,17 +2091,36 @@ JavaCoreDumpWriter::writeHookInterface(struct J9HookInterface **hookInterface)
 			_OutputStream.writeInteger(i, "%zu");
 			_OutputStream.writeCharacters("\n");
 
-			_OutputStream.writeCharacters("3HKCALLCOUNT       ");
+			_OutputStream.writeCharacters("3HKCALLCOUNT     ");
 			_OutputStream.writeInteger(eventDump->count, "%zu");
 			_OutputStream.writeCharacters("\n");
+
+			_OutputStream.writeCharacters("3HKTOTALTIME     ");
+			_OutputStream.writeInteger(eventDump->totalTime, "%zu");
+			_OutputStream.writeCharacters("us\n");
+
 			if ((NULL != eventDump->lastHook.callsite) || (NULL != eventDump->lastHook.func_ptr)) {
-				_OutputStream.writeCharacters("3HKLAST            Last Callback\n");
+				_OutputStream.writeCharacters("3HKLAST          Last Callback\n");
 				writeHookInfo(&eventDump->lastHook);
-				_OutputStream.writeCharacters("3HKLONGST          Longest Callback\n");
+				_OutputStream.writeCharacters("3HKLONGST        Longest Callback\n");
 				writeHookInfo(&eventDump->longestHook);
 			}
 			_OutputStream.writeCharacters("NULL\n");
 		}
+
+		/* reset the eventDump statistics */
+		eventDump->count = 0;
+		eventDump->totalTime = 0;
+
+		eventDump->longestHook.startTime = 0;
+		eventDump->longestHook.callsite = NULL;
+		eventDump->longestHook.func_ptr = NULL;
+		eventDump->longestHook.duration = 0;
+
+		eventDump->lastHook.startTime = 0;
+		eventDump->lastHook.callsite = NULL;
+		eventDump->lastHook.func_ptr = NULL;
+		eventDump->lastHook.duration = 0;
 	}
 }
 
@@ -2168,7 +2256,7 @@ JavaCoreDumpWriter::writeThreadsWithNativeStacks(void)
 	}
 
 	/** Write the current thread out (if appropriate) **/
-    if ((vmThread && vmThread->gpInfo) || (_Context->eventFlags & syncEventsMask)) {
+	if ((vmThread && vmThread->gpInfo) || (_Context->eventFlags & syncEventsMask)) {
 		/* if synchronous */
 		J9PlatformThread pseudoThread;
 		vmthread_avl_node *node;
@@ -2280,7 +2368,7 @@ JavaCoreDumpWriter::writeThreadsWithNativeStacks(void)
 			writeThread(node->vmthread, NULL, node->vmThreadState, node->javaThreadState, node->javaPriority, node->lockObject, node->lockOwner);
 		}
 	}
-		
+
 	/* If there were any errors in the walk then detail them now */
 	if (state.error || errorMessage != NULL) {
 		_OutputStream.writeCharacters("1XMWLKTHDERR   The following was reported while collecting native stacks:\n");
@@ -2321,7 +2409,7 @@ JavaCoreDumpWriter::writeThreadsJavaOnly(void)
 	}
 
 	/** Write the current thread out (if appropriate) **/
-    if ( currentThread != NULL) {
+	if ( currentThread != NULL) {
 		j9object_t lockObject;
 		J9VMThread *lockOwner;
 		void *args[] = {currentThread, &lockObject, NULL, &lockOwner, NULL};
@@ -2333,7 +2421,7 @@ JavaCoreDumpWriter::writeThreadsJavaOnly(void)
 
 		/* if synchronous */
 		/* Write the failing thread sub section */
-		
+
 		/* Obtain java state through getVMThreadObjectState() for outputting to javacore */
 		if (J9PORT_SIG_EXCEPTION_OCCURRED == j9sig_protect(protectedGetVMThreadObjectState, args, handlerGetVMThreadObjectState, &stateFault, J9PORT_SIG_FLAG_SIGALLSYNC|J9PORT_SIG_FLAG_MAY_RETURN, &stateClean)) {
 			javaThreadState = J9VMTHREAD_STATE_UNREADABLE;
@@ -2357,7 +2445,7 @@ JavaCoreDumpWriter::writeThreadsJavaOnly(void)
 		);
 		/* write out our failing thread */
 		writeThread(currentThread, NULL, vmThreadState, javaThreadState, javaPriority, lockObject, lockOwner);
-    }
+	}
 
 	/* dump the java stacks for all threads*/
 	J9VMThread* walkThread = J9_LINKED_LIST_START_DO(_VirtualMachine->mainThread);
@@ -2460,27 +2548,33 @@ JavaCoreDumpWriter::writeClassSection(void)
  *
  * 0SECTION       HOOK subcomponent dump routine
  * NULL           ==============================
+ * 1NOTE          This data is reset after writing each javacore file
+ * NULL           ------------------------------------------------------------------------
  * 1HKINTERFACE   MM_OMRHookInterface
  * NULL           ------------------------------------------------------------------------
- * 2HKEVENTID	  1
- * 3HKLAST		  	Last Callback
- * 4HKCALLSITE	  		MemoryPoolLargeObjects.cpp:115
- * 4HKSTARTTIME	  		Start Time: 2017-03-20T15:22:37.553
- * 4HKDURATION	  		DurationMs: 1
- * 3HKLONGEST	 	Longest Callback
- * 4HKCALLSITE	  		MemoryPoolLargeObjects.cpp:115
- * 4HKSTARTTIME   		Start Time: 2017-03-20T15:22:35.215
- * 4HKDURATION    		DurationMs: 100
+ * 2HKEVENTID     1
+ * 3HKCALLCOUNT     19
+ * 3HKTOTALTIME     212us
+ * 3HKLAST          Last Callback
+ * 4HKCALLSITE        trcengine.c:395
+ * 4HKSTARTTIME       Start Time: 2019-10-03T11:48:34.076
+ * 4HKDURATION        Duration: 10us
+ * 3HKLONGST        Longest Callback
+ * 4HKCALLSITE        trcengine.c:395
+ * 4HKSTARTTIME       Start Time: 2019-10-03T11:48:34.391
+ * 4HKDURATION        Duration: 50us
  * NULL
- * 2HKEVENTID	  2
- * 3HKLAST		  	Last Callback
- * 4HKCALLSITE    		VerboseHandlerOutputStandard.cpp:119
- * 4HKSTARTTIME	  		Start Time: 2017-03-20T15:22:37.553
- * 4HKDURATION	  		DurationMs: 1
- * 3HKLONGEST	  	Longest Callback
- * 4HKCALLSITE    		VerboseHandlerOutputStandard.cpp:119
- * 4HKSTARTTIME	  		Start Time: 2017-03-20T15:22:34.015
- * 4HKDURATION    		DurationMs: 1
+ * 2HKEVENTID     2
+ * 3HKCALLCOUNT     2
+ * 3HKTOTALTIME     0us
+ * 3HKLAST          Last Callback
+ * 4HKCALLSITE        jvmtiHook.c:1654
+ * 4HKSTARTTIME       Start Time: 2019-10-03T11:48:34.236
+ * 4HKDURATION        Duration: 0us
+ * 3HKLONGST        Longest Callback
+ * 4HKCALLSITE        jvmtiHook.c:1654
+ * 4HKSTARTTIME       Start Time: 2019-10-03T11:48:34.236
+ * 4HKDURATION        Duration: 0us
  * NULL
  * ...
  * 1HKINTERFACE   MM_PrivateHookInterface
@@ -2508,7 +2602,8 @@ JavaCoreDumpWriter::writeHookSection(void)
 	/* Write the section header */
 	_OutputStream.writeCharacters("0SECTION       HOOK subcomponent dump routine\n");
 	_OutputStream.writeCharacters("NULL           ==============================\n");
-
+	_OutputStream.writeCharacters("1NOTE          This data is reset after each javacore file is written\n");
+	_OutputStream.writeCharacters("NULL           ------------------------------------------------------------------------\n");
 	_OutputStream.writeCharacters("1HKINTERFACE   MM_OMRHookInterface\n");
 	writeHookInterface(_VirtualMachine->memoryManagerFunctions->j9gc_get_omr_hook_interface(_VirtualMachine->omrVM));
 	_OutputStream.writeCharacters("1HKINTERFACE   MM_PrivateHookInterface\n");
@@ -2728,7 +2823,7 @@ JavaCoreDumpWriter::writeSharedClassIPCInfo(const char* textStart, const char* t
 	UDATA totalChars = strlen(textStart) + strlen(textEnd);
 	IDATA idDiv = id;
 	const char* unknown = "unknown";
-	
+
 	if (id == -1) {
 		totalChars += strlen(unknown);
 	} else {
@@ -2737,7 +2832,7 @@ JavaCoreDumpWriter::writeSharedClassIPCInfo(const char* textStart, const char* t
 			idDiv /= 10;
 		} while (idDiv != 0);
 	}
-	
+
 	_OutputStream.writeCharacters(textStart);
 	if (id == -1) {
 		_OutputStream.writeCharacters(unknown);
@@ -2745,7 +2840,7 @@ JavaCoreDumpWriter::writeSharedClassIPCInfo(const char* textStart, const char* t
 		_OutputStream.writeInteger(id, "%zi");
 	}
 	_OutputStream.writeCharacters(textEnd);
-	
+
 	for (UDATA i=totalChars; i<padToLength; i++) {
 		_OutputStream.writeCharacters(" ");
 	}
@@ -2768,11 +2863,410 @@ JavaCoreDumpWriter::writeSharedClassLockInfo(const char* lockName, IDATA lockSem
 	}
 }
 
-void 
+void
+JavaCoreDumpWriter::writeSharedClassSectionTopLayerStatsHelper(J9SharedClassJavacoreDataDescriptor* javacoreData, bool multiLayerStats)
+{
+	_OutputStream.writeCharacters(
+			"1SCLTEXTCRTW       Cache Created With\n"
+			"NULL               ------------------\n"
+			"NULL\n"
+	);
+
+	if (0 != (javacoreData->extraFlags & J9SHR_EXTRA_FLAGS_NO_LINE_NUMBERS)) {
+		_OutputStream.writeCharacters(
+				"2SCLTEXTXNL            -Xnolinenumbers       = true\n"
+		);
+	} else {
+		_OutputStream.writeCharacters(
+				"2SCLTEXTXNL            -Xnolinenumbers       = false\n"
+		);
+	}
+
+	if (0 != (javacoreData->extraFlags & J9SHR_EXTRA_FLAGS_BCI_ENABLED)) {
+		_OutputStream.writeCharacters(
+				"2SCLTEXTBCI            BCI Enabled           = true\n"
+		);
+	} else {
+		_OutputStream.writeCharacters(
+				"2SCLTEXTBCI            BCI Enabled           = false\n"
+		);
+	}
+
+	if (0 != (javacoreData->extraFlags & J9SHR_EXTRA_FLAGS_RESTRICT_CLASSPATHS)) {
+		_OutputStream.writeCharacters(
+				"2SCLTEXTBCI            Restrict Classpaths   = true\n"
+		);
+	} else {
+		_OutputStream.writeCharacters(
+				"2SCLTEXTBCI            Restrict Classpaths   = false\n"
+		);
+	}
+
+	_OutputStream.writeCharacters(
+				"NULL\n"
+				"1SCLTEXTCSUM       Cache Summary\n"
+				"NULL               ------------------\n"
+				"NULL\n"
+	);
+
+	if (0 != (javacoreData->extraFlags & J9SHR_EXTRA_FLAGS_NO_LINE_NUMBER_CONTENT)) {
+		_OutputStream.writeCharacters(
+				"2SCLTEXTNLC            No line number content                    = true\n"
+		);
+	} else {
+		_OutputStream.writeCharacters(
+				"2SCLTEXTNLC            No line number content                    = false\n"
+		);
+	}
+
+	if (0 != (javacoreData->extraFlags & J9SHR_EXTRA_FLAGS_LINE_NUMBER_CONTENT)) {
+		_OutputStream.writeCharacters(
+				"2SCLTEXTLNC            Line number content                       = true\n"
+		);
+	} else {
+		_OutputStream.writeCharacters(
+				"2SCLTEXTLNC            Line number content                       = false\n"
+		);
+	}
+
+	_OutputStream.writeCharacters(
+				"NULL\n"
+	);
+
+	_OutputStream.writeCharacters(
+			"2SCLTEXTRCS            ROMClass start address                    = "
+	);
+	_OutputStream.writePointer(javacoreData->romClassStart);
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTRCE            ROMClass end address                      = "
+	);
+	_OutputStream.writePointer(javacoreData->romClassEnd);
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTMSA            Metadata start address                    = "
+	);
+	_OutputStream.writePointer(javacoreData->metadataStart);
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTCEA            Cache end address                         = "
+	);
+	_OutputStream.writePointer(javacoreData->cacheEndAddress);
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTRTF            Runtime flags                             = "
+	);
+	_OutputStream.writeInteger64(javacoreData->runtimeFlags, "0x%.16llX");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTCGN            Cache generation                          = "
+	);
+	_OutputStream.writeInteger(javacoreData->cacheGen, "%zu");
+
+	if (multiLayerStats) {
+		_OutputStream.writeCharacters(
+			"\n2SCLTEXTCLY            Cache layer                               = "
+		);
+		_OutputStream.writeInteger(javacoreData->topLayer, "%zd");
+	}
+
+	_OutputStream.writeCharacters(
+			"\nNULL"
+			"\n2SCLTEXTCSZ            Cache size                                = "
+	);
+	_OutputStream.writeInteger(javacoreData->cacheSize, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTSMB            Softmx bytes                              = "
+	);
+	_OutputStream.writeInteger(javacoreData->softMaxBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTFRB            Free bytes                                = "
+	);
+	_OutputStream.writeInteger(javacoreData->freeBytes, "%zu");
+
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTARB            Reserved space for AOT bytes              = "
+	);
+	_OutputStream.writeInteger(javacoreData->minAOT, "%zd");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTAMB            Maximum space for AOT bytes               = "
+	);
+	_OutputStream.writeInteger(javacoreData->maxAOT, "%zd");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTJRB            Reserved space for JIT data bytes         = "
+	);
+	_OutputStream.writeInteger(javacoreData->minJIT, "%zd");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTJMB            Maximum space for JIT data bytes          = "
+	);
+	_OutputStream.writeInteger(javacoreData->maxJIT, "%zd");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTRWB            ReadWrite bytes                           = "
+	);
+	_OutputStream.writeInteger(javacoreData->readWriteBytes, "%zu");
+
+	if (NO_CORRUPTION != javacoreData->corruptionCode) {
+		_OutputStream.writeCharacters(
+			"\n2SCLTEXTCOC            Corruption Code                           = "
+		);
+		_OutputStream.writeInteger(javacoreData->corruptionCode, "%zd");
+
+		_OutputStream.writeCharacters(
+			"\n2SCLTEXTCOV            Corrupt Value                             = "
+		);
+		_OutputStream.writeInteger(javacoreData->corruptValue);
+	}
+
+	if (!multiLayerStats) {
+		_OutputStream.writeCharacters(
+			"\n2SCLTEXTMDA            Metadata bytes                            = "
+		);
+	}
+
+	_OutputStream.writeInteger(javacoreData->otherBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTDAS            Class debug area size                     = "
+	);
+	_OutputStream.writeInteger(javacoreData->debugAreaSize, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTDAU            Class debug area % used                   = "
+	);
+	_OutputStream.writeInteger(javacoreData->debugAreaUsed, "%zu");
+	_OutputStream.writeCharacters("%");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTDAN            Class LineNumberTable bytes               = "
+	);
+	_OutputStream.writeInteger(javacoreData->debugAreaLineNumberTableBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTDAV            Class LocalVariableTable bytes            = "
+	);
+	_OutputStream.writeInteger(javacoreData->debugAreaLocalVariableTableBytes, "%zu");
+	_OutputStream.writeCharacters("\n");
+}
+
+void
+JavaCoreDumpWriter::writeSharedClassSectionTopLayerStatsSummaryHelper(J9SharedClassJavacoreDataDescriptor* javacoreData)
+{
+	_OutputStream.writeCharacters(
+			"NULL"
+			"\n2SCLTEXTCPF            Cache is "
+	);
+	_OutputStream.writeInteger(javacoreData->percFull, "%zu");
+
+	if (javacoreData->softMaxBytes == javacoreData->cacheSize) {
+		_OutputStream.writeCharacters("% full\n");
+	} else {
+		_OutputStream.writeCharacters("% soft full\n");
+	}
+
+	_OutputStream.writeCharacters(
+			"NULL\n"
+			"1SCLTEXTCMST       Cache Memory Status\n"
+			"NULL               ------------------\n"
+			"1SCLTEXTCNTD           Cache Name                    Feature                  Memory type              Cache path\n"
+			"NULL\n"
+	);
+	_OutputStream.writeCharacters(
+			"2SCLTEXTCMDT           "
+	);
+	_OutputStream.writeCharacters(javacoreData->cacheName);
+	for (UDATA i = strlen(javacoreData->cacheName); i < 30; i++) {
+		_OutputStream.writeCharacters(" ");
+	}
+	if (J9_ARE_ALL_BITS_SET(javacoreData->feature, J9SH_FEATURE_COMPRESSED_POINTERS)) {
+		_OutputStream.writeCharacters("CR                       ");
+	} else if (J9_ARE_ALL_BITS_SET(javacoreData->feature, J9SH_FEATURE_NON_COMPRESSED_POINTERS)) {
+		_OutputStream.writeCharacters("Non-CR                   ");
+	} else {
+		_OutputStream.writeCharacters("Default                  ");
+	}
+	if (javacoreData->shmid == -2) {
+		_OutputStream.writeCharacters("Memory mapped file       ");
+	} else {
+		writeSharedClassIPCInfo("IPC Memory (id ", ")", javacoreData->shmid, 25);
+	}
+	_OutputStream.writeCharacters(javacoreData->cacheDir);
+	_OutputStream.writeCharacters("\n");
+
+	_OutputStream.writeCharacters(
+			"NULL\n"
+			"1SCLTEXTCMST       Cache Lock Status\n"
+			"NULL               ------------------\n"
+			"1SCLTEXTCNTD           Lock Name                     Lock type                TID owning lock\n"
+			"NULL\n"
+			);
+
+	writeSharedClassLockInfo(
+			"2SCLTEXTCWRL           Cache write lock              ", javacoreData->semid, javacoreData->writeLockTID
+	);
+
+	writeSharedClassLockInfo(
+			"2SCLTEXTCRWL           Cache read/write lock         ", javacoreData->semid, javacoreData->readWriteLockTID
+	);
+}
+
+void
+JavaCoreDumpWriter::writeSharedClassSectionAllLayersStatsHelper(J9SharedClassJavacoreDataDescriptor* javacoreData)
+{
+	_OutputStream.writeCharacters(
+			"2SCLTEXTRCB            ROMClass bytes                            = "
+	);
+	_OutputStream.writeInteger(javacoreData->romClassBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTAOB            AOT code bytes                            = "
+	);
+	_OutputStream.writeInteger(javacoreData->aotBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTADB            AOT data bytes                            = "
+	);
+	_OutputStream.writeInteger(javacoreData->aotDataBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTAHB            AOT class hierarchy bytes                 = "
+	);
+	_OutputStream.writeInteger(javacoreData->aotClassChainDataBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTATB            AOT thunk bytes                           = "
+	);
+	_OutputStream.writeInteger(javacoreData->aotThunkDataBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTJHB            JIT hint bytes                            = "
+	);
+	_OutputStream.writeInteger(javacoreData->jitHintDataBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTJPB            JIT profile bytes                         = "
+	);
+	_OutputStream.writeInteger(javacoreData->jitProfileDataBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNOB            Java Object bytes                         = "
+	);
+	_OutputStream.writeInteger(javacoreData->objectBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTZCB            Zip cache bytes                           = "
+	);
+	_OutputStream.writeInteger(javacoreData->zipCacheDataBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTSHB            Startup hint bytes                        = "
+	);
+	_OutputStream.writeInteger(javacoreData->startupHintBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTJCB            JCL data bytes                            = "
+	);
+	_OutputStream.writeInteger(javacoreData->jclDataBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTBDA            Byte data bytes                           = "
+	);
+	_OutputStream.writeInteger(javacoreData->indexedDataBytes, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\nNULL"
+			"\n2SCLTEXTNRC            Number ROMClasses                         = "
+	);
+	_OutputStream.writeInteger(javacoreData->numROMClasses, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNAM            Number AOT Methods                        = "
+	);
+	_OutputStream.writeInteger(javacoreData->numAOTMethods, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNAD            Number AOT Data Entries                   = "
+	);
+	_OutputStream.writeInteger(javacoreData->numAotDataEntries, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNAH            Number AOT Class Hierarchy                = "
+	);
+	_OutputStream.writeInteger(javacoreData->numAotClassChains, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNAT            Number AOT Thunks                         = "
+	);
+	_OutputStream.writeInteger(javacoreData->numAotThunks, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNJH            Number JIT Hints                          = "
+	);
+	_OutputStream.writeInteger(javacoreData->numJitHints, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNJP            Number JIT Profiles                       = "
+	);
+	_OutputStream.writeInteger(javacoreData->numJitProfiles, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNCP            Number Classpaths                         = "
+	);
+	_OutputStream.writeInteger(javacoreData->numClasspaths, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNUR            Number URLs                               = "
+	);
+	_OutputStream.writeInteger(javacoreData->numURLs, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNTK            Number Tokens                             = "
+	);
+	_OutputStream.writeInteger(javacoreData->numTokens, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNOJ            Number Java Objects                       = "
+	);
+	_OutputStream.writeInteger(javacoreData->numObjects, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNZC            Number Zip Caches                         = "
+	);
+	_OutputStream.writeInteger(javacoreData->numZipCaches, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNSH            Number Startup Hint Entries               = "
+	);
+	_OutputStream.writeInteger(javacoreData->numStartupHints, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNJC            Number JCL Entries                        = "
+	);
+	_OutputStream.writeInteger(javacoreData->numJclEntries, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTNST            Number Stale classes                      = "
+	);
+	_OutputStream.writeInteger(javacoreData->numStaleClasses, "%zu");
+
+	_OutputStream.writeCharacters(
+			"\n2SCLTEXTPST            Percent Stale classes                     = "
+	);
+	_OutputStream.writeInteger(javacoreData->percStale, "%zu");
+	_OutputStream.writeCharacters("\n");
+}
+
+void
 JavaCoreDumpWriter::writeSharedClassSection(void)
 {
 	J9SharedClassJavacoreDataDescriptor javacoreData;
-	
+
 	if (!_VirtualMachine->sharedClassConfig) {
 		return;
 	}
@@ -2788,384 +3282,35 @@ JavaCoreDumpWriter::writeSharedClassSection(void)
 			"NULL           ========================================\n"
 			"NULL\n"
 		);
-	
-		_OutputStream.writeCharacters(
-			"1SCLTEXTCRTW   Cache Created With\n"
-			"NULL           ------------------\n"
-			"NULL\n"
-		);
 
-		if (0 != (javacoreData.extraFlags & J9SHR_EXTRA_FLAGS_NO_LINE_NUMBERS)) {
+		bool multiLayerStats = (0 < javacoreData.topLayer);
+
+		if (multiLayerStats) {
 			_OutputStream.writeCharacters(
-				"2SCLTEXTXNL        -Xnolinenumbers       = true\n"
-			);
-		} else {
-			_OutputStream.writeCharacters(
-				"2SCLTEXTXNL        -Xnolinenumbers       = false\n"
-			);   
-		}
-
-		if (0 != (javacoreData.extraFlags & J9SHR_EXTRA_FLAGS_BCI_ENABLED)) {
-			_OutputStream.writeCharacters(
-				"2SCLTEXTBCI        BCI Enabled           = true\n"
-			);
-		} else {
-			_OutputStream.writeCharacters(
-				"2SCLTEXTBCI        BCI Enabled           = false\n"
-			);
-		}
-
-		if (0 != (javacoreData.extraFlags & J9SHR_EXTRA_FLAGS_RESTRICT_CLASSPATHS)) {
-			_OutputStream.writeCharacters(
-				"2SCLTEXTBCI        Restrict Classpaths   = true\n"
-			);
-		} else {
-			_OutputStream.writeCharacters(
-				"2SCLTEXTBCI        Restrict Classpaths   = false\n"
-			);
-		}
-
-		_OutputStream.writeCharacters(
-			"NULL\n"
-			"1SCLTEXTCSUM   Cache Summary\n"
-			"NULL           ------------------\n"
-			"NULL\n"
-		);
-
-		if (0 != (javacoreData.extraFlags & J9SHR_EXTRA_FLAGS_NO_LINE_NUMBER_CONTENT)) {
-			_OutputStream.writeCharacters(
-				"2SCLTEXTNLC        No line number content                    = true\n"
-			);
-		} else {
-			_OutputStream.writeCharacters(
-				"2SCLTEXTNLC        No line number content                    = false\n"
-			);
-		}
-
-		if (0 != (javacoreData.extraFlags & J9SHR_EXTRA_FLAGS_LINE_NUMBER_CONTENT)) {
-			_OutputStream.writeCharacters(
-				"2SCLTEXTLNC        Line number content                       = true\n"
-			);
-		} else {
-			_OutputStream.writeCharacters(
-				"2SCLTEXTLNC        Line number content                       = false\n"
-			);
-		}
-
-		_OutputStream.writeCharacters(
-					"NULL\n"
-		);
-
-		
-		if (javacoreData.ccCount > 1) {
-			_OutputStream.writeCharacters(
-				"2SCLTEXTCCC        Cachelet count                            = "
-			);
-			_OutputStream.writeInteger(javacoreData.ccCount, "%zu");
-			
-			_OutputStream.writeCharacters(
-				"\n2SCLTEXTCCS        Cachelets started                         = "
-			);
-			_OutputStream.writeInteger(javacoreData.ccStartedCount, "%zu");
-			_OutputStream.writeCharacters("\n");
-			
-		}
-
-		_OutputStream.writeCharacters(
-			"2SCLTEXTRCS        ROMClass start address                    = "
-		);
-		_OutputStream.writePointer(javacoreData.romClassStart);
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTRCE        ROMClass end address                      = "
-		);
-		_OutputStream.writePointer(javacoreData.romClassEnd);
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTMSA        Metadata start address                    = "
-		);
-		_OutputStream.writePointer(javacoreData.metadataStart);
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTCEA        Cache end address                         = "
-		);
-		_OutputStream.writePointer(javacoreData.cacheEndAddress);
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTRTF        Runtime flags                             = "
-		);
-		_OutputStream.writeInteger64(javacoreData.runtimeFlags, "0x%.16llX");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTCGN        Cache generation                          = "
-		);
-		_OutputStream.writeInteger(javacoreData.cacheGen, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\nNULL"
-			"\n2SCLTEXTCSZ        Cache size                                = "
-		);
-		_OutputStream.writeInteger(javacoreData.cacheSize, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTFRB        Free bytes                                = "
-		);
-		_OutputStream.writeInteger(javacoreData.freeBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTRCB        ROMClass bytes                            = "
-		);
-		_OutputStream.writeInteger(javacoreData.romClassBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTAOB        AOT code bytes                            = "
-		);
-		_OutputStream.writeInteger(javacoreData.aotBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTADB        AOT data bytes                            = "
-		);
-		_OutputStream.writeInteger(javacoreData.aotDataBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTAHB        AOT class hierarchy bytes                 = "
-		);
-		_OutputStream.writeInteger(javacoreData.aotClassChainDataBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTATB        AOT thunk bytes                           = "
-		);
-		_OutputStream.writeInteger(javacoreData.aotThunkDataBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTARB        Reserved space for AOT bytes              = "
-		);
-		_OutputStream.writeInteger(javacoreData.minAOT, "%zd");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTAMB        Maximum space for AOT bytes               = "
-		);
-		_OutputStream.writeInteger(javacoreData.maxAOT, "%zd");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTJHB        JIT hint bytes                            = "
-		);
-		_OutputStream.writeInteger(javacoreData.jitHintDataBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTJPB        JIT profile bytes                         = "
-		);
-		_OutputStream.writeInteger(javacoreData.jitProfileDataBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTJRB        Reserved space for JIT data bytes         = "
-		);
-		_OutputStream.writeInteger(javacoreData.minJIT, "%zd");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTJMB        Maximum space for JIT data bytes          = "
-		);
-		_OutputStream.writeInteger(javacoreData.maxJIT, "%zd");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTNOB        Java Object bytes                         = "
-		);
-		_OutputStream.writeInteger(javacoreData.objectBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTZCB        Zip cache bytes                           = "
-		);
-		_OutputStream.writeInteger(javacoreData.zipCacheDataBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTRWB        ReadWrite bytes                           = "
-		);
-		_OutputStream.writeInteger(javacoreData.readWriteBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTJCB        JCL data bytes                            = "
-		);
-		_OutputStream.writeInteger(javacoreData.jclDataBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTBDA        Byte data bytes                           = "
-		);
-		_OutputStream.writeInteger(javacoreData.indexedDataBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTMDA        Metadata bytes                            = "
-		);
-		_OutputStream.writeInteger(javacoreData.otherBytes, "%zu");
-
-		if (NO_CORRUPTION != javacoreData.corruptionCode) {
-			_OutputStream.writeCharacters(
-				"\n2SCLTEXTCOC        Corruption Code                           = "
-			);
-			_OutputStream.writeInteger(javacoreData.corruptionCode, "%zd");
-
-			_OutputStream.writeCharacters(
-				"\n2SCLTEXTCOV        Corrupt Value                             = "
-			);
-			_OutputStream.writeInteger(javacoreData.corruptValue);
-		}
-
-		_OutputStream.writeCharacters(
-		    "\n2SCLTEXTDAS        Class debug area size                     = "
-		);
-		_OutputStream.writeInteger(javacoreData.debugAreaSize, "%zu");
-
-		_OutputStream.writeCharacters(
-		    "\n2SCLTEXTDAU        Class debug area % used                   = "
-		);
-		_OutputStream.writeInteger(javacoreData.debugAreaUsed, "%zu");
-		_OutputStream.writeCharacters("%");
-
-		_OutputStream.writeCharacters(
-		    "\n2SCLTEXTDAN        Class LineNumberTable bytes               = "
-		);
-		_OutputStream.writeInteger(javacoreData.debugAreaLineNumberTableBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-		    "\n2SCLTEXTDAV        Class LocalVariableTable bytes            = "
-		);
-		_OutputStream.writeInteger(javacoreData.debugAreaLocalVariableTableBytes, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\nNULL"
-			"\n2SCLTEXTNRC        Number ROMClasses                         = "
-		);
-		_OutputStream.writeInteger(javacoreData.numROMClasses, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTNAM        Number AOT Methods                        = "
-		);
-		_OutputStream.writeInteger(javacoreData.numAOTMethods, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTNAD        Number AOT Data Entries                   = "
-		);
-		_OutputStream.writeInteger(javacoreData.numAotDataEntries, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTNAH        Number AOT Class Hierarchy                = "
-		);
-		_OutputStream.writeInteger(javacoreData.numAotClassChains, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTNAT        Number AOT Thunks                         = "
-		);
-		_OutputStream.writeInteger(javacoreData.numAotThunks, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTNJH        Number JIT Hints                          = "
-		);
-		_OutputStream.writeInteger(javacoreData.numJitHints, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTNJP        Number JIT Profiles                       = "
-		);
-		_OutputStream.writeInteger(javacoreData.numJitProfiles, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTNCP        Number Classpaths                         = "
-		);
-		_OutputStream.writeInteger(javacoreData.numClasspaths, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTNUR        Number URLs                               = "
-		);
-		_OutputStream.writeInteger(javacoreData.numURLs, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTNTK        Number Tokens                             = "
-		);
-		_OutputStream.writeInteger(javacoreData.numTokens, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTNOJ        Number Java Objects                       = "
-		);
-		_OutputStream.writeInteger(javacoreData.numObjects, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTNZC        Number Zip Caches                         = "
-		);
-		_OutputStream.writeInteger(javacoreData.numZipCaches, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTNJC        Number JCL Entries                        = "
-		);
-		_OutputStream.writeInteger(javacoreData.numJclEntries, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTNST        Number Stale classes                      = "
-		);
-		_OutputStream.writeInteger(javacoreData.numStaleClasses, "%zu");
-
-		_OutputStream.writeCharacters(
-			"\n2SCLTEXTPST        Percent Stale classes                     = "
-		);
-		_OutputStream.writeInteger(javacoreData.percStale, "%zu");
-		_OutputStream.writeCharacters("%\n");
-		
-		_OutputStream.writeCharacters(
-			"NULL\n"
-			"2SCLTEXTCPF        Cache is "
-		);
-		_OutputStream.writeInteger(javacoreData.percFull, "%zu");
-		_OutputStream.writeCharacters("% full\n");
-
-		_OutputStream.writeCharacters(
+				"1SCLTEXTCSTL   Cache Statistics for Top Layer\n"
 				"NULL\n"
-				"1SCLTEXTCMST   Cache Memory Status\n"
-				"NULL           ------------------\n"
-				"1SCLTEXTCNTD       Cache Name                    Feature                  Memory type              Cache path\n"
+			);
+			writeSharedClassSectionTopLayerStatsHelper(&javacoreData, multiLayerStats);
+			writeSharedClassSectionTopLayerStatsSummaryHelper(&javacoreData);
+			_OutputStream.writeCharacters(
 				"NULL\n"
-		);
-		_OutputStream.writeCharacters(
-				"2SCLTEXTCMDT       "
-		);
-		_OutputStream.writeCharacters(javacoreData.cacheName);
-		for (UDATA i = strlen(javacoreData.cacheName); i < 30; i++) {
-			_OutputStream.writeCharacters(" ");
-		}
-		if (J9_ARE_ALL_BITS_SET(javacoreData.feature, J9SH_FEATURE_COMPRESSED_POINTERS)) {
-			_OutputStream.writeCharacters("CR                       ");
-		} else if (J9_ARE_ALL_BITS_SET(javacoreData.feature, J9SH_FEATURE_NON_COMPRESSED_POINTERS)) {
-			_OutputStream.writeCharacters("Non-CR                   ");
+				"1SCLTEXTCSAL   Cache Statistics for All Layers\n"
+				"NULL\n"
+			);
+			writeSharedClassSectionAllLayersStatsHelper(&javacoreData);
 		} else {
-			_OutputStream.writeCharacters("Default                  ");
+			writeSharedClassSectionTopLayerStatsHelper(&javacoreData, multiLayerStats);
+			writeSharedClassSectionAllLayersStatsHelper(&javacoreData);
+			writeSharedClassSectionTopLayerStatsSummaryHelper(&javacoreData);
 		}
-		if (javacoreData.shmid == -2) {
-			_OutputStream.writeCharacters("Memory mapped file       ");
-		} else {
-			writeSharedClassIPCInfo("IPC Memory (id ", ")", javacoreData.shmid, 25);
-		}
-		_OutputStream.writeCharacters(javacoreData.cacheDir);
-		_OutputStream.writeCharacters("\n");
 
-		_OutputStream.writeCharacters(
-				"NULL\n"
-				"1SCLTEXTCMST   Cache Lock Status\n"
-				"NULL           ------------------\n"
-				"1SCLTEXTCNTD       Lock Name                     Lock type                TID owning lock\n"
-				"NULL\n"
-		);
-
-		writeSharedClassLockInfo(
-				"2SCLTEXTCWRL       Cache write lock              ", javacoreData.semid, javacoreData.writeLockTID
-		);
-		
-		writeSharedClassLockInfo(
-				"2SCLTEXTCRWL       Cache read/write lock         ", javacoreData.semid, javacoreData.readWriteLockTID
-		);
-		
 		/* Write the section trailer */
 		_OutputStream.writeCharacters(
 			"NULL\n"
 			"NULL\n"
 			"NULL           ------------------------------------------------------------------------\n"
 		);
-	}	
+	}
 }
 #endif
 
@@ -3225,22 +3370,11 @@ JavaCoreDumpWriter::writeExceptionDetail(j9object_t* exceptionRef)
 
 	if (exceptionRef && *exceptionRef) {
 		j9object_t message = J9VMJAVALANGTHROWABLE_DETAILMESSAGE(vmThread, *exceptionRef);
-		if (message) {
-			/* length is in jchars. 3x is enough for worst case UTF8 encoding */
-			len = J9VMJAVALANGSTRING_LENGTH(vmThread, message) * 3;
-			if (len > sizeof(stackBuffer)) {
-				buf = (char *)j9mem_allocate_memory(len, OMRMEM_CATEGORY_VM);
-			}
-
-			if (buf) {
-				len = _VirtualMachine->internalVMFunctions->copyStringToUTF8Helper(vmThread, message, FALSE, J9_STR_NONE, (U_8*)buf, len);
-			} else {
-				buf = stackBuffer;
-				len = 0;
-			}
+		if (NULL != message) {
+			buf = _VirtualMachine->internalVMFunctions->copyStringToUTF8WithMemAlloc(vmThread, message, J9_STR_NULL_TERMINATE_RESULT, "", 0, stackBuffer, _MaximumExceptionNameLength, &len);
 		}
 
-		if (len) {
+		if (0 != len) {
 			_OutputStream.writeCharacters(" \"");
 			_OutputStream.writeCharacters(buf, len);
 			_OutputStream.writeCharacters("\"");
@@ -3249,19 +3383,24 @@ JavaCoreDumpWriter::writeExceptionDetail(j9object_t* exceptionRef)
 		if (buf != stackBuffer) {
 			j9mem_free_memory(buf);
 		}
-		
+
 		/* check and describe any nested exceptions */
 		eiieClass = _VirtualMachine->internalVMFunctions->internalFindKnownClass(vmThread, J9VMCONSTANTPOOL_JAVALANGEXCEPTIONININITIALIZERERROR, J9_FINDKNOWNCLASS_FLAG_EXISTING_ONLY);
 
 		if (J9OBJECT_CLAZZ(vmThread, *exceptionRef) == eiieClass) {
+			char detailMessageStackBuffer[_MaximumExceptionNameLength];
 			char*                  nestedBuf = NULL;
-			IDATA                  nestedLen = 0;
+			UDATA                  nestedLen = 0;
 			j9object_t             nestedException = NULL;
 			J9UTF8*                nestedExceptionClassName = NULL;
 
+#if JAVA_SPEC_VERSION >= 12
+			nestedException = J9VMJAVALANGTHROWABLE_CAUSE(vmThread, *exceptionRef);
+#else
 			nestedException = J9VMJAVALANGEXCEPTIONININITIALIZERERROR_EXCEPTION(vmThread, *exceptionRef);
+#endif /* JAVA_SPEC_VERSION */
 
-			if (nestedException){
+			if (nestedException) {
 				nestedExceptionClassName = J9ROMCLASS_CLASSNAME(J9OBJECT_CLAZZ(vmThread, nestedException)->romClass);
 				if (nestedExceptionClassName) {
 					_OutputStream.writeCharacters(" Nested Exception: \"");
@@ -3270,18 +3409,21 @@ JavaCoreDumpWriter::writeExceptionDetail(j9object_t* exceptionRef)
 				}
 
 				message = J9VMJAVALANGTHROWABLE_DETAILMESSAGE(vmThread, nestedException);
-				/* length is in jchars. 3x is enough for worst case UTF8 encoding */
-				nestedLen = J9VMJAVALANGSTRING_LENGTH(vmThread, message) * 3;
-				nestedBuf = (char *)j9mem_allocate_memory(nestedLen, OMRMEM_CATEGORY_VM);
-				if (nestedBuf) {
-					nestedLen = _VirtualMachine->internalVMFunctions->copyStringToUTF8Helper(vmThread, message, FALSE, J9_STR_NONE, (U_8*)nestedBuf, nestedLen);
+				if (NULL != message) {
+					nestedBuf = _VirtualMachine->internalVMFunctions->copyStringToUTF8WithMemAlloc(vmThread, message, J9_STR_NULL_TERMINATE_RESULT, "", 0, detailMessageStackBuffer, _MaximumExceptionNameLength, &nestedLen);
+				}
+
+				if (0 != nestedLen) {
 					_OutputStream.writeCharacters(" Detail:  \"");
 					_OutputStream.writeCharacters(nestedBuf, nestedLen);
 					_OutputStream.writeCharacters("\"");
-					j9mem_free_memory( nestedBuf );
+				}
+
+				if (nestedBuf != detailMessageStackBuffer) {
+					j9mem_free_memory(nestedBuf);
 				}
 			}
-		}	
+		}
 	}
 }
 
@@ -3315,8 +3457,8 @@ JavaCoreDumpWriter::writeGPCategory(void* gpInfo, const char* prefix, U_32 categ
 void
 JavaCoreDumpWriter::writeGPValue(const char* prefix, const char* name, U_32 kind, void* value)
 {
-	/* Write the prefix and name */		
-	_OutputStream.writeCharacters(prefix);	
+	/* Write the prefix and name */
+	_OutputStream.writeCharacters(prefix);
 	_OutputStream.writeCharacters(name);
 	_OutputStream.writeCharacters(": ");
 
@@ -3330,7 +3472,7 @@ JavaCoreDumpWriter::writeGPValue(const char* prefix, const char* name, U_32 kind
 			const U_128 * const v = (U_128 *) value;
 			const U_64 h = v->high64;
 			const U_64 l = v->low64;
-	
+
 			_OutputStream.writeVPrintf("%016.16llX%016.16llX", h, l);
 		}
 		break;
@@ -3444,42 +3586,45 @@ JavaCoreDumpWriter::writeSegments(J9MemorySegmentList* list, BOOLEAN isCodeCache
 	UDATA sizeTotal = 0;
 	UDATA allocTotal = 0;
 	UDATA freeTotal = 0;
-	UDATA *mccCodeCache;
-	UDATA *warmAlloc;
-	UDATA *coldAlloc;
 
 	while (segment != 0) {
-	
+		UDATA warmAlloc;
+		UDATA coldAlloc;
+
 		if (segment->type == MEMORY_TYPE_SHARED_META) {
 			/* Discard the class cache metadata segment (it overlaps the last shared ROM class segment in the cache) */
 			segment = segment->nextSegment;
 			continue;
 		}
 		if (isCodeCacheSegment) {
+			/* Set default values for warmAlloc and coldAlloc pointers */
+			warmAlloc = (UDATA)segment->heapBase;
+			coldAlloc = (UDATA)segment->heapTop;
+
 			/* The JIT code cache grows from both ends of the segment: the warmAlloc pointer upwards from the start of the segment
-			 * and the coldAlloc pointer downwards from the end of the segment. The free space in a JIT code cache segment is the 
+			 * and the coldAlloc pointer downwards from the end of the segment. The free space in a JIT code cache segment is the
 			 * space between the warmAlloc and coldAlloc pointers. See jit/codert/MultiCodeCache.hpp, the contract with the JVM is
-			 * that the address of the TR_MCCCodeCache structure is stored at the beginning of the segment, and that the warmAlloc
-			 * and coldAlloc pointers are the first two fields in TR_MCCCodeCache.
+			 * that the address of the TR_MCCCodeCache structure is stored at the beginning of the segment.
 			 */
-			mccCodeCache = *((UDATA**)segment->heapBase);
-			if (mccCodeCache) {
-				warmAlloc = (UDATA *)(*mccCodeCache);
-				coldAlloc = (UDATA *)(*(++mccCodeCache));
-			} else {
-				/* sanity check, if the TR_MCCCodeCache pointer was null, set default values for warmAlloc and coldAlloc pointers */
-				warmAlloc = (UDATA *)segment->heapBase;
-				coldAlloc = (UDATA *)segment->heapTop;
+#ifdef J9VM_INTERP_NATIVE_SUPPORT
+			UDATA *mccCodeCache = *((UDATA**)segment->heapBase);
+			if (mccCodeCache ) {
+				J9JITConfig* jitConfig = _VirtualMachine->jitConfig;
+				if (jitConfig) {
+					warmAlloc = (UDATA)jitConfig->codeCacheWarmAlloc(mccCodeCache);
+					coldAlloc = (UDATA)jitConfig->codeCacheColdAlloc(mccCodeCache);
+				}
 			}
+#endif
 		}
-		_OutputStream.writeCharacters("1STSEGMENT     ");     
+		_OutputStream.writeCharacters("1STSEGMENT     ");
 		_OutputStream.writePointer(segment, true);
 		_OutputStream.writeCharacters(" ");
 		_OutputStream.writePointer(segment->heapBase, true);
 		_OutputStream.writeCharacters(" ");
 		if (isCodeCacheSegment) {
 			/* For the JIT code cache segments, we fake up the allocation pointer as the sum of the cold and warm allocations */
-			_OutputStream.writePointer((UDATA *)((UDATA)segment->heapTop - ((UDATA)coldAlloc - (UDATA)warmAlloc)), true);
+			_OutputStream.writePointer((UDATA *)((UDATA)segment->heapTop - (coldAlloc - warmAlloc)), true);
 		} else {
 			_OutputStream.writePointer(segment->heapAlloc, true);
 		}
@@ -3490,17 +3635,17 @@ JavaCoreDumpWriter::writeSegments(J9MemorySegmentList* list, BOOLEAN isCodeCache
 		_OutputStream.writeCharacters(" ");
 		_OutputStream.writeVPrintf(FORMAT_SIZE_HEX, sizeof (void *) * 2, segment->size);
 		_OutputStream.writeCharacters("\n");
-		
+
 		/* accumulate the totals */
 		sizeTotal += segment->size;
 		if (isCodeCacheSegment) {
-			allocTotal += segment->size - ((UDATA)coldAlloc - (UDATA)warmAlloc);
-			freeTotal += (UDATA)coldAlloc - (UDATA)warmAlloc;
+			allocTotal += segment->size - (coldAlloc - warmAlloc);
+			freeTotal += coldAlloc - warmAlloc;
 		} else {
 			allocTotal += ((UDATA)segment->heapAlloc - (UDATA)segment->heapBase);
 			freeTotal += (segment->size - ((UDATA)segment->heapAlloc - (UDATA)segment->heapBase));
 		}
-		
+
 		segment = segment->nextSegment;
 	}
 
@@ -3836,12 +3981,7 @@ JavaCoreDumpWriter::writeMonitorObject(J9ThreadMonitor* monitor, j9object_t obj,
 	J9Thread*   lockOwner = lock->owner;
 
 	if (obj) {
-		J9VMThread tenantMarker;
-
-		memset(&tenantMarker, 0, sizeof(J9VMThread));
-
-
-		owner = getObjectMonitorOwner(_VirtualMachine, &tenantMarker, obj, &count);
+		owner = getObjectMonitorOwner(_VirtualMachine, obj, &count);
 	} else if (lockOwner) {
 		owner = getVMThreadFromOMRThread(_VirtualMachine, lockOwner);
 		count = lock->count;
@@ -4058,7 +4198,7 @@ JavaCoreDumpWriter::writeThread(J9VMThread* vmThread, J9PlatformThread *nativeTh
 	PORT_ACCESS_FROM_PORT(_PortLibrary);
 	J9AbstractThread* osThread =  NULL;
 
-	/* Extract the corrseponding OS thread */
+	/* Extract the corresponding OS thread */
 	if (vmThread != NULL) {
 		osThread = (J9AbstractThread*)vmThread->osThread;
 
@@ -4647,7 +4787,7 @@ JavaCoreDumpWriter::writeExceptionFrame(
 	void*        userData,
 	J9ROMClass*  romClass,
 	J9ROMMethod* romMethod,
-	J9UTF8*      sourceFile, 
+	J9UTF8*      sourceFile,
 	UDATA        lineNumber
 )
 {
@@ -4816,7 +4956,7 @@ JavaCoreDumpWriter::writeLoader(J9ClassLoader* classLoader)
 		sharedROMBoundsStart = sharedROMBoundsEnd = NULL;
 	}
 #endif
-		
+
 	while (clazz) {
 		if ((clazz->classLoader == classLoader) || isAnon) {
 			count++;
@@ -4873,7 +5013,7 @@ JavaCoreDumpWriter::writeLibraries(J9ClassLoader* classLoader)
 	bool isExt = (extLdr ? classLoader == J9VMJAVALANGCLASSLOADER_VMREF_VM(_VirtualMachine, extLdr) : false);
 
 	/* Decode and write the status */
-	_OutputStream.writeCharacters("2CLTEXTCLLIB  	\t");
+	_OutputStream.writeCharacters("2CLTEXTCLLIB    \t");
 
 	if (isSystem) {
 		_OutputStream.writeCharacters("Loader *System*(");
@@ -5115,6 +5255,9 @@ JavaCoreDumpWriter::writeCPUinfo(void)
 {
 	PORT_ACCESS_FROM_PORT(_PortLibrary);
 
+	UDATA bound = j9sysinfo_get_number_CPUs_by_type(J9PORT_CPU_BOUND);
+	UDATA target = j9sysinfo_get_number_CPUs_by_type(J9PORT_CPU_TARGET);
+
 	_OutputStream.writeCharacters(
 			"NULL           \n");
 	_OutputStream.writeCharacters(
@@ -5127,13 +5270,79 @@ JavaCoreDumpWriter::writeCPUinfo(void)
 	_OutputStream.writeInteger(j9sysinfo_get_number_CPUs_by_type(J9PORT_CPU_ONLINE), "%i\n");
 	_OutputStream.writeCharacters(
 			"2CIBOUNDCPU    Bound CPUs: ");
-	_OutputStream.writeInteger(j9sysinfo_get_number_CPUs_by_type(J9PORT_CPU_BOUND), "%i\n");
+	_OutputStream.writeInteger(bound, "%i\n");
+	_OutputStream.writeCharacters(
+			"2CIACTIVECPU   Active CPUs: ");
+	if (bound != target) {
+		_OutputStream.writeInteger(target, "%i\n");
+	} else {
+		/* target is not being overridden by active CPUs, so print 0 */
+		_OutputStream.writeCharacters("0\n");
+	}
 	_OutputStream.writeCharacters(
 			"2CITARGETCPU   Target CPUs: ");
-	_OutputStream.writeInteger(j9sysinfo_get_number_CPUs_by_type(J9PORT_CPU_TARGET), "%i\n");
+	_OutputStream.writeInteger(target, "%i\n");
 
 	return;
 }
+
+#if defined(LINUX)
+void
+JavaCoreDumpWriter::writeCgroupMetrics(void)
+{
+	OMRPORT_ACCESS_FROM_J9PORT(_PortLibrary);
+	BOOLEAN isCgroupSystemAvailable = omrsysinfo_cgroup_is_system_available();
+	if (isCgroupSystemAvailable) {
+		const OMRCgroupEntry *entryHead = omrsysinfo_get_cgroup_subsystem_list();
+		OMRCgroupEntry *cgEntry = (OMRCgroupEntry *)entryHead;
+		int32_t rc = 0;
+		if (NULL != cgEntry) {
+			_OutputStream.writeCharacters("NULL \n");
+			_OutputStream.writeCharacters("1CICGRPINFO    Cgroup Information \n");
+			_OutputStream.writeCharacters("NULL           ------------------------------------------------------------------------\n");
+			do {
+				_OutputStream.writeCharacters("2CICGRPINFO    subsystem : ");
+				_OutputStream.writeCharacters(cgEntry->subsystem);
+				_OutputStream.writeCharacters("\n");
+				_OutputStream.writeCharacters("2CICGRPINFO    cgroup name : ");
+				_OutputStream.writeCharacters(cgEntry->cgroup);
+				_OutputStream.writeCharacters("\n");
+				OMRCgroupMetricIteratorState cgroupState = {0};
+				rc = omrsysinfo_cgroup_subsystem_iterator_init(cgEntry->flag, &cgroupState);
+				if (0 == rc) {
+					if (0 != cgroupState.numElements) {
+						OMRCgroupMetricElement metricElement = {0};
+						while (0 != omrsysinfo_cgroup_subsystem_iterator_hasNext(&cgroupState)) {
+							const char *metricKey = NULL;
+							rc = omrsysinfo_cgroup_subsystem_iterator_metricKey(&cgroupState, &metricKey);
+							if (0 == rc) {
+								rc = omrsysinfo_cgroup_subsystem_iterator_next(&cgroupState, &metricElement);
+								if (rc == 0) {
+									_OutputStream.writeCharacters("3CICGRPINFO        ");
+									_OutputStream.writeCharacters(metricKey);
+									_OutputStream.writeCharacters(" : ");
+									_OutputStream.writeCharacters(metricElement.value);
+									if (NULL != metricElement.units) {
+										_OutputStream.writeCharacters(" ");
+										_OutputStream.writeCharacters(metricElement.units);
+									}
+									_OutputStream.writeCharacters("\n");
+								} else {
+									_OutputStream.writeCharacters("3CICGRPINFO        ");
+									_OutputStream.writeCharacters(metricKey);
+									_OutputStream.writeCharacters(" : Unavailable\n");
+								}
+							}
+						}
+					}
+					omrsysinfo_cgroup_subsystem_iterator_destroy(&cgroupState);
+				}
+				cgEntry = cgEntry->next;
+			} while (cgEntry != entryHead);
+		}
+	}
+}
+#endif
 
 /**************************************************************************************************/
 /*                                                                                                */
@@ -5165,7 +5374,7 @@ writeFrameCallBack(J9VMThread* vmThread, J9StackWalkState* state)
 }
 
 UDATA
-writeExceptionFrameCallBack(J9VMThread* vmThread, void* userData, J9ROMClass* romClass, J9ROMMethod* romMethod, J9UTF8* sourceFile, UDATA lineNumber, J9ClassLoader* classLoader)
+writeExceptionFrameCallBack(J9VMThread* vmThread, void* userData, UDATA bytecodeOffset, J9ROMClass* romClass, J9ROMMethod* romMethod, J9UTF8* sourceFile, UDATA lineNumber, J9ClassLoader* classLoader, J9Class* ramClass)
 {
 	JavaCoreDumpWriter *jcdw = (JavaCoreDumpWriter *)((J9StackWalkState*)userData)->userData1;
 	return jcdw->writeExceptionFrame(userData, romClass, romMethod, sourceFile, lineNumber);
@@ -5180,7 +5389,7 @@ static jvmtiIterationControl
 heapIteratorCallback(J9JavaVM* virtualMachine, J9MM_IterateHeapDescriptor* heapDescriptor, void* userData)
 {
 	JavaCoreDumpWriter* jcw = (JavaCoreDumpWriter*)userData;
-	
+
 	virtualMachine->memoryManagerFunctions->j9mm_iterate_spaces(virtualMachine, virtualMachine->portLibrary, heapDescriptor, 0, spaceIteratorCallback, jcw);
 
 	return JVMTI_ITERATION_CONTINUE;
@@ -5198,7 +5407,7 @@ spaceIteratorCallback(J9JavaVM* virtualMachine, J9MM_IterateSpaceDescriptor* spa
 	regioniterationblock regionTotals;
 #endif /* J9VM_GC_VLHGC */
 	JavaCoreDumpWriter* jcw = (JavaCoreDumpWriter*)userData;
-	
+
 
 	jcw->_OutputStream.writeCharacters("NULL           ");
 #if defined(J9VM_ENV_DATA64)
@@ -5252,12 +5461,12 @@ spaceIteratorCallback(J9JavaVM* virtualMachine, J9MM_IterateSpaceDescriptor* spa
 		jcw->_OutputStream.writeCharacters(" \n");
 #endif /* J9VM_GC_VLHGC */
 	}
-	
+
 	sizeTotal = virtualMachine->memoryManagerFunctions->j9gc_heap_total_memory(virtualMachine);
 	sizeTarget = virtualMachine->memoryManagerFunctions->j9gc_get_softmx(virtualMachine);
 	freeTotal = virtualMachine->memoryManagerFunctions->j9gc_heap_free_memory(virtualMachine);
 	allocTotal = sizeTotal - freeTotal;
-	
+
 	int decimalLength = sizeof(void*) == 4 ? 10 : 20;
 
 	jcw->_OutputStream.writeCharacters("NULL\n");
@@ -5352,13 +5561,13 @@ handlerWriteSection(struct J9PortLibrary* portLibrary, U_32 gpType, void* gpInfo
 	JavaCoreDumpWriter* jcw = (JavaCoreDumpWriter*)userData;
 
 	jcw->_OutputStream.writeCharacters("1INTERNAL      In-flight data encountered. Output may be missing or incomplete.\n");
-//	jcw->_OutputStream.writeCharacters("NULL           \n");
-//	jcw->writeGPCategory(gpInfo, "2INTERNAL                ", J9PORT_SIG_SIGNAL);
+//  jcw->_OutputStream.writeCharacters("NULL           \n");
+//  jcw->writeGPCategory(gpInfo, "2INTERNAL                ", J9PORT_SIG_SIGNAL);
 //
-//	jcw->_OutputStream.writeCharacters("NULL           \n");
-//	jcw->writeGPCategory(gpInfo, "2INTERNAL                ", J9PORT_SIG_MODULE);
+//  jcw->_OutputStream.writeCharacters("NULL           \n");
+//  jcw->writeGPCategory(gpInfo, "2INTERNAL                ", J9PORT_SIG_MODULE);
 //
-//	jcw->_OutputStream.writeCharacters("NULL\n");
+//  jcw->_OutputStream.writeCharacters("NULL\n");
 
 	return J9PORT_SIG_EXCEPTION_RETURN;
 }
@@ -5464,7 +5673,7 @@ protectedWriteThreadBlockers(struct J9PortLibrary *portLibrary, void *args)
  * will be called and return J9PORT_SIG_EXCEPTION_RETURN instead.
  * @param portLibrary[in] pointer to the port library
  * @param args[in,out] pointer to the arguments to unpack for getOwnedObjectMonitors
- * @return 0 
+ * @return 0
  */
 UDATA
 protectedGetOwnedObjectMonitors(struct J9PortLibrary *portLibrary, void *args)
@@ -5615,7 +5824,7 @@ handlerGetThreadsUsageInfo(struct J9PortLibrary *portLibrary, U_32 gpType, void*
  * @param gpType[in] failure type
  * @param gpInfo[in] failure info
  * @param userData[in] pointer to "this", the JavaCoreDumpWriter that we are running in.
- * @return 0 
+ * @return 0
  */
 UDATA
 handlerWriteJavaLangThreadInfo(struct J9PortLibrary *portLibrary, U_32 gpType, void* gpInfo, void* userData)
@@ -5635,7 +5844,7 @@ handlerWriteJavaLangThreadInfo(struct J9PortLibrary *portLibrary, U_32 gpType, v
  * @param gpType[in] failure type
  * @param gpInfo[in] failure info
  * @param userData[in] pointer to "this", the JavaCoreDumpWriter that we are running in.
- * @return 0 
+ * @return 0
  */
 UDATA
 handlerGetOwnedObjectMonitors(struct J9PortLibrary *portLibrary, U_32 gpType, void* gpInfo, void* userData)
@@ -5759,9 +5968,9 @@ vmthread_locator(struct J9AVLTree *tree, UDATA tid , struct J9AVLTreeNode *walkN
 /*
  * Walks the J9MonitorTableListEntry list counting the monitors in each monitorTable
  *
- * @param	vm	the J9JavaVM
+ * @param   vm  the J9JavaVM
  *
- * @return	the total number of monitors found
+ * @return  the total number of monitors found
  */
 static UDATA
 getObjectMonitorCount(J9JavaVM *vm)
@@ -5782,9 +5991,9 @@ getObjectMonitorCount(J9JavaVM *vm)
 /*
  * Calculate number of allocated VMThreads
  *
- * @param	vm	the J9JavaVM
+ * @param   vm  the J9JavaVM
  *
- * @return	the total number of allocated VMThreads
+ * @return  the total number of allocated VMThreads
  */
 static UDATA
 getAllocatedVMThreadCount(J9JavaVM *vm)

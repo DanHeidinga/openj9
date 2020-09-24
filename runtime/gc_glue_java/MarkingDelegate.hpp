@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 2017, 2017 IBM Corp. and others
+ * Copyright (c) 2017, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -27,6 +26,7 @@
 #include "j9nonbuilder.h"
 #include "objectdescription.h"
 
+#include "FlattenedArrayObjectScanner.hpp"
 #include "GCExtensions.hpp"
 #if defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING)
 #include "MarkMap.hpp"
@@ -55,7 +55,7 @@ private:
 #if defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING)
 	MM_MarkMap *_markMap;							/**< This is set when dynamic class loading is enabled, NULL otherwise */
 	volatile bool _anotherClassMarkPass;			/**< Used in completeClassMark for another scanning request*/
-	volatile bool _anotherClassMarkLoopIteration;	/**< Used in completeClassMark for another loop iteration request (set by the Master thread)*/
+	volatile bool _anotherClassMarkLoopIteration;	/**< Used in completeClassMark for another loop iteration request (set by the Main thread)*/
 #endif /* defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING) */
 
 
@@ -103,28 +103,33 @@ public:
 	void workerSetupForGC(MM_EnvironmentBase *env);
 	void workerCompleteGC(MM_EnvironmentBase *env);
 	void workerCleanupAfterGC(MM_EnvironmentBase *env);
-	void masterSetupForGC(MM_EnvironmentBase *env);
-	void masterSetupForWalk(MM_EnvironmentBase *env);
-	void masterCleanupAfterGC(MM_EnvironmentBase *env);
+	void mainSetupForGC(MM_EnvironmentBase *env);
+	void mainSetupForWalk(MM_EnvironmentBase *env);
+	void mainCleanupAfterGC(MM_EnvironmentBase *env);
 	void scanRoots(MM_EnvironmentBase *env);
 	void completeMarking(MM_EnvironmentBase *env);
+
+	uintptr_t setupIndexableScanner(MM_EnvironmentBase *env, omrobjectptr_t objectPtr, MM_MarkingSchemeScanReason reason, uintptr_t *sizeToDo, uintptr_t *sizeInElementsToDo, fomrobject_t **basePtr, uintptr_t *flags) { return 0; }
 
 	MMINLINE GC_ObjectScanner *
 	getObjectScanner(MM_EnvironmentBase *env, omrobjectptr_t objectPtr, void *scannerSpace, MM_MarkingSchemeScanReason reason, uintptr_t *sizeToDo)
 	{
-		J9Class *clazz = J9GC_J9OBJECT_CLAZZ(objectPtr);
+		J9Class *clazz = J9GC_J9OBJECT_CLAZZ(objectPtr, env);
+		UDATA const referenceSize = env->compressObjectReferences() ? sizeof(uint32_t) : sizeof(uintptr_t);
+
 		/* object class must have proper eye catcher */
 		Assert_MM_true((UDATA)0x99669966 == clazz->eyecatcher);
 
 		GC_ObjectScanner *objectScanner = NULL;
 		switch(_extensions->objectModel.getScanType(objectPtr)) {
+		case GC_ObjectModel::SCAN_MIXED_OBJECT_LINKED:
 		case GC_ObjectModel::SCAN_ATOMIC_MARKABLE_REFERENCE_OBJECT:
 		case GC_ObjectModel::SCAN_MIXED_OBJECT:
 		case GC_ObjectModel::SCAN_OWNABLESYNCHRONIZER_OBJECT:
 		case GC_ObjectModel::SCAN_CLASS_OBJECT:
 		case GC_ObjectModel::SCAN_CLASSLOADER_OBJECT:
 			objectScanner = GC_MixedObjectScanner::newInstance(env, objectPtr, scannerSpace, 0);
-			*sizeToDo = sizeof(fomrobject_t) + ((GC_MixedObjectScanner *)objectScanner)->getBytesRemaining();
+			*sizeToDo = referenceSize + ((GC_MixedObjectScanner *)objectScanner)->getBytesRemaining();
 			break;
 		case GC_ObjectModel::SCAN_POINTER_ARRAY_OBJECT:
 		{
@@ -133,11 +138,19 @@ public:
 			objectScanner = GC_PointerArrayObjectScanner::newInstance(env, objectPtr, scannerSpace, GC_ObjectScanner::indexableObject, slotsToDo, startIndex);
 			break;
 		}
+		case GC_ObjectModel::SCAN_FLATTENED_ARRAY_OBJECT:
+		{
+			/* TODO: Flattened arrays do not support array splitting */
+			uintptr_t slotsToDo = 0; 
+			uintptr_t startIndex = 0;
+			objectScanner = GC_FlattenedArrayObjectScanner::newInstance(env, objectPtr, scannerSpace, GC_ObjectScanner::indexableObject, slotsToDo, startIndex);
+			break;
+		}
 		case GC_ObjectModel::SCAN_REFERENCE_MIXED_OBJECT:
 		{
 			fomrobject_t *referentSlotPtr = setupReferenceObjectScanner(env, objectPtr, reason);
 			objectScanner = GC_ReferenceObjectScanner::newInstance(env, objectPtr, referentSlotPtr, scannerSpace, 0);
-			*sizeToDo = sizeof(fomrobject_t) + ((GC_ReferenceObjectScanner *)objectScanner)->getBytesRemaining();
+			*sizeToDo = referenceSize + ((GC_ReferenceObjectScanner *)objectScanner)->getBytesRemaining();
 			break;
 		}
 		case GC_ObjectModel::SCAN_PRIMITIVE_ARRAY_OBJECT:

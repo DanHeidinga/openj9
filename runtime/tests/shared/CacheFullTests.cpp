@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2016 IBM Corp. and others
+ * Copyright (c) 2001, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -111,7 +111,7 @@ testCacheFull(J9JavaVM* vm)
 	PORT_ACCESS_FROM_JAVAVM(vm);
 	REPORT_START("testCacheFull");
 
-	vm->internalVMFunctions->internalAcquireVMAccess(currentThread);
+	vm->internalVMFunctions->internalEnterVMFromJNI(currentThread);
 
 	rc |= test1(vm);
 	rc |= test2(vm);
@@ -123,7 +123,7 @@ testCacheFull(J9JavaVM* vm)
 	rc |= test8(vm);
 	rc |= test9(vm);
 
-	vm->internalVMFunctions->internalReleaseVMAccess(currentThread);
+	vm->internalVMFunctions->internalExitVMToJNI(currentThread);
 
 	REPORT_SUMMARY("testCacheFull", rc);
 	return rc;
@@ -1270,7 +1270,7 @@ IDATA test5(J9JavaVM* vm) {
 		rc = FAIL;
 		goto done;
 	}
-	memset(sharedClassConfig, 0, sizeof(J9SharedClassConfig));
+	memset(sharedClassConfig, 0, sizeof(J9SharedClassConfig) + sizeof(J9SharedClassCacheDescriptor));
 	sharedClassConfig->storeCompiledMethod = j9shr_storeCompiledMethod;
 
 	if (cacheHelper.openTestCache(J9PORT_SHR_CACHE_TYPE_PERSISTENT, cacheSize,
@@ -1665,7 +1665,7 @@ IDATA test6(J9JavaVM* vm) {
 		rc = FAIL;
 		goto done;
 	}
-	memset(sharedClassConfig, 0, sizeof(J9SharedClassConfig));
+	memset(sharedClassConfig, 0, sizeof(J9SharedClassConfig) + sizeof(J9SharedClassCacheDescriptor));
 	sharedClassConfig->storeAttachedData = j9shr_storeAttachedData;
 
 	if (cacheHelper.openTestCache(J9PORT_SHR_CACHE_TYPE_PERSISTENT, cacheSize,
@@ -2065,7 +2065,7 @@ IDATA test7(J9JavaVM* vm) {
 		rc = FAIL;
 		goto done;
 	}
-	memset(sharedClassConfig, 0, sizeof(J9SharedClassConfig));
+	memset(sharedClassConfig, 0, sizeof(J9SharedClassConfig) + sizeof(J9SharedClassCacheDescriptor));
 	sharedClassConfig->storeAttachedData = j9shr_storeAttachedData;
 	sharedClassConfig->updateAttachedData = j9shr_updateAttachedData;
 
@@ -2426,7 +2426,7 @@ IDATA test8(J9JavaVM* vm) {
 		rc = FAIL;
 		goto done;
 	}
-	memset(sharedClassConfig, 0, sizeof(J9SharedClassConfig));
+	memset(sharedClassConfig, 0, sizeof(J9SharedClassConfig) + sizeof(J9SharedClassCacheDescriptor));
 	sharedClassConfig->storeCompiledMethod = j9shr_storeCompiledMethod;
 	sharedClassConfig->storeAttachedData = j9shr_storeAttachedData;
 
@@ -2783,7 +2783,7 @@ IDATA test9(J9JavaVM* vm)
 		rc = FAIL;
 		goto done;
 	}
-	memset(sharedClassConfig, 0, sizeof(J9SharedClassConfig));
+	memset(sharedClassConfig, 0, sizeof(J9SharedClassConfig) + sizeof(J9SharedClassCacheDescriptor));
 	sharedClassConfig->storeAttachedData = j9shr_storeAttachedData;
 	sharedClassConfig->storeCompiledMethod = j9shr_storeCompiledMethod;
 
@@ -2810,8 +2810,8 @@ IDATA test9(J9JavaVM* vm)
 
 	/* Try adding a ROMClass so that the cache becomes soft full*/
 	usedBytes = cc->getUsedBytes();
-	/* Make CC_MIN_SPACE_BEFORE_CACHE_FULL > free avalibale space > CC_MIN_SPACE_BEFORE_CACHE_FULL - romClassSize2, so that increasing the softmx according to the
-	 * unstoredBytes in phase 3 can take effect. Otherwise, it has no effect as free avalibale space can still be less than CC_MIN_SPACE_BEFORE_CACHE_FULL. */
+	/* Make CC_MIN_SPACE_BEFORE_CACHE_FULL > free available space > CC_MIN_SPACE_BEFORE_CACHE_FULL - romClassSize2, so that increasing the softmx according to the
+	 * unstoredBytes in phase 3 can take effect. Otherwise, it has no effect as free available space can still be less than CC_MIN_SPACE_BEFORE_CACHE_FULL. */
 	romClassSize = (TEST9_SOFTMX_SIZE - usedBytes - CC_MIN_SPACE_BEFORE_CACHE_FULL + romClassSize2/2);
 	romClassSize = ROUND_UP_TO(sizeof(U_64), romClassSize);
 	j9str_printf(PORTLIB, romClassName, ROMCLASS_NAME_LEN, "%s_DummyClass1", testName);

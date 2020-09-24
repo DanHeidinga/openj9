@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -28,8 +28,7 @@
 
 #if defined(OMR_GC_CONCURRENT_SCAVENGER) && defined(J9VM_ARCH_S390)
 
-J9_EXTERN_BUILDER_SYMBOL(handleReadBarrier);
-J9_EXTERN_BUILDER_SYMBOL(handleGuardedStorageEvent);
+J9_EXTERN_BUILDER_SYMBOL(handleHardwareReadBarrier);
 
 void
 invokeJ9ReadBarrier(J9VMThread *currentThread)
@@ -50,10 +49,13 @@ j9gs_initializeThread(J9VMThread *vmThread)
 		success = 1;
 	} else {
 		BOOLEAN supportsGuardedStorageFacility = FALSE;
+		J9JavaVM *vm = vmThread->javaVM;
+		J9MemoryManagerFunctions *mmFuncs = vm->memoryManagerFunctions;
 		J9ProcessorDesc  processorDesc;
 		j9sysinfo_get_processor_description(&processorDesc);
 		if (j9sysinfo_processor_has_feature(&processorDesc, J9PORT_S390_FEATURE_GUARDED_STORAGE) &&
-				j9sysinfo_processor_has_feature(&processorDesc, J9PORT_S390_FEATURE_SIDE_EFFECT_ACCESS)) {
+				j9sysinfo_processor_has_feature(&processorDesc, J9PORT_S390_FEATURE_SIDE_EFFECT_ACCESS) &&
+				!mmFuncs->j9gc_software_read_barrier_enabled(vm)) {
 			supportsGuardedStorageFacility = TRUE;
 		}
 
@@ -69,11 +71,7 @@ j9gs_initializeThread(J9VMThread *vmThread)
 			gsControlBlock->designationRegister = 0;
 			gsControlBlock->sectionMask = 0;
 			gsControlBlock->paramListAddr = (uint64_t) &vmThread->gsParameters;
-			if (1 == supportsGuardedStorageFacility) {
-				vmThread->gsParameters.handlerAddr = (uint64_t)(uintptr_t)J9_BUILDER_SYMBOL(handleGuardedStorageEvent);
-			} else {
-				vmThread->gsParameters.handlerAddr = (uint64_t)(uintptr_t)J9_BUILDER_SYMBOL(handleReadBarrier);
-			}
+			vmThread->gsParameters.handlerAddr = (uint64_t)(uintptr_t)J9_BUILDER_SYMBOL(handleHardwareReadBarrier);
 
 			/* Initialize the parameters */
 			j9gs_params_init(&vmThread->gsParameters, gsControlBlock);
@@ -103,10 +101,13 @@ j9gs_deinitializeThread(J9VMThread *vmThread)
 	PORT_ACCESS_FROM_VMC(vmThread);
 	int32_t success = 0;
 	BOOLEAN supportsGuardedStorageFacility = FALSE;
+	J9JavaVM *vm = vmThread->javaVM;
+	J9MemoryManagerFunctions *mmFuncs = vm->memoryManagerFunctions;
 	J9ProcessorDesc  processorDesc;
 	j9sysinfo_get_processor_description(&processorDesc);
 	if (j9sysinfo_processor_has_feature(&processorDesc, J9PORT_S390_FEATURE_GUARDED_STORAGE) &&
-			j9sysinfo_processor_has_feature(&processorDesc, J9PORT_S390_FEATURE_SIDE_EFFECT_ACCESS)) {
+			j9sysinfo_processor_has_feature(&processorDesc, J9PORT_S390_FEATURE_SIDE_EFFECT_ACCESS) &&
+			!mmFuncs->j9gc_software_read_barrier_enabled(vm)) {
 		supportsGuardedStorageFacility = TRUE;
 	}
 

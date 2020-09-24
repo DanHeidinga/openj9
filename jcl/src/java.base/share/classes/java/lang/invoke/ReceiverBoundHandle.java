@@ -1,6 +1,6 @@
-/*[INCLUDE-IF Sidecar17]*/
+/*[INCLUDE-IF Sidecar17 & !OPENJDK_METHODHANDLES]*/
 /*******************************************************************************
- * Copyright (c) 2009, 2018 IBM Corp. and others
+ * Copyright (c) 2009, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -23,6 +23,15 @@
 package java.lang.invoke;
 
 import java.lang.reflect.Modifier;
+
+/*[IF Java15]*/
+import com.ibm.oti.vm.VMLangAccess;
+import java.lang.invoke.MethodHandles.Lookup;
+import java.lang.reflect.Field;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
+import java.util.List;
+/*[ENDIF] Java15 */
 
 /* ReceiverBoundHandle is a DirectHandle subclass used to call methods 
  * that have an exact known address and a bound first parameter.
@@ -90,11 +99,7 @@ final class ReceiverBoundHandle extends DirectHandle {
 	 */
 	/*[ENDIF]*/
 	MethodHandle permuteArguments(MethodType permuteType, int... permute) throws NullPointerException, IllegalArgumentException {
-		MethodHandle result = new PermuteHandle(permuteType, this, permute);
-		if (true) {
-			result = combinableVersion.permuteArguments(permuteType, permute);
-		}
-		return result;
+		return combinableVersion.permuteArguments(permuteType, permute);
 	}
 
 	MethodHandle insertArguments(MethodHandle equivalent, MethodHandle unboxingHandle, int location, Object... values) {
@@ -105,30 +110,54 @@ final class ReceiverBoundHandle extends DirectHandle {
 		return result;
 	}
 
+/*[IF Java15]*/
+	@Override
+	boolean addRelatedMHs(List<MethodHandle> relatedMHs) {
+		VMLangAccess vma = Lookup.getVMLangAccess();
+		ClassLoader rawLoader = vma.getClassloader(receiver.getClass());
+		Class<?> injectedSecurityFrame = null;
+		
+		synchronized (SecurityFrameInjector.loaderLock) {
+			injectedSecurityFrame = SecurityFrameInjector.probeLoaderToSecurityFrameMap(rawLoader);
+		}
+		
+		if ((injectedSecurityFrame == null) || !injectedSecurityFrame.isInstance(receiver)) {
+			/* Receiver object cannot be an instance of SecurityFrame as its classloader 
+			 * doesn't have an injected security frame class.
+			 */
+			return false;
+		}
+		
+		final Class<?> finalInjectedSecurityFrame = injectedSecurityFrame;
+		
+		MethodHandle target = AccessController.doPrivileged(new PrivilegedAction<MethodHandle>() {
+			public MethodHandle run() {
+				try {
+					Field targetField = finalInjectedSecurityFrame.getDeclaredField("target"); //$NON-NLS-1$
+					targetField.setAccessible(true);
+					return (MethodHandle)targetField.get(receiver);
+				} catch (NoSuchFieldException | SecurityException | IllegalArgumentException | IllegalAccessException e) {
+					throw (InternalError)new InternalError().initCause(e);
+				}
+			}
+		});
+		
+		if (target.type() == type()) {
+			relatedMHs.add(target);
+			return true;
+		}
+		
+		return false;
+	}
+/*[ENDIF] Java15 */
 
 	// {{{ JIT support
 	private static final ThunkTable _thunkTable = new ThunkTable();
 	protected final ThunkTable thunkTable(){ return _thunkTable; }
 	
-	/*[IF ]*/
-	/* Null check the receiver if the handle isn't for a static method.
-	 * This is the lowest risk change for this failure.
-	 * TODO: Investigate introducing a new handle subclass: 
-	 * NullRecieverBoundHandle as a subclass of RBH that only
-	 * throws NPE.  We should always know at creation time
-	 * which kind of handle it will be - NRBH or RBH.
-	 * 
-	 */
-	/*[ENDIF]*/
-	final void nullCheckReceiverIfNonStatic(){
-		if ((receiver == null) && !Modifier.isStatic(final_modifiers)) {
-			receiver.getClass(); // Deliberate NPE
-		}
-	}
-	
 	@FrameIteratorSkip
 	private final void invokeExact_thunkArchetype_V(int argPlaceholder) {
-		nullCheckReceiverIfNonStatic();
+		nullCheckIfRequired(receiver);
 		if (ILGenMacros.isCustomThunk()) {
 			directCall_V(receiver, argPlaceholder); 
 		} else if (isAlreadyCompiled(vmSlot))
@@ -140,7 +169,7 @@ final class ReceiverBoundHandle extends DirectHandle {
 	
 	@FrameIteratorSkip
 	private final int invokeExact_thunkArchetype_I(int argPlaceholder) {
-		nullCheckReceiverIfNonStatic();
+		nullCheckIfRequired(receiver);
 		if (ILGenMacros.isCustomThunk()) {
 			return directCall_I(receiver, argPlaceholder);
 		} else if (isAlreadyCompiled(vmSlot))
@@ -152,7 +181,7 @@ final class ReceiverBoundHandle extends DirectHandle {
 	
 	@FrameIteratorSkip
 	private final long invokeExact_thunkArchetype_J(int argPlaceholder) {
-		nullCheckReceiverIfNonStatic();
+		nullCheckIfRequired(receiver);
 		if (ILGenMacros.isCustomThunk()) {
 			return directCall_J(receiver, argPlaceholder);
 		} else if (isAlreadyCompiled(vmSlot))
@@ -164,7 +193,7 @@ final class ReceiverBoundHandle extends DirectHandle {
 	
 	@FrameIteratorSkip
 	private final float invokeExact_thunkArchetype_F(int argPlaceholder) {
-		nullCheckReceiverIfNonStatic();
+		nullCheckIfRequired(receiver);
 		if (ILGenMacros.isCustomThunk()) {
 			return directCall_F(receiver, argPlaceholder);
 		} else if (isAlreadyCompiled(vmSlot))
@@ -176,7 +205,7 @@ final class ReceiverBoundHandle extends DirectHandle {
 	
 	@FrameIteratorSkip
 	private final double invokeExact_thunkArchetype_D(int argPlaceholder) {
-		nullCheckReceiverIfNonStatic();
+		nullCheckIfRequired(receiver);
 		if (ILGenMacros.isCustomThunk()) {
 			return directCall_D(receiver, argPlaceholder);
 		} else if (isAlreadyCompiled(vmSlot))
@@ -188,7 +217,7 @@ final class ReceiverBoundHandle extends DirectHandle {
 	
 	@FrameIteratorSkip
 	private final Object invokeExact_thunkArchetype_L(int argPlaceholder) { 
-		nullCheckReceiverIfNonStatic();
+		nullCheckIfRequired(receiver);
 		if (ILGenMacros.isCustomThunk()) {
 			return directCall_L(receiver, argPlaceholder); 
 		} else if (isAlreadyCompiled(vmSlot))

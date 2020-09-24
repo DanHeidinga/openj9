@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -29,7 +28,8 @@
 #if !defined(INCREMENTAL_PARALLEL_TASK_HPP_)
 #define INCREMENTAL_PARALLEL_TASK_HPP_
 
-#include "j9.h"
+#include "omr.h"
+#include "omrcfg.h"
 #include "omrthread.h"
 
 #include "ParallelTask.hpp"
@@ -42,12 +42,12 @@
 class MM_IncrementalParallelTask : public MM_ParallelTask
 {
 private:
-	UDATA _entryCount;
+	uintptr_t _entryCount;
 	MM_YieldCollaborator _yieldCollaborator;
 
 protected:
 	virtual void synchronizeGCThreads(MM_EnvironmentBase *env, const char *id);
-	virtual bool synchronizeGCThreadsAndReleaseMaster(MM_EnvironmentBase *env, const char *id);
+	virtual bool synchronizeGCThreadsAndReleaseMain(MM_EnvironmentBase *env, const char *id);
 	virtual bool synchronizeGCThreadsAndReleaseSingleThread(MM_EnvironmentBase *env, const char *id);
 	virtual void releaseSynchronizedGCThreads(MM_EnvironmentBase *env);
 public:
@@ -55,7 +55,7 @@ public:
 	
 	MM_YieldCollaborator *getYieldCollaborator() { return &_yieldCollaborator; }	
 	
-	MM_IncrementalParallelTask(MM_EnvironmentBase *env, MM_Dispatcher *dispatcher) :
+	MM_IncrementalParallelTask(MM_EnvironmentBase *env, MM_ParallelDispatcher *dispatcher) :
 		MM_ParallelTask(env, dispatcher),
 		_entryCount(0),
 		_yieldCollaborator(&_synchronizeMutex, &_synchronizeCount, MM_YieldCollaborator::IncrementalParallelTask)

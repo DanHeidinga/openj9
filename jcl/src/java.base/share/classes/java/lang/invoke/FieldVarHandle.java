@@ -1,6 +1,6 @@
-/*[INCLUDE-IF Sidecar19-SE]*/
+/*[INCLUDE-IF Sidecar19-SE & !OPENJDK_METHODHANDLES]*/
 /*******************************************************************************
- * Copyright (c) 2016, 2017 IBM Corp. and others
+ * Copyright (c) 2016, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -22,6 +22,10 @@
  *******************************************************************************/
 package java.lang.invoke;
 
+/*[IF Java12]*/
+import java.lang.constant.ClassDesc;
+import java.util.Optional;
+/*[ENDIF] Java12 */
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import static java.lang.invoke.MethodType.*;
@@ -31,8 +35,12 @@ import com.ibm.oti.vm.VM;
 
 abstract class FieldVarHandle extends VarHandle {
 	final long vmslot;
-	final Class<?> definingClass;
 	final String fieldName;
+
+	/* definingClass cannot be a final field since it is modified twice, once in
+	 * Java code and once in native code.
+	 */
+	Class<?> definingClass;
 
 	/**
 	 * Constructs a VarHandle referencing a field.
@@ -51,7 +59,10 @@ abstract class FieldVarHandle extends VarHandle {
 		this.definingClass = lookupClass;
 		this.fieldName = fieldName;
 		int header = (isStatic ? 0 : VM.OBJECT_HEADER_SIZE);
+
+		/* The native lookupField method also modifies the definingClass field. */
 		this.vmslot = lookupField(definingClass, fieldName, MethodType.getBytecodeStringName(fieldType), fieldType, isStatic, accessClass) + header;
+
 		checkSetterFieldFinality(handleTable);
 	}
 	
@@ -73,6 +84,24 @@ abstract class FieldVarHandle extends VarHandle {
 		checkSetterFieldFinality(handleTable);
 	}
 	
+	/*[IF Java12]*/
+	@Override
+	public Optional<VarHandleDesc> describeConstable() {
+		VarHandleDesc result = null;
+		Optional<ClassDesc> fieldTypeOp = fieldType.describeConstable();
+		Optional<ClassDesc> declaringClassOp = definingClass.describeConstable();
+
+		if (fieldTypeOp.isPresent() && declaringClassOp.isPresent()) {
+			if (this instanceof InstanceFieldVarHandle) {
+				result = VarHandleDesc.ofField(declaringClassOp.get(), fieldName, fieldTypeOp.get());
+			} else { /* static */
+				result = VarHandleDesc.ofStaticField(declaringClassOp.get(), fieldName, fieldTypeOp.get());
+			}
+		}
+		return Optional.ofNullable(result);
+	}
+	/*[ENDIF] Java12 */
+
 	/**
 	 * Checks whether the field referenced by this VarHandle, is final. 
 	 * If so, MethodHandles in the handleTable that represent access modes that may modify the field, 
@@ -84,14 +113,14 @@ abstract class FieldVarHandle extends VarHandle {
 		if (Modifier.isFinal(modifiers)) {
 			MethodHandle exceptionThrower;
 			try {
-				exceptionThrower = MethodHandles.Lookup.internalPrivilegedLookup.findStatic(FieldVarHandle.class, "finalityCheckFailedExceptionThrower", methodType(void.class));
+				exceptionThrower = MethodHandles.Lookup.IMPL_LOOKUP.findStatic(FieldVarHandle.class, "finalityCheckFailedExceptionThrower", methodType(void.class));
 			} catch (IllegalAccessException | NoSuchMethodException e) {
 				throw new InternalError(e);
 			}
 			for (AccessMode mode : AccessMode.values()) {
 				if (mode.isSetter) {
 					MethodHandle mh = handleTable[mode.ordinal()];
-					Class<?>[] args = mh.type.arguments;
+					Class<?>[] args = mh.type().ptypes();
 					handleTable[mode.ordinal()] = MethodHandles.dropArguments(exceptionThrower, 0, args);
 				}
 			}
@@ -146,5 +175,9 @@ abstract class FieldVarHandle extends VarHandle {
 	@Override
 	final String getFieldName() {
 		return fieldName;
+	}
+
+	public MethodType accessModeTypeUncached(AccessMode accessMode) {
+		throw OpenJDKCompileStub.OpenJDKCompileStubThrowError();
 	}
 }

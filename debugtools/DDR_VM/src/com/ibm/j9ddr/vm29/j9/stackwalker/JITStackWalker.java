@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2009, 2018 IBM Corp. and others
+ * Copyright (c) 2009, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -26,29 +26,31 @@ import java.util.List;
 
 import com.ibm.j9ddr.AddressedCorruptDataException;
 import com.ibm.j9ddr.CorruptDataException;
-import com.ibm.j9ddr.vm29.j9.gc.GCObjectIterator;
-import com.ibm.j9ddr.vm29.j9.stackwalker.MethodMetaData.JITMaps;
 import com.ibm.j9ddr.vm29.j9.AlgorithmPicker;
 import com.ibm.j9ddr.vm29.j9.AlgorithmVersion;
 import com.ibm.j9ddr.vm29.j9.BaseAlgorithm;
+import com.ibm.j9ddr.vm29.j9.ConstantPoolHelpers;
 import com.ibm.j9ddr.vm29.j9.IAlgorithm;
+import com.ibm.j9ddr.vm29.j9.gc.GCObjectIterator;
+import com.ibm.j9ddr.vm29.j9.stackwalker.MethodMetaData.JITMaps;
 import com.ibm.j9ddr.vm29.pointer.AbstractPointer;
 import com.ibm.j9ddr.vm29.pointer.ObjectReferencePointer;
 import com.ibm.j9ddr.vm29.pointer.PointerPointer;
-import com.ibm.j9ddr.vm29.pointer.U8Pointer;
-import com.ibm.j9ddr.vm29.pointer.U32Pointer;
 import com.ibm.j9ddr.vm29.pointer.U64Pointer;
+import com.ibm.j9ddr.vm29.pointer.U8Pointer;
 import com.ibm.j9ddr.vm29.pointer.UDATAPointer;
 import com.ibm.j9ddr.vm29.pointer.VoidPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9BuildFlags;
 import com.ibm.j9ddr.vm29.pointer.generated.J9ClassPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9ConstantPoolPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9I2JStatePointer;
+import com.ibm.j9ddr.vm29.pointer.generated.J9ITablePointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9JITConfigPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9JITDecompilationInfoPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9JITExceptionTablePointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9JITFramePointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9JITStackAtlasPointer;
+import com.ibm.j9ddr.vm29.pointer.generated.J9JavaVMPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9MethodPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9OSRBufferPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9OSRFramePointer;
@@ -61,8 +63,8 @@ import com.ibm.j9ddr.vm29.pointer.generated.J9SFNativeMethodFramePointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9SFSpecialFramePointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9UTF8Pointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9VMThreadPointer;
-import com.ibm.j9ddr.vm29.pointer.generated.TRBuildFlags;
 import com.ibm.j9ddr.vm29.pointer.helper.J9UTF8Helper;
+import com.ibm.j9ddr.vm29.structure.J9ITable;
 import com.ibm.j9ddr.vm29.structure.J9JITFrame;
 import com.ibm.j9ddr.vm29.structure.J9SFJ2IFrame;
 import com.ibm.j9ddr.vm29.structure.J9SFNativeMethodFrame;
@@ -156,7 +158,7 @@ public class JITStackWalker
 		
 		private static U8Pointer MASK_PC(AbstractPointer ptr)
 		{
-			if (TRBuildFlags.host_S390 && TRBuildFlags.host_32BIT) {
+			if (J9BuildFlags.arch_s390 && !J9BuildFlags.env_data64) {
 				return U8Pointer.cast(UDATA.cast(ptr).bitAnd(0x7FFFFFFF));
 			} else {
 				return U8Pointer.cast(ptr);
@@ -223,7 +225,7 @@ public class JITStackWalker
 								J9MethodPointer inlinedMethod = J9MethodPointer.cast(getInlinedMethod(inlinedCallSite));
 								
 								walkState.method = inlinedMethod;
-								walkState.constantPool = UNTAGGED_METHOD_CP(walkState.method);
+								walkState.constantPool = ConstantPoolHelpers.J9_CP_FROM_METHOD(walkState.method);
 								walkState.bytecodePCOffset = U8Pointer.cast(getCurrentByteCodeIndexAndIsSameReceiver(walkState.jitInfo, VoidPointer.cast(maps.inlineMap), inlinedCallSite, null));
 								jitPrintFrameType(walkState, "JIT inline");
 								
@@ -290,10 +292,6 @@ public class JITStackWalker
 			walkState.arg0EA = walkState.i2jState.a0();
 			returnSP = walkState.i2jState.returnSP();
 			walkState.previousFrameFlags = new UDATA(0);
-			if (returnSP.anyBitsIn(J9_STACK_FLAGS_ARGS_ALIGNED)) {
-				swPrintf(walkState, 2, "I2J args were copied for alignment");
-				walkState.previousFrameFlags = new UDATA(J9_STACK_FLAGS_JIT_ARGS_ALIGNED);
-			}
 			walkState.walkSP = returnSP.untag(3L);
 			swPrintf(walkState, 2, "I2J values: PC = {0}, A0 = {1}, walkSP = {2}, literals = {3}, JIT PC = {4}, pcAddress = {5}, decomp = {6}", 
 					walkState.pc.getHexAddress(),
@@ -405,13 +403,47 @@ public class JITStackWalker
 				walkState.unwindSP = walkState.unwindSP.add(getJitRecompilationResolvePushes());
 			} else if (resolveFrameType.eq(J9_STACK_FLAGS_JIT_LOOKUP_RESOLVE)) {
 				UDATAPointer interfaceObjectAndISlot = UDATAPointer.cast(JIT_RESOLVE_PARM(walkState,2));
-				J9ClassPointer interfaceClass = J9ClassPointer.cast(interfaceObjectAndISlot.at(0));
-				UDATA methodIndex = interfaceObjectAndISlot.at(1);
-				J9ROMMethodPointer romMethod = interfaceClass.romClass().romMethods();
-
-				while (! methodIndex.eq(0)) {
-					romMethod = nextROMMethod(romMethod);
-					methodIndex = methodIndex.sub(1);
+				J9ClassPointer resolvedClass = J9ClassPointer.cast(interfaceObjectAndISlot.at(0));
+				J9ROMMethodPointer romMethod;
+				if (AlgorithmVersion.getVersionOf(AlgorithmVersion.ITABLE_VERSION).getAlgorithmVersion() < 1) {
+					UDATA methodIndex = interfaceObjectAndISlot.at(1);
+					romMethod = resolvedClass.romClass().romMethods();
+					while (! methodIndex.eq(0)) {
+						romMethod = nextROMMethod(romMethod);
+						methodIndex = methodIndex.sub(1);
+					}
+				} else {
+					long iTableOffset = interfaceObjectAndISlot.at(1).longValue();
+					J9MethodPointer ramMethod;
+					if (0 != (iTableOffset & J9_ITABLE_OFFSET_DIRECT)) {
+						ramMethod = J9MethodPointer.cast(iTableOffset).untag(J9_ITABLE_OFFSET_TAG_BITS);
+					} else if (0 != (iTableOffset & J9_ITABLE_OFFSET_VIRTUAL)) {
+						long vTableOffset = iTableOffset & ~J9_ITABLE_OFFSET_TAG_BITS;
+						J9JavaVMPointer vm = walkState.walkThread.javaVM();
+						// C code uses Object from the VM constant pool, but that's not easily
+						// accessible to DDR. Any class will do.
+						J9ClassPointer clazz = vm.booleanArrayClass();
+						ramMethod = J9MethodPointer.cast(PointerPointer.cast(clazz.longValue() + vTableOffset).at(0));
+					} else {
+						long methodIndex = (iTableOffset - J9ITable.SIZEOF) / UDATA.SIZEOF;
+						/* The iTable now contains every method from inherited interfaces.
+						 * Find the appropriate segment for the referenced method within the
+						 * resolvedClass iTable.
+						 */
+						J9ITablePointer allInterfaces = J9ITablePointer.cast(resolvedClass.iTable());
+						for(;;) {
+							J9ClassPointer interfaceClass = allInterfaces.interfaceClass();
+							long methodCount = interfaceClass.romClass().romMethodCount().longValue();
+							if (methodIndex < methodCount) {
+								/* iTable segment located */
+								ramMethod = interfaceClass.ramMethods().add(methodIndex);
+								break;
+							}
+							methodIndex -= methodCount;
+							allInterfaces = allInterfaces.next();
+						}
+					}
+					romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(ramMethod);
 				}
 
 				signature = J9ROMMETHOD_SIGNATURE(romMethod);
@@ -1211,18 +1243,16 @@ public class JITStackWalker
 		private void jitWalkRegisterMap(WalkState walkState, VoidPointer stackMap, J9JITStackAtlasPointer gcStackAtlas) throws CorruptDataException
 		{
 			UDATA registerMap = new UDATA(getJitRegisterMap(walkState.jitInfo, stackMap).bitAnd(J9SW_REGISTER_MAP_MASK));
-			UDATA highWordRegisterMap = new UDATA(getJitHighWordRegisterMap(walkState.jitInfo, stackMap));
 
 			swPrintf(walkState, 200, "\tIn jitWalkRegisterMap. stackMap={0}, gcStackAtlas={1}", Long.toHexString(stackMap.getAddress()), Long.toHexString(gcStackAtlas.getAddress()));
 			
 			swPrintf(walkState, 3, "\tJIT-RegisterMap = {0}", registerMap);
-			swPrintf(walkState, 3, "\tJIT-HighWordRegisterMap = {0}", highWordRegisterMap);
 
 			if (gcStackAtlas.internalPointerMap().notNull()) {
 				registerMap = registerMap.bitAnd(new UDATA(INTERNAL_PTR_REG_MASK).bitNot());
 			}
 
-			if (! registerMap.eq(0) || ! highWordRegisterMap.eq(0)) {
+			if (! registerMap.eq(0)) {
 				int count = (int)J9SW_POTENTIAL_SAVED_REGISTERS;
 				int mapCursor = 0;
 
@@ -1251,54 +1281,6 @@ public class JITStackWalker
 						if (! oldObject.eq(newObject)) {
 							swPrintf(walkState, 4, "\t\t\t-> {0}\n", newObject);
 						}
-					} else if (J9BuildFlags.jit_highWordRegisters && J9BuildFlags.gc_compressedPointers && highWordRegisterMap.anyBitsIn(3)) {
-						/* check low word and high word registers separately */
-						if (highWordRegisterMap.anyBitsIn(1)) {
-							/* we have a 32-bit compressed reference living in the low word of GPR */
-							/* low word is at higher offset*/							
-							ObjectReferencePointer targetObject = ObjectReferencePointer.cast(walkState.registerEAs[mapCursor].addOffset(4));
-							J9ObjectPointer oldObject = targetObject.isNull() ? J9ObjectPointer.NULL : J9ObjectPointer.cast(targetObject.at(0));
-							J9ObjectPointer newObject;
-							swPrintf(walkState, 4, "\t\tJIT-RegisterMap-O-Slot[{0}] = {1} ({2}) (Low word)", targetObject.getHexAddress(), oldObject.getHexAddress(), jitRegisterNames[mapCursor]);
-							walkState.callBacks.objectSlotWalkFunction(walkState.walkThread, walkState, PointerPointer.cast(targetObject), VoidPointer.NULL);
-							
-							newObject = targetObject.isNull() ? J9ObjectPointer.NULL : J9ObjectPointer.cast(targetObject.at(0));
-							
-							if (! oldObject.eq(newObject)) {
-								swPrintf(walkState, 4, "\t\t\t-> {0}\n", newObject);
-							}
-							/* check high word for I-slot */
-							if (!highWordRegisterMap.anyBitsIn(2)) {	
-								U32Pointer targetSlot = U32Pointer.cast(walkState.registerEAs[mapCursor]);
-								
-								if (targetSlot.notNull()) {
-									swPrintf(walkState, 5, "\t\tJIT-RegisterMap-I-Slot[{0}] = {1} ({2}) (High word)", targetSlot.getHexAddress(), targetSlot.at(0), jitRegisterNames[mapCursor]);
-								}
-							}	
-						}
-						if (highWordRegisterMap.anyBitsIn(2)) {
-							/* we have a 32-bit compressed reference living in the high word of GPR */													
-							ObjectReferencePointer targetObject = ObjectReferencePointer.cast(walkState.registerEAs[mapCursor]);
-							J9ObjectPointer oldObject = targetObject.isNull() ? J9ObjectPointer.NULL : J9ObjectPointer.cast(targetObject.at(0));
-							J9ObjectPointer newObject;
-							swPrintf(walkState, 4, "\t\tJIT-RegisterMap-O-Slot[{0}] = {1} ({2}) (High word)", targetObject.getHexAddress(), oldObject.getHexAddress(), jitRegisterNames[mapCursor]);
-							walkState.callBacks.objectSlotWalkFunction(walkState.walkThread, walkState, PointerPointer.cast(targetObject), VoidPointer.NULL);
-							
-							newObject = targetObject.isNull() ? J9ObjectPointer.NULL : J9ObjectPointer.cast(targetObject.at(0));
-							
-							if (! oldObject.eq(newObject)) {
-								swPrintf(walkState, 4, "\t\t\t-> {0}\n", newObject);
-							}
-							
-							/* check low word for I-slot */
-							if (!highWordRegisterMap.anyBitsIn(1)) {	
-								U32Pointer targetSlot = U32Pointer.cast(walkState.registerEAs[mapCursor].addOffset(4));
-								
-								if (targetSlot.notNull()) {
-									swPrintf(walkState, 5, "\t\tJIT-RegisterMap-I-Slot[{0}] = {1} ({2}) (Low word)", targetSlot.getHexAddress(), targetSlot.at(0), jitRegisterNames[mapCursor]);
-								}
-							}								
-						}
 					} else {
 						UDATAPointer targetSlot = walkState.registerEAs[mapCursor];
 
@@ -1311,7 +1293,6 @@ public class JITStackWalker
 					++(walkState.slotIndex);
 					--count;
 					registerMap = registerMap.rightShift(1);
-					highWordRegisterMap = highWordRegisterMap.rightShift(2);
 					
 					if (J9SW_REGISTER_MAP_WALK_REGISTERS_LOW_TO_HIGH) {
 						++mapCursor;

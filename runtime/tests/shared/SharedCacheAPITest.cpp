@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2014 IBM Corp. and others
+ * Copyright (c) 2001, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -48,9 +48,14 @@ getCacheDir(J9JavaVM *vm, char *cacheDir)
 	PORT_ACCESS_FROM_JAVAVM(vm);
 	IDATA rc;
 	char cacheDirNoTestBasedir[J9SH_MAXPATH];
+	U_32 flags = J9SHMEM_GETDIR_APPEND_BASEDIR;
 
-	rc = j9shmem_getDir(NULL, FALSE, cacheDirNoTestBasedir, J9SH_MAXPATH);
-	if (rc == -1) {
+#if defined(OPENJ9_BUILD)
+	flags |= J9SHMEM_GETDIR_USE_USERHOME;
+#endif /* defined(OPENJ9_BUILD) */
+
+	rc = j9shmem_getDir(NULL, flags, cacheDirNoTestBasedir, J9SH_MAXPATH);
+	if (rc < 0) {
 		j9tty_printf(PORTLIB, "Cannot get a directory\n");
 	}
 
@@ -125,6 +130,7 @@ createTestCache(J9JavaVM* vm, J9SharedClassPreinitConfig *piconfig, J9SharedClas
 
 		memset(sharedClassConfig->cacheDescriptorList, 0, sizeof(J9SharedClassCacheDescriptor));
 		sharedClassConfig->cacheDescriptorList->next = sharedClassConfig->cacheDescriptorList;
+		sharedClassConfig->cacheDescriptorList->previous = sharedClassConfig->cacheDescriptorList;
 
 		vm->sharedClassConfig = sharedClassConfig;
 		vm->sharedClassPreinitConfig = piconfig;
@@ -141,7 +147,9 @@ createTestCache(J9JavaVM* vm, J9SharedClassPreinitConfig *piconfig, J9SharedClas
 		cacheMap[i] = SH_CacheMap::newInstance(vm, sharedClassConfig, (SH_CacheMap*)memory, cacheInfoList[i].name, cacheType);
 
 		bool cacheHasIntegrity;
+		UnitTest::unitTest = UnitTest::SHAREDCACHE_API_TEST;
 		rc = cacheMap[i]->startup(vm->mainThread, piconfig, cacheInfoList[i].name, cacheInfoList[i].cacheDir, J9SH_DIRPERM_ABSENT, NULL, &cacheHasIntegrity);
+		UnitTest::unitTest = UnitTest::NO_TEST;
 		if (rc != 0) {
 			j9tty_printf(PORTLIB, "CacheMap.startup() failed\n");
 			rc = FAIL;
@@ -191,6 +199,7 @@ countSharedCacheCallback(J9JavaVM *vm, J9SharedCacheInfo *cacheInfo, void *userD
 		j9tty_printf(PORTLIB, "cacheType:: %d\t", cacheInfo->cacheType);
 		j9tty_printf(PORTLIB, "isCompatible: %d\t", cacheInfo->isCompatible);
 		j9tty_printf(PORTLIB, "modLevel: %d\t", cacheInfo->modLevel);
+		j9tty_printf(PORTLIB, "layer: %d\t", cacheInfo->layer);
 		j9tty_printf(PORTLIB, "address mode: %d\t", cacheInfo->addrMode);
 		j9tty_printf(PORTLIB, "isCorrupt: %d\n", cacheInfo->isCorrupt);
 		for (i = 0; i < (NUM_CACHE + NUM_SNAPSHOT); i++) {
@@ -212,11 +221,11 @@ validateSharedCacheCallback(J9JavaVM *vm, J9SharedCacheInfo *cacheInfo, void *us
 
 	cacheCount++;
 
-#if defined(J9VM_ENV_DATA64) && defined(J9VM_GC_COMPRESSED_POINTERS)
-	addrMode |= COM_IBM_ITERATE_SHARED_CACHES_COMPRESSED_POINTERS_MODE;
-#else
-	addrMode |= COM_IBM_ITERATE_SHARED_CACHES_NON_COMPRESSED_POINTERS_MODE;
-#endif /* defined(J9VM_ENV_DATA64) && defined(J9VM_GC_COMPRESSED_POINTERS) */
+	if (J9JAVAVM_COMPRESS_OBJECT_REFERENCES(vm)) {
+		addrMode |= COM_IBM_ITERATE_SHARED_CACHES_COMPRESSED_POINTERS_MODE;
+	} else {
+		addrMode |= COM_IBM_ITERATE_SHARED_CACHES_NON_COMPRESSED_POINTERS_MODE;
+	}
 
 	/* calculate cache size for empty cache */
 	if (J9PORT_SHR_CACHE_TYPE_PERSISTENT == cacheInfo->cacheType) {
@@ -238,6 +247,7 @@ validateSharedCacheCallback(J9JavaVM *vm, J9SharedCacheInfo *cacheInfo, void *us
 			&& (J9SH_OSCACHE_UNKNOWN == (IDATA)cacheInfo->cacheSize)
 			&& (J9SH_OSCACHE_UNKNOWN == (IDATA)cacheInfo->freeBytes)
 			&& (J9SH_OSCACHE_UNKNOWN == (IDATA)cacheInfo->softMaxBytes)
+			&& (0 == cacheInfo->layer)
 		) {
 			cacheInfoList[NUM_CACHE].found = TRUE;
 		}
@@ -255,8 +265,10 @@ validateSharedCacheCallback(J9JavaVM *vm, J9SharedCacheInfo *cacheInfo, void *us
 				(CACHE_SIZE != cacheInfo->softMaxBytes) ||
 				(cacheInfo->freeBytes != (cacheSize - cacheInfoList[i].debugBytes)) ||
 				(cacheInfo->addrMode != addrMode) ||
-				(cacheInfo->modLevel != getShcModlevelForJCL(J2SE_VERSION(vm)) ||
-				(cacheInfo->lastDetach <= 0))) {
+				(cacheInfo->modLevel != getShcModlevelForJCL(J2SE_VERSION(vm))) ||
+				(cacheInfo->lastDetach <= 0) ||
+				(0 != cacheInfo->layer)
+			) {
 				continue;
 			}
 
@@ -328,6 +340,7 @@ runTestCycle(J9JavaVM *vm, J9SharedClassPreinitConfig *piconfig, J9SharedClassCo
 	memset(sharedClassConfig, 0, sizeof(J9SharedClassConfig));
 	sharedClassConfig->ctrlDirName = cacheDir;
 
+	UDATA orgTest = UnitTest::unitTest;
 	testCacheCount = 0;
 	cacheCount = 0;
 	j9tty_printf(PORTLIB, "Existing cache information:\n");
@@ -392,7 +405,7 @@ runTestCycle(J9JavaVM *vm, J9SharedClassPreinitConfig *piconfig, J9SharedClassCo
 	}
 
 exit:
-	UnitTest::unitTest = UnitTest::NO_TEST;
+	UnitTest::unitTest = orgTest;
 	return rc;
 }
 

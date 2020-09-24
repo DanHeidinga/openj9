@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -50,7 +50,7 @@ static U_8 attributeTagFor (J9CfrConstantPoolInfo *utf8, BOOLEAN stripDebugAttri
 static I_32 readAnnotations (J9CfrClassFile * classfile, J9CfrAnnotation * pAnnotations, U_32 annotationCount, U_8 * data, U_8 * dataEnd, U_8 * segment, U_8 * segmentEnd, U_8 ** pIndex, U_8 ** pFreePointer, U_32 flags);
 static I_32 readTypeAnnotation (J9CfrClassFile * classfile, J9CfrTypeAnnotation * pAnnotations, U_8 * data, U_8 * dataEnd, U_8 * segment, U_8 * segmentEnd, U_8 ** pIndex, U_8 ** pFreePointer, U_32 flags);
 static I_32 readAnnotationElement (J9CfrClassFile * classfile, J9CfrAnnotationElement ** pAnnotationElement, U_8 * data, U_8 * dataEnd, U_8 * segment, U_8 * segmentEnd, U_8 ** pIndex, U_8 ** pFreePointer, U_32 flags);
-static I_32 checkClassVersion (J9CfrClassFile* classfile, U_8* segment, U_32 vmVersionShifted);
+static I_32 checkClassVersion (J9CfrClassFile* classfile, U_8* segment, U_32 vmVersionShifted, U_32 flags);
 static BOOLEAN utf8EqualUtf8 (J9CfrConstantPoolInfo *utf8a, J9CfrConstantPoolInfo *utf8b);
 static BOOLEAN utf8Equal (J9CfrConstantPoolInfo* utf8, char* string, UDATA length);
 static I_32 readMethods (J9CfrClassFile* classfile, U_8* data, U_8* dataEnd, U_8* segment, U_8* segmentEnd, U_8** pIndex, U_8** pFreePointer, U_32 flags);
@@ -144,10 +144,12 @@ readAttributes(J9CfrClassFile * classfile, J9CfrAttribute *** pAttributes, U_32 
 	J9CfrTypeAnnotation *typeAnnotations = NULL;
 	J9CfrAttributeStackMap *stackMap;
 	J9CfrAttributeBootstrapMethods *bootstrapMethods;
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+	J9CfrAttributeRecord *record;
+	J9CfrAttributePermittedSubclasses *permittedSubclasses;
+#if JAVA_SPEC_VERSION >= 11
 	J9CfrAttributeNestHost *nestHost;
 	J9CfrAttributeNestMembers *nestMembers;
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 	U_32 name, length;
 	U_32 tag, errorCode, offset;
 	U_8 *end;
@@ -164,9 +166,11 @@ readAttributes(J9CfrClassFile * classfile, J9CfrAttribute *** pAttributes, U_32 
 	BOOLEAN invisibleAnnotationsRead  = FALSE;
 	BOOLEAN visibleParameterAnnotationsRead  = FALSE;
 	BOOLEAN invisibleParameterAnnotationsRead  = FALSE;
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+	BOOLEAN recordAttributeRead = FALSE;
+	BOOLEAN permittedSubclassesAttributeRead = FALSE;
+#if JAVA_SPEC_VERSION >= 11
 	BOOLEAN nestAttributeRead = FALSE;
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 
 	if (NULL != syntheticFound) {
 		*syntheticFound = FALSE;
@@ -179,7 +183,7 @@ readAttributes(J9CfrClassFile * classfile, J9CfrAttribute *** pAttributes, U_32 
 		NEXT_U32(length, index);
 		end = index + length;
 
-		if ((!name) || (name > classfile->constantPoolCount)) {
+		if ((!name) || (name >= classfile->constantPoolCount)) {
 			errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 			offset = address;
 			goto _errorFound;
@@ -416,29 +420,63 @@ readAttributes(J9CfrClassFile * classfile, J9CfrAttribute *** pAttributes, U_32 
 			}
 
 			annotations = (J9CfrAttributeRuntimeVisibleAnnotations *)attrib;
+			annotations->numberOfAnnotations = 0;
+			annotations->annotations = NULL;
 			annotations->rawAttributeData = NULL;
 			annotations->rawDataLength = 0; /* 0 indicates attribute is well-formed */
-			CHECK_EOF(2);
-			NEXT_U16(annotations->numberOfAnnotations, index);
 
-			if (!ALLOC_ARRAY(annotations->annotations, annotations->numberOfAnnotations, J9CfrAnnotation))
-			{
-				return BCT_ERR_OUT_OF_ROM;
+			/* In the case of a malformed attribute numberOfAnnotations may not exist even if the file did not end. 
+			 * There must be at least two bytes to have a valid numberOfAnnotations.
+			 * Length of 0 will be treated as an error below. Length of 1 will be an error as well since the index
+			 * will not match the end value.
+			 */
+			if (length > 1) {
+				CHECK_EOF(2);
+				NEXT_U16(annotations->numberOfAnnotations, index);
+
+				if (!ALLOC_ARRAY(annotations->annotations, annotations->numberOfAnnotations, J9CfrAnnotation)) {
+					return BCT_ERR_OUT_OF_ROM;
+				}
+
+				result = readAnnotations(classfile, annotations->annotations, annotations->numberOfAnnotations, data, dataEnd, segment, segmentEnd, &index, &freePointer, flags);
 			}
 
-			result = readAnnotations(classfile, annotations->annotations, annotations->numberOfAnnotations, data, dataEnd, segment, segmentEnd, &index, &freePointer, flags);
-			if ((BCT_ERR_NO_ERROR != result) || (index != end)) {
+			if (BCT_ERR_OUT_OF_ROM == result) {
+				/* Return out of memory error code to allocate larger buffer for classfile */
+				return result;
+			} else if ((BCT_ERR_NO_ERROR != result) || (0 == length) || (index != end)) {
 				U_32 cursor = 0;
 				Trc_BCU_MalformedAnnotation(address);
 
-				annotations->rawDataLength = length;
-				if (!ALLOC_ARRAY(annotations->rawAttributeData, length, U_8)) {
-					return BCT_ERR_OUT_OF_ROM;
+				/* Capture the errors with type_name_index & const_name_index in enum_const_value against the VM Spec */
+				if (BCT_ERR_INVALID_ANNOTATION_BAD_CP_INDEX_OUT_OF_RANGE == result) {
+					errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
+					offset = address;
+					goto _errorFound;
+				} else if (BCT_ERR_INVALID_ANNOTATION_BAD_CP_UTF8_STRING == result) {
+					errorCode = J9NLS_CFR_ERR_BAD_NAME_INDEX__ID;
+					offset = address;
+					goto _errorFound;
 				}
-				index = attributeStart; /* rewind to the start of the attribute */
-				for (cursor = 0; cursor < annotations->rawDataLength; ++cursor) {
-					CHECK_EOF(1);
-					NEXT_U8(annotations->rawAttributeData[cursor], index);
+
+				if (0 == length) {
+					/* rawDataLength should be zero to indicate an error. Add an extra byte to the annotation 
+					 * to indicate an error. This case will not be common. */
+					annotations->rawDataLength = 1;
+					if (!ALLOC_ARRAY(annotations->rawAttributeData, 1, U_8)) {
+						return BCT_ERR_OUT_OF_ROM;
+					}
+					annotations->rawAttributeData[0] = 0;
+				} else {
+					annotations->rawDataLength = length;
+					if (!ALLOC_ARRAY(annotations->rawAttributeData, length, U_8)) {
+						return BCT_ERR_OUT_OF_ROM;
+					}
+					index = attributeStart; /* rewind to the start of the attribute */
+					for (cursor = 0; cursor < annotations->rawDataLength; ++cursor) {
+						CHECK_EOF(1);
+						NEXT_U8(annotations->rawAttributeData[cursor], index);
+					}
 				}
 			}
 		}
@@ -528,7 +566,8 @@ readAttributes(J9CfrClassFile * classfile, J9CfrAttribute *** pAttributes, U_32 
 
 				result = readAnnotations(classfile, parameterAnnotations->annotations,	parameterAnnotations->numberOfAnnotations, data, dataEnd,
 						segment, segmentEnd, &index, &freePointer, flags);
-				if (result != 0) {
+
+				if (BCT_ERR_NO_ERROR != result) {
 					break;
 				}
 			}
@@ -536,7 +575,10 @@ readAttributes(J9CfrClassFile * classfile, J9CfrAttribute *** pAttributes, U_32 
 			 * num_parameters == 0 means there is no parameter for this method and naturally no annotations 
 			 * for these parameters, in which case the code should treat this attribute as bad and ignore it.
 			 */
-			if ((BCT_ERR_NO_ERROR != result) || (index != end) || (0 == annotations->numberOfParameters)) {
+			if (BCT_ERR_OUT_OF_ROM == result) {
+				/* Return out of memory error code to allocate larger buffer for classfile */
+				return result;
+			} else if ((BCT_ERR_NO_ERROR != result) || (index != end) || (0 == annotations->numberOfParameters)) {
 				U_32 cursor = 0;
 				/*
 				 * give up parsing.
@@ -613,52 +655,108 @@ readAttributes(J9CfrClassFile * classfile, J9CfrAttribute *** pAttributes, U_32 
 				return -2;
 			}
 			annotations = (J9CfrAttributeRuntimeVisibleTypeAnnotations *)attrib;
+			annotations->numberOfAnnotations = 0;
+			annotations->typeAnnotations = NULL;
 			annotations->rawAttributeData = NULL;
 			annotations->rawDataLength = 0; /* 0 indicates attribute is well-formed */
-			CHECK_EOF(2);
-			NEXT_U16(annotations->numberOfAnnotations, index);
-			if (!ALLOC_ARRAY(annotations->typeAnnotations, annotations->numberOfAnnotations, J9CfrTypeAnnotation))
-			{
-				return -2;
-			}
-			typeAnnotations = annotations->typeAnnotations;
-			/*
-			 * we are now at the start of the first type_annotation
-			 * Silently ignore errors.
+
+			/* In the case of a malformed attribute numberOfAnnotations may not exist even if the file did not end. 
+			 * There must be at least two bytes to have a valid numberOfAnnotations.
+			 * Length of 0 will be treated as an error below. Length of 1 will be an error as well since the index
+			 * will not match the end value.
 			 */
-			for (j = 0; j < annotations->numberOfAnnotations; j++, typeAnnotations++) {
-				result = readTypeAnnotation(classfile, typeAnnotations, data, dataEnd, segment, segmentEnd, &index, &freePointer, flags);
-				if (result != 0) {
-					break;
+			if (length > 1) {
+				CHECK_EOF(2);
+				NEXT_U16(annotations->numberOfAnnotations, index);
+
+				if (!ALLOC_ARRAY(annotations->typeAnnotations, annotations->numberOfAnnotations, J9CfrTypeAnnotation)) {
+					return -2;
+				}
+				typeAnnotations = annotations->typeAnnotations;
+				/*
+				* we are now at the start of the first type_annotation
+				* Silently ignore errors.
+				*/
+				for (j = 0; j < annotations->numberOfAnnotations; j++, typeAnnotations++) {
+					result = readTypeAnnotation(classfile, typeAnnotations, data, dataEnd, segment, segmentEnd, &index, &freePointer, flags);
+					if (BCT_ERR_NO_ERROR != result) {
+						break;
+					}
 				}
 			}
-			if ((BCT_ERR_NO_ERROR != result) || (index != end)) {
-				U_32 cursor = 0;
+
+			if (BCT_ERR_OUT_OF_ROM == result) {
+				/* Return out of memory error code to allocate larger buffer for classfile */
+				return result;
+			} else if ((BCT_ERR_NO_ERROR != result) || (0 == length) || (index != end)) {
 				/*
-				 * give up parsing.
+				 * Give up parsing.
+				 * 
 				 * Copy the raw data, insert a bogus type_annotation,
-				 * i.e. an illegal target_type byte immediately after the num_annotations field,
-				 * to indicate that the attribute is malformed.
+				 * i.e. an illegal target_type byte immediately after the num_annotations field
+				 * to indicate that the attribute is malformed. The remaining raw data should follow
+				 * the illegal target_type.
+				 * 
+				 * The minimum number of raw data bytes needed to create a bogus type_annotation is:
+				 * num_annotations (2 bytes)
+				 * target_type (1 byte)
+				 * extra raw data (at least 1 byte)
+				 * 
+				 * Length will be adjusted during rawAttributeData assignment if it is determined that 
+				 * an extra slot is not needed.
 				 */
+				const U_32 minimumRawDataBytes = 4;
+
 				Trc_BCU_MalformedTypeAnnotation(address);
-				if (!ALLOC_ARRAY(annotations->rawAttributeData, length + 1, U_8)) {
+
+				annotations->rawDataLength = OMR_MAX(minimumRawDataBytes, length + 1);
+
+				if (!ALLOC_ARRAY(annotations->rawAttributeData, annotations->rawDataLength, U_8)) {
 					return -2;
 				}
 				index = attributeStart; /* rewind to the start of the attribute */
-				NEXT_U16(annotations->rawAttributeData[0], index); /* put in the num_annotations */
-				NEXT_U8(annotations->rawAttributeData[2], index);
-				if (CFR_TARGET_TYPE_ErrorInAttribute != annotations->rawAttributeData[2]) {
-					/* insert an error marker */
-					annotations->rawAttributeData[3] = annotations->rawAttributeData[2];
-					annotations->rawAttributeData[2] = CFR_TARGET_TYPE_ErrorInAttribute;
-					annotations->rawDataLength = length + 1;
-				} else { /* the attribute is already marked bad */
-					NEXT_U8(annotations->rawAttributeData[3], index);
-					annotations->rawDataLength = length;
+
+				/* read num_annotations or set dummy if these bytes do not exist. */
+				if (length >= 2) {
+					NEXT_U16(annotations->rawAttributeData[0], index);
+				} else {
+					/* there should be at least one type_annotation here for the illegal 
+					 * entry that is being created. */
+					annotations->rawAttributeData[0] = 0;
+					annotations->rawAttributeData[1] = 1;
 				}
-				for (cursor = 4; cursor < annotations->rawDataLength; ++cursor) {
-					CHECK_EOF(1);
-					NEXT_U8(annotations->rawAttributeData[cursor], index);
+
+				/* Insert illegal target_type followed by remaining raw data. */
+				if (index == end) {
+					/* There is no remaining raw data. */
+					annotations->rawAttributeData[2] = CFR_TARGET_TYPE_ErrorInAttribute;
+
+					/* Adjust rawDataLength since there was no need to insert an extra byte. */
+					annotations->rawDataLength -= 1;
+				} else {
+					/* cursor is the starting point in raw data array to write remaining raw data. */
+					U_32 cursor = 0;
+
+					NEXT_U8(annotations->rawAttributeData[2], index);
+
+					if (CFR_TARGET_TYPE_ErrorInAttribute != annotations->rawAttributeData[2]) {
+						/* insert an error marker */
+						annotations->rawAttributeData[3] = annotations->rawAttributeData[2];
+						annotations->rawAttributeData[2] = CFR_TARGET_TYPE_ErrorInAttribute;
+						cursor = 4;
+					} else { 
+						/* The attribute is already marked bad.
+						 * Adjust rawDataLength since there was no need to insert an extra byte.
+						 */
+						annotations->rawDataLength -= 1;
+						cursor = 3;
+					}
+
+					while (index != end) {
+						CHECK_EOF(1);
+						NEXT_U8(annotations->rawAttributeData[cursor], index);
+						cursor++;
+					}
 				}
 			}
 
@@ -754,7 +852,74 @@ readAttributes(J9CfrClassFile * classfile, J9CfrAttribute *** pAttributes, U_32 
 			index += stackMap->mapLength;
 			
 			break;
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+		case CFR_ATTRIBUTE_Record:
+			/* JVMS 4.7.30: There may be at most one Record attribute in the attributes table of a ClassFile structure. */
+			if (recordAttributeRead){
+				errorCode = J9NLS_CFR_ERR_MULTIPLE_RECORD_ATTRIBUTES__ID;
+				offset = address;
+				goto _errorFound;
+			}
+			recordAttributeRead = TRUE;
+
+			/* set classfile flag for record class (used by cfdumper) */
+			classfile->j9Flags |= CFR_J9FLAG_IS_RECORD;
+
+			if (!ALLOC(record, J9CfrAttributeRecord)) {
+				return -2;
+			}
+			attrib = (J9CfrAttribute*)record;
+
+			CHECK_EOF(2);
+			NEXT_U16(record->numberOfRecordComponents, index);
+
+			if (!ALLOC_ARRAY(record->recordComponents, record->numberOfRecordComponents, J9CfrRecordComponent)) {
+				return -2;
+			}
+			for (j = 0; j < record->numberOfRecordComponents; j++) {
+				J9CfrRecordComponent* recordComponent = &(record->recordComponents[j]);
+				CHECK_EOF(6);
+				NEXT_U16(recordComponent->nameIndex, index);
+				NEXT_U16(recordComponent->descriptorIndex, index);
+				NEXT_U16(recordComponent->attributesCount, index);
+				if (!ALLOC_ARRAY(recordComponent->attributes, recordComponent->attributesCount, J9CfrAttribute *)) {
+					return -2;
+				}
+				result = readAttributes(classfile, &(recordComponent->attributes), recordComponent->attributesCount, data, dataEnd, segment, segmentEnd, &index, &freePointer, flags, NULL);
+				if (result != 0) {
+					return result;
+				}
+			}
+			break;
+		case CFR_ATTRIBUTE_PermittedSubclasses:
+			/* JVMS: There may be at most one PermittedSubclasses attribute in the attributes table of a ClassFile structure... */
+			if (permittedSubclassesAttributeRead) {
+				errorCode = J9NLS_CFR_ERR_MULTIPLE_PERMITTEDSUBCLASSES_ATTRIBUTES__ID;
+				offset = address;
+				goto _errorFound;
+			}
+			permittedSubclassesAttributeRead = TRUE;
+
+			/* set classfile flag for sealed class (used by cfdumper) */
+			classfile->j9Flags |= CFR_J9FLAG_IS_SEALED;
+
+			if (!ALLOC(permittedSubclasses, J9CfrAttributePermittedSubclasses)) {
+				return -2;
+			}
+			attrib = (J9CfrAttribute*)permittedSubclasses;
+
+			CHECK_EOF(2);
+			NEXT_U16(permittedSubclasses->numberOfClasses, index);
+
+			if (!ALLOC_ARRAY(permittedSubclasses->classes, permittedSubclasses->numberOfClasses, U_16)) {
+				return -2;
+			}
+			for (j = 0; j < permittedSubclasses->numberOfClasses; j++) {
+				CHECK_EOF(2);
+				NEXT_U16(permittedSubclasses->classes[j], index);
+			}
+			break;
+
+#if JAVA_SPEC_VERSION >= 11
 		case CFR_ATTRIBUTE_NestHost:
 			if (nestAttributeRead) {
 				errorCode = J9NLS_CFR_ERR_MULTIPLE_NEST_ATTRIBUTES__ID;
@@ -801,7 +966,7 @@ readAttributes(J9CfrClassFile * classfile, J9CfrAttribute *** pAttributes, U_32 
 			}
 			break;
 		}
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 
 		case CFR_ATTRIBUTE_StrippedLineNumberTable:
 		case CFR_ATTRIBUTE_StrippedLocalVariableTable:
@@ -1474,7 +1639,7 @@ checkFields(J9CfrClassFile * classfile, U_8 * segment, U_32 flags)
 
 		offset = 2;
 		value = field->nameIndex;
-		if ((!value) || (value > classfile->constantPoolCount)) {
+		if ((!value) || (value >= classfile->constantPoolCount)) {
 			errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 			goto _errorFound;
 		}
@@ -1486,7 +1651,7 @@ checkFields(J9CfrClassFile * classfile, U_8 * segment, U_32 flags)
 
 		offset = 4;
 		value = field->descriptorIndex;
-		if ((!value) || (value > classfile->constantPoolCount)) {
+		if ((!value) || (value >= classfile->constantPoolCount)) {
 			errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 			goto _errorFound;
 		}
@@ -1559,7 +1724,7 @@ checkMethods(J9CfrClassFile* classfile, U_8* segment, U_32 vmVersionShifted, U_3
 		/* Can we trust the name index? */
 		nameIndexOK = TRUE;
 		value = method->nameIndex;
-		if ((!value) || (value > classfile->constantPoolCount)) {
+		if ((!value) || (value >= classfile->constantPoolCount)) {
 			nameIndexOK = FALSE;
 		} else if (classfile->constantPool[value].tag != CFR_CONSTANT_Utf8) {
 			nameIndexOK = FALSE;
@@ -1596,7 +1761,8 @@ checkMethods(J9CfrClassFile* classfile, U_8* segment, U_32 vmVersionShifted, U_3
 				method->accessFlags |= CFR_ACC_STATIC;
 
 			/* Leave this here to find usages of the following check:
-			 * if (J2SE_VERSION(vm) >= J2SE_19) { 
+			 * J2SE_19 has been deprecated and replaced with J2SE_V11
+			 * if (J2SE_VERSION(vm) >= J2SE_V11) { 
 			 */
 			} else if (vmVersionShifted >= BCT_Java9MajorVersionShifted) {
 				if (J9_ARE_NO_BITS_SET(method->accessFlags, CFR_ACC_STATIC)) {
@@ -1691,7 +1857,7 @@ _nameCheck:
 		/* Name check. */
 		value = method->nameIndex;
 		if (!nameIndexOK) {
-			if ((!value) || (value > classfile->constantPoolCount)) {
+			if ((!value) || (value >= classfile->constantPoolCount)) {
 				errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 				goto _errorFound;
 			}
@@ -1705,7 +1871,7 @@ _nameCheck:
 		offset = 4;
 		/* Check signature. */
 		value = method->descriptorIndex;
-		if ((!value) || (value > classfile->constantPoolCount)) {
+		if ((!value) || (value >= classfile->constantPoolCount)) {
 			errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 			goto _errorFound;
 		}
@@ -1760,6 +1926,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 	U_32 i, j, k;
 	UDATA foundStackMap = FALSE;
 	BOOLEAN bootstrapMethodAttributeRead = FALSE;
+	BOOLEAN enablePermittedSubclassErrors = FALSE;
 
 	errorType = CFR_ThrowClassFormatError;
 	cpBase = classfile->constantPool;
@@ -1770,7 +1937,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 		switch(attrib->tag) {
 		case CFR_ATTRIBUTE_SourceFile:
 			value = ((J9CfrAttributeSourceFile*)attrib)->sourceFileIndex;
-			if((!value)||(value > cpCount)) {
+			if((!value)||(value >= cpCount)) {
 				errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 				goto _errorFound;
 			}				
@@ -1782,7 +1949,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 
 		case CFR_ATTRIBUTE_Signature:
 			value = ((J9CfrAttributeSignature*)attrib)->signatureIndex;
-			if((0 == value)||(value > cpCount)) {
+			if((0 == value)||(value >= cpCount)) {
 				errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 				goto _errorFound;
 			}				
@@ -1794,7 +1961,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 
 		case CFR_ATTRIBUTE_ConstantValue:
 			value = ((J9CfrAttributeConstantValue*)attrib)->constantValueIndex;
-			if((0 == value)||(value > cpCount)) {
+			if((0 == value)||(value >= cpCount)) {
 				errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 				goto _errorFound;
 			}
@@ -1822,7 +1989,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 			for(j = 0; j < code->exceptionTableLength; j++) {
 				exception = &(code->exceptionTable[j]);
 				value = exception->catchType;
-				if(value > cpCount) {
+				if(value >= cpCount) {
 					errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 					goto _errorFound;
 				}
@@ -1841,7 +2008,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 			exceptions = (J9CfrAttributeExceptions*)attrib;
 			for(j = 0; j < exceptions->numberOfExceptions; j++) {
 				value = exceptions->exceptionIndexTable[j];
-				if((0 == value)||(value > cpCount)) {
+				if((0 == value)||(value >= cpCount)) {
 					errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 					goto _errorFound;
 				}
@@ -1881,33 +2048,38 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 				}							
 
 				value = ((J9CfrAttributeLocalVariableTable*)attrib)->localVariableTable[j].nameIndex;
-				if((0 == value)||(value > cpCount)) {
+				if((0 == value)||(value >= cpCount)) {
 					errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 					goto _errorFound;
 				}
-				if((cpBase)&&(cpBase[value].tag != CFR_CONSTANT_Utf8)) {
-					errorCode = J9NLS_CFR_ERR_LOCAL_VARIABLE_NAME_NOT_UTF8__ID;
-					goto _errorFound;
-				}
-
-				if ((flags & CFR_Xfuture) && (bcvCheckName(&cpBase[value]))) {
-					errorCode = J9NLS_CFR_ERR_LOCAL_VARIABLE_NAME__ID;
-					goto _errorFound;
+				if(cpBase) {
+					if(cpBase[value].tag != CFR_CONSTANT_Utf8) {
+						errorCode = J9NLS_CFR_ERR_LOCAL_VARIABLE_NAME_NOT_UTF8__ID;
+						goto _errorFound;
+					}
+					if((flags & CFR_Xfuture) && (bcvCheckName(&cpBase[value]))) {
+						errorCode = J9NLS_CFR_ERR_LOCAL_VARIABLE_NAME__ID;
+						goto _errorFound;
+					}
 				}
 
 				value = ((J9CfrAttributeLocalVariableTable*)attrib)->localVariableTable[j].descriptorIndex;
-				if((0 == value)||(value > cpCount)) {
+				if((0 == value)||(value >= cpCount)) {
 					errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 					goto _errorFound;
 				}
-				if((cpBase)&&(cpBase[value].tag != CFR_CONSTANT_Utf8)) {
-					errorCode = J9NLS_CFR_ERR_LOCAL_VARIABLE_SIGNATURE_NOT_UTF8__ID;
-					goto _errorFound;
+				if(cpBase) {
+					if(cpBase[value].tag != CFR_CONSTANT_Utf8) {
+						errorCode = J9NLS_CFR_ERR_LOCAL_VARIABLE_SIGNATURE_NOT_UTF8__ID;
+						goto _errorFound;
+					}
+					if(j9bcv_checkFieldSignature(&cpBase[value], 0)) {
+						errorCode = J9NLS_CFR_ERR_LOCAL_VARIABLE_SIGNATURE_INVALID__ID;
+						goto _errorFound;
+					}
 				}
-				if(j9bcv_checkFieldSignature(&cpBase[value], 0)) {
-					errorCode = J9NLS_CFR_ERR_LOCAL_VARIABLE_SIGNATURE_INVALID__ID;
-					goto _errorFound;
-				}
+
+				/* index range verification happens in ClassFileOracle.cpp with Xfuture */
 			}
 			break;
 
@@ -1925,17 +2097,23 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 				}							
 
 				value = ((J9CfrAttributeLocalVariableTypeTable*)attrib)->localVariableTypeTable[j].nameIndex;
-				if((0 == value)||(value > cpCount)) {
+				if((0 == value)||(value >= cpCount)) {
 					errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 					goto _errorFound;
 				}
-				if((cpBase)&&(cpBase[value].tag != CFR_CONSTANT_Utf8)) {
-					errorCode = J9NLS_CFR_ERR_LOCAL_VARIABLE_NAME_NOT_UTF8__ID;
-					goto _errorFound;
+				if(cpBase) {
+					if(cpBase[value].tag != CFR_CONSTANT_Utf8) {
+						errorCode = J9NLS_CFR_ERR_LOCAL_VARIABLE_NAME_NOT_UTF8__ID;
+						goto _errorFound;
+					}
+					if((flags & CFR_Xfuture) && (bcvCheckName(&cpBase[value]))) {
+						errorCode = J9NLS_CFR_ERR_LOCAL_VARIABLE_NAME__ID;
+						goto _errorFound;
+					}
 				}
 
 				value = ((J9CfrAttributeLocalVariableTypeTable*)attrib)->localVariableTypeTable[j].signatureIndex;
-				if((0 == value)||(value > cpCount)) {
+				if((0 == value)||(value >= cpCount)) {
 					errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 					goto _errorFound;
 				}
@@ -1943,6 +2121,8 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 					errorCode = J9NLS_CFR_ERR_LOCAL_VARIABLE_SIGNATURE_NOT_UTF8__ID;
 					goto _errorFound;
 				}
+
+				/* index range verification happens in ClassFileOracle.cpp with Xfuture */
 			}
 			break;
 
@@ -1954,7 +2134,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 			classes = (J9CfrAttributeInnerClasses*)attrib;
 			for(j = 0; j < classes->numberOfClasses; j++) {
 				value = classes->classes[j].innerClassInfoIndex;
-				if((0 == value)||(value > cpCount)) {
+				if((0 == value)||(value >= cpCount)) {
 					errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 					goto _errorFound;
 				}
@@ -1965,7 +2145,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 				/* Check class name integrity? */
 
 				value = classes->classes[j].outerClassInfoIndex;
-				if((0 != value) && (value > cpCount)) {
+				if((0 != value) && (value >= cpCount)) {
 					errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 					goto _errorFound;
 				}
@@ -1976,7 +2156,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 				/* Check class name integrity? */
 
 				value = classes->classes[j].innerNameIndex;
-				if((0 != value) && (value > cpCount)) {
+				if((0 != value) && (value >= cpCount)) {
 					errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 					goto _errorFound;
 				}
@@ -2005,7 +2185,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 			}
 			enclosing = (J9CfrAttributeEnclosingMethod*)attrib;
 			value = enclosing->classIndex;
-			if((0 == value) || (value > cpCount)) {
+			if ((0 == value) || (value >= cpCount)) {
 				errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 				goto _errorFound;
 			}
@@ -2015,7 +2195,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 			}
 
 			value = enclosing->methodIndex;
-			if(value > cpCount) {
+			if(value >= cpCount) {
 				errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 				goto _errorFound;
 			}
@@ -2035,14 +2215,50 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 				}
 				bootstrapMethodAttributeRead = TRUE;
 				for (j = 0; j < bootstrapMethods->numberOfBootstrapMethods; j++) {
-					value = bootstrapMethods->bootstrapMethods[j].bootstrapMethodIndex;
-					if((0 == value) || (value > cpCount)) {
+					U_16 numberOfBootstrapArguments = 0;
+					J9CfrBootstrapMethod *bsm = &bootstrapMethods->bootstrapMethods[j];
+					value = bsm->bootstrapMethodIndex;
+					if ((0 == value) || (value >= cpCount)) {
 						errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 						goto _errorFound;
 					}
-					if(cpBase[value].tag != CFR_CONSTANT_MethodHandle) {
+					if (cpBase[value].tag != CFR_CONSTANT_MethodHandle) {
 						errorCode = J9NLS_CFR_ERR_BOOTSTRAP_METHODHANDLE__ID;
 						goto _errorFound;
+					}
+
+					numberOfBootstrapArguments = bsm->numberOfBootstrapArguments;
+					for (k = 0; k < numberOfBootstrapArguments; k++) {
+						U_8 cpValueTag = 0;
+						value = bsm->bootstrapArguments[k];
+
+						if ((0 == value) || (value >= cpCount)) {
+							errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
+							goto _errorFound;
+						}
+						/* Validate the constant_pool indexes stored in the bootstrap_arguments array.
+						 * Note: The constant_pool entry at that index must be a CONSTANT_String_info,
+						 * CONSTANT_Class_info, CONSTANT_Integer_info, CONSTANT_Long_info, CONSTANT_Float_info,
+						 * CONSTANT_Double_info, CONSTANT_MethodHandle_info, CONSTANT_MethodType_info
+						 * or CFR_CONSTANT_Dynamic structure.
+						 */
+						cpValueTag = cpBase[value].tag;
+						switch(cpValueTag) {
+						case CFR_CONSTANT_String:
+						case CFR_CONSTANT_Class:
+						case CFR_CONSTANT_Integer:
+						case CFR_CONSTANT_Long:
+						case CFR_CONSTANT_Float:
+						case CFR_CONSTANT_Double:
+						case CFR_CONSTANT_MethodHandle:
+						case CFR_CONSTANT_MethodType:
+						case CFR_CONSTANT_Dynamic:
+							break;
+						default:
+							errorCode = J9NLS_CFR_ERR_BAD_BOOTSTRAP_ARGUMENT_ENTRY__ID;
+							buildBootstrapMethodError((J9CfrError *)segment, errorCode, errorType, attrib->romAddress, j, value, cpValueTag);
+							return -1;
+						}
 					}
 				}
 			}
@@ -2061,10 +2277,118 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 
 			break;
 
-#if defined(J9VM_OPT_VALHALLA_NESTMATES)
+		case CFR_ATTRIBUTE_Record:
+			/* record classes cannot be abstract */
+			if (J9_ARE_ANY_BITS_SET(classfile->accessFlags, CFR_ACC_ABSTRACT)) {
+				errorCode = J9NLS_CFR_RECORD_CLASS_CANNOT_BE_ABSTRACT__ID;
+				goto _errorFound;
+			}
+			/* record classes must be final */
+			if (J9_ARE_NO_BITS_SET(classfile->accessFlags, CFR_ACC_FINAL)) {
+				errorCode = J9NLS_CFR_RECORD_CLASS_MUST_BE_FINAL__ID;
+				goto _errorFound;
+			}
+
+			value = ((J9CfrAttributeRecord*)attrib)->nameIndex;
+			if ((0 == value) || (value >= cpCount)) {
+				errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
+				goto _errorFound;
+			}
+			if ((0 != value) && (cpBase[value].tag != CFR_CONSTANT_Utf8)) {
+				errorCode = J9NLS_CFR_ERR_RECORD_NAME_NOT_UTF8__ID;
+				goto _errorFound;
+			}
+
+			for (j = 0; j < ((J9CfrAttributeRecord*)attrib)->numberOfRecordComponents; j++) {
+				J9CfrRecordComponent* recordComponent = &(((J9CfrAttributeRecord*)attrib)->recordComponents[j]);
+				value = recordComponent->nameIndex;
+				if ((0 == value) || (value >= cpCount)) {
+					errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
+					goto _errorFound;
+				}
+				if ((0 != value) && (cpBase[value].tag != CFR_CONSTANT_Utf8)) {
+					errorCode = J9NLS_CFR_ERR_RECORD_COMPONENT_NAME_NOT_UTF8__ID;
+					goto _errorFound;
+				}
+				value = recordComponent->descriptorIndex;
+				if ((0 == value) || (value >= cpCount)) {
+					errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
+					goto _errorFound;
+				}
+				if ((0 != value) && (cpBase[value].tag != CFR_CONSTANT_Utf8)) {
+					errorCode = J9NLS_CFR_ERR_RECORD_COMPONENT_DESCRIPTOR_NOT_UTF8__ID;
+					goto _errorFound;
+				}
+				if (checkAttributes(classfile, recordComponent->attributes, recordComponent->attributesCount, segment, -1, OUTSIDE_CODE, flags)) {
+					return -1;
+				}
+			}
+
+			break;
+
+		case CFR_ATTRIBUTE_PermittedSubclasses:
+			/* PermittedSubclasses verification is for Java 15 preview only. */
+			if ((59 == classfile->majorVersion) && (0 < classfile->minorVersion)) {
+				enablePermittedSubclassErrors = TRUE;
+			}
+
+			/* JVMS: If the ACC_FINAL flag is set, then the ClassFile structure must not have a PermittedSubclasses attribute. */
+			if (J9_ARE_ANY_BITS_SET(classfile->accessFlags, CFR_ACC_FINAL)) {
+				if (enablePermittedSubclassErrors) {
+					errorCode = J9NLS_CFR_FINAL_CLASS_CANNOT_BE_SEALED__ID;
+					goto _errorFound;
+				}
+				break;
+			}
+			
+			value = ((J9CfrAttributePermittedSubclasses*)attrib)->nameIndex;
+			if ((0 == value) || (value >= cpCount)) {
+				if (enablePermittedSubclassErrors) {
+					errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
+					goto _errorFound;
+				}
+				break;
+			}
+			if ((0 != value) && (cpBase[value].tag != CFR_CONSTANT_Utf8)) {
+				if (enablePermittedSubclassErrors) {
+					errorCode = J9NLS_CFR_ERR_PERMITTEDSUBCLASSES_NAME_NOT_UTF8__ID;
+					goto _errorFound;
+				}
+				break;
+			}
+
+			value = ((J9CfrAttributePermittedSubclasses*)attrib)->numberOfClasses;
+			if (0 >= value) {
+				if (enablePermittedSubclassErrors) {
+					errorCode = J9NLS_CFR_ERR_SEALED_CLASS_HAS_INVALID_NUMBER_SUBCLASSES__ID;
+					goto _errorFound;
+				}
+				break;
+			}
+
+			for (j = 0; j < ((J9CfrAttributePermittedSubclasses*)attrib)->numberOfClasses; j++) {
+				value = ((J9CfrAttributePermittedSubclasses*)attrib)->classes[j];
+				if ((0 == value) || (value >= cpCount)) {
+					if (enablePermittedSubclassErrors) {
+						errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
+						goto _errorFound;
+					}
+					break;
+				}
+				if ((0 != value) && (cpBase[value].tag != CFR_CONSTANT_Class)) {
+					if (enablePermittedSubclassErrors) {
+						errorCode = J9NLS_CFR_ERR_PERMITTEDSUBCLASSES_CLASS_ENTRY_NOT_CLASS_TYPE__ID;
+						goto _errorFound;
+					}
+					break;
+				}
+			}
+			break;
+
+#if JAVA_SPEC_VERSION >= 11
 		case CFR_ATTRIBUTE_NestHost:
 			value = ((J9CfrAttributeNestHost*)attrib)->hostClassIndex;
-			if ((!value) || (value > cpCount)) {
+			if ((!value) || (value >= cpCount)) {
 				errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 				goto _errorFound;
 			}
@@ -2078,7 +2402,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 			U_16 nestMembersCount = ((J9CfrAttributeNestMembers*)attrib)->numberOfClasses;
 			for (j = 0; j < nestMembersCount; j++) {
 				value = ((J9CfrAttributeNestMembers*)attrib)->classes[j];
-				if ((0 == value) || (value > cpCount)) {
+				if ((0 == value) || (value >= cpCount)) {
 					errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 					goto _errorFound;
 				}
@@ -2089,7 +2413,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 			}
 			break;
 		}
-#endif /* J9VM_OPT_VALHALLA_NESTMATES */
+#endif /* JAVA_SPEC_VERSION >= 11 */
 
 		case CFR_ATTRIBUTE_StackMap: /* CLDC StackMap attribute - not supported in J2SE */
 		case CFR_ATTRIBUTE_Synthetic:
@@ -2099,7 +2423,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 		case CFR_ATTRIBUTE_StrippedInnerClasses:
 		case CFR_ATTRIBUTE_StrippedUnknown:
 		case CFR_ATTRIBUTE_Unknown:
-			break;			
+			break;
 		}
 	}
 
@@ -2108,7 +2432,7 @@ checkAttributes(J9CfrClassFile* classfile, J9CfrAttribute** attributes, U_32 att
 		buildError((J9CfrError *) segment, errorCode, errorType, 0);
 		return -1;
 	}
-			
+
 	return 0;
 
 _errorFound:
@@ -2119,53 +2443,62 @@ _errorFound:
 
 
 /*
-	Check the class file in @classfile.
-
-	According the the JVMS 2nd ed: (1.2)
-		"Implementations of version 1.2 of the Java 2 platform can support
-		class file formats of versions in the range 45.0 through 46.0 inclusive."
-
-	According to http://access1.sun.com/SRDs/srd_repository/tools.pdf (1.3)
-		"The Java virtual machine (JVM) now accepts class files with version
-		numbers 45.3 through 47.0, inclusive."
-
-	According to http://home.ott.oti.com/teams/bluebird/doc/cldcng-f/CLDCSpecification1.1.pdf
-		"The class file format numbers used by different JDK versions are as follows:
-		- The 45.* (usually 45.3) version number identified JDK 1.1 class files
-		- The 46.* version number identifies JDK 1.2 class files.
-		- The 47.* version number identifies JDK 1.3 class files.
-		- The 48.* version number identifies JDK 1.4 class files."
-
-	- 49.* are JDK 5.0 class files (aka JDK 1.5)
-
-	Returns -1 on error, 0 on success.
-*/
+ * Java allows non-zero minor versions if the major version is less than
+ * the max supported version for this release:
+ * 	Java 8 - v52
+ * 	Java 11 - v55
+ * 	Java 12 - v56
+ *
+ * Starting in Java 12, only 0 & -1 are valid minor versions for classfiles with
+ * version >= 56.  The -1 version is only allowed when combined with the max 
+ * supported version for this release and the --enable-preview flag is specified.
+ *
+ * Returns -1 on error, 0 on success.
+ */
 
 static I_32 
-checkClassVersion(J9CfrClassFile* classfile, U_8* segment, U_32 vmVersionShifted)
+checkClassVersion(J9CfrClassFile* classfile, U_8* segment, U_32 vmVersionShifted, U_32 flags)
 {
+	const U_32 offset = 6;
+	const U_16 max_allowed_version = vmVersionShifted >> BCT_MajorClassFileVersionMaskShift;
+	const U_16 majorVersion = classfile->majorVersion;
+	const U_16 minorVersion = classfile->minorVersion;
 	U_32 errorCode = J9NLS_CFR_ERR_MAJOR_VERSION__ID;
-	U_32 offset = 6;
-	U_16 max_allowed_version = vmVersionShifted >> BCT_MajorClassFileVersionMaskShift;
 
 	/* Support versions 45.0 -> <whatever is legal for this VM> */
-	if((classfile->majorVersion >= 45) && (classfile->majorVersion <= max_allowed_version)) {
-		/* check minor version numbers */
-		if (classfile->majorVersion < max_allowed_version) {
-			return 0;
-		}
-
-		if (0 == classfile->minorVersion) {
-			/* only .0 is a valid minor version for max class major version */
-			return 0;
-		}
+	if (majorVersion == max_allowed_version) {
 		errorCode = J9NLS_CFR_ERR_MINOR_VERSION__ID;
+		if (0 == minorVersion) {
+			return 0;
+		} else if (0xffff == minorVersion) {
+			errorCode = J9NLS_CFR_ERR_PREVIEW_VERSION__ID;
+			/* Preview flags won't be set for Java 8 & earlier (excluding cfdump) */
+			if (J9_ARE_ANY_BITS_SET(flags, BCT_AnyPreviewVersion | BCT_EnablePreview)) {
+				return 0;
+			}
+		}
+	} else if ((majorVersion >= 45) && (majorVersion < max_allowed_version)) {
+		errorCode = J9NLS_CFR_ERR_MINOR_VERSION__ID;
+		if (majorVersion <= 55) {
+			/* versions prior to and including Java 11, allow any minor */
+			return 0;
+		}
+		/* only .0 is the only valid minor version for this range */
+		if (0 == minorVersion) {
+			return 0;
+		}
+		if (0xffff == minorVersion) {
+			errorCode = J9NLS_CFR_ERR_PREVIEW_VERSION__ID;
+			/* Allow cfdump to dump preview classes from other releases */
+			if (J9_ARE_ANY_BITS_SET(flags, BCT_AnyPreviewVersion)) {
+				return 0;
+			}
+		}
 	}
 
 	buildError((J9CfrError *) segment, errorCode, CFR_ThrowUnsupportedClassVersionError, offset);
 	return -1;
 }
-
 
 /*
 	Check the class file in @classfile.
@@ -2218,7 +2551,7 @@ checkClass(J9PortLibrary *portLib, J9CfrClassFile* classfile, U_8* segment, U_32
 	}
 
 	value = classfile->thisClass;
-	if((!value)||(value > classfile->constantPoolCount)) {
+	if((!value)||(value >= classfile->constantPoolCount)) {
 		errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 		offset = endOfConstantPool + 2;
 		goto _errorFound;
@@ -2231,7 +2564,7 @@ checkClass(J9PortLibrary *portLib, J9CfrClassFile* classfile, U_8* segment, U_32
 	}
 
 	value = classfile->superClass;
-	if(value > classfile->constantPoolCount) {
+	if(value >= classfile->constantPoolCount) {
 		errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 		offset = endOfConstantPool + 4;
 		goto _errorFound;
@@ -2254,7 +2587,7 @@ checkClass(J9PortLibrary *portLib, J9CfrClassFile* classfile, U_8* segment, U_32
 		U_32 j;
 		J9CfrConstantPoolInfo* cpInfo;
 		value = classfile->interfaces[i];
-		if((!value)||(value > classfile->constantPoolCount)) {
+		if((!value)||(value >= classfile->constantPoolCount)) {
 			errorCode = J9NLS_CFR_ERR_BAD_INDEX__ID;
 			offset = endOfConstantPool + 4 + (i << 1);
 			goto _errorFound;
@@ -2319,7 +2652,7 @@ checkClass(J9PortLibrary *portLib, J9CfrClassFile* classfile, U_8* segment, U_32
 /*
 	Read the class file from the bytes in @data.
 	Returns:
-		-2 on insufficent space
+		-2 on insufficient space
 		-1 on error
 		0 on success
 		(required segment size)
@@ -2391,7 +2724,8 @@ j9bcutil_readClassFileBytes(J9PortLibrary *portLib,
 
 	ALLOC(classfile, J9CfrClassFile);
 
-	CHECK_EOF(10);
+	/* Verify the class version before any other checks. */
+	CHECK_EOF(8); /* magic, minor version, master version */
 	NEXT_U32(classfile->magic, index);
 	if (classfile->magic != (U_32) CFR_MAGIC) {
 		errorCode = J9NLS_CFR_ERR_MAGIC__ID;
@@ -2402,12 +2736,28 @@ j9bcutil_readClassFileBytes(J9PortLibrary *portLib,
 	NEXT_U16(classfile->minorVersion, index);
 	NEXT_U16(classfile->majorVersion, index);
 
+	/* Ensure that this is a supported class file version. */
+	if (checkClassVersion(classfile, segment, vmVersionShifted, flags)) {
+		Trc_BCU_j9bcutil_readClassFileBytes_Exit(-1);
+		return -1;
+	}
+
+	if (J9_ARE_ANY_BITS_SET(flags, BCT_BasicCheckOnly)) {
+		Trc_BCU_j9bcutil_readClassFileBytes_Basic_Check_Exit(0);
+		return 0;
+	}
+
+	if (J9_ARE_ANY_BITS_SET(findClassFlags, J9_FINDCLASS_FLAG_UNSAFE)) {
+		flags |= BCT_Unsafe;
+	}
+
 	/* Make sure the structure and static verification below uses the class file version
 	 * number. VM version is maintained in vmVersionShifted.
 	 */
 	flags &= ~BCT_MajorClassFileVersionMask;
 	flags |= ((UDATA) classfile->majorVersion) << BCT_MajorClassFileVersionMaskShift;
 
+	CHECK_EOF(2); /* constantPoolCount */
 	NEXT_U16(classfile->constantPoolCount, index);
 
 	constantPoolAllocationSize = classfile->constantPoolCount;
@@ -2421,8 +2771,8 @@ j9bcutil_readClassFileBytes(J9PortLibrary *portLib,
 	VERBOSE_START(ParseClassFileConstantPool);
 	/* Space for the constant pool */
 
-	if (J9_ARE_ANY_BITS_SET(findClassFlags, J9_FINDCLASS_FLAG_ANON)) {
-		/* Pre-emptively add new entry to the end of the constantPool for the modified anonClassName.
+	if (J9_ARE_ANY_BITS_SET(findClassFlags, J9_FINDCLASS_FLAG_ANON | J9_FINDCLASS_FLAG_HIDDEN)) {
+		/* Preemptively add new entry to the end of the constantPool for the modified anonClassName.
 		 * If it turns out we dont need it, simply reduce the constantPoolCount by 1, which is
 		 * cheaper than allocating twice.
 		 *
@@ -2452,8 +2802,6 @@ j9bcutil_readClassFileBytes(J9PortLibrary *portLib,
 	endOfConstantPool = index;
 	VERBOSE_END(ParseClassFileConstantPool);
 
-	classfile->constantPoolCount = constantPoolAllocationSize;
-
 	CHECK_EOF(8);
 	classfile->accessFlags = NEXT_U16(classfile->accessFlags, index);
 
@@ -2465,6 +2813,26 @@ j9bcutil_readClassFileBytes(J9PortLibrary *portLib,
 		offset = index - data - 2;
 		goto _errorFound;
 	}
+
+#if defined(J9VM_OPT_VALHALLA_VALUE_TYPES)
+	/*
+	 * TODO This behaviour is based on the LW2 spec http://cr.openjdk.java.net/~fparain/L-world/LW2-JVMS-draft-20181009.pdf.
+	 * In the future the CFR_ACC_VALUE_TYPE class access bit will be replaced by a ValObject subtyping relationship. We will
+	 * likely keep the bit in the romClass class, but it will no longer appear in .class files.
+	 *
+	 * The LW10 prototype will likely still be enabled with a -XX:+EnableValhalla flag so a check and error message similar
+	 * to this will be required.
+	 */
+
+	/* class files with the ACC_VALUE_TYPE can only be loaded if -XX:+EnableValhalla is set */
+	if (J9_ARE_ALL_BITS_SET(classfile->accessFlags, CFR_ACC_VALUE_TYPE)
+		&& J9_ARE_NO_BITS_SET(flags, BCT_ValueTypesEnabled)
+	) {
+		errorCode = J9NLS_CFR_ERR_VALUE_TYPES_IS_NOT_SUPPORTED__ID;
+		offset = index - data - 2;
+		goto _errorFound;
+	}
+#endif /* defined(J9VM_OPT_VALHALLA_VALUE_TYPES) */
 
 	/* mask access flags to remove unused access bits */
 	classfile->accessFlags &= CFR_CLASS_ACCESS_MASK;
@@ -2574,12 +2942,6 @@ j9bcutil_readClassFileBytes(J9PortLibrary *portLib,
 
 	classfile->classFileSize = (U_32) dataLength;
 
-	/* Ensure that this is a supported class file version. */
-	if(checkClassVersion(classfile, segment, vmVersionShifted)) {
-		Trc_BCU_j9bcutil_readClassFileBytes_Exit(-1);
-		return -1;
-	}
-	
 	/* Structure verification. This is "Pass 1". */
 	if (0 != (flags & CFR_StaticVerification)) {
 		if(checkClass(portLib, classfile, segment, (U_32) (endOfConstantPool - data), vmVersionShifted, flags)) {
@@ -2597,11 +2959,22 @@ j9bcutil_readClassFileBytes(J9PortLibrary *portLib,
 			return result;
 		}
 	} else {
-		/* special checking to look for jsr's if -noverify - the verifyFunction normally scans and tags 
-			for inlining methods and classes that contain jsr's */
-		hasRET = checkForJsrs(classfile);
+		/* Special checking to look for jsr's if -noverify - the verifyFunction normally scans and tags
+		 * for inlining methods and classes that contain jsr's unless the class file version is 51 or
+		 * greater as jsr / ret are always illegal in that case
+		 */
+		if (classfile->majorVersion < 51) {
+			hasRET = checkForJsrs(classfile);
+		}
 	}
 	VERBOSE_END(ParseClassFileVerifyClass);
+
+	/* Set constantPoolCount here to take into account the extra cpEntry for the anonClass name.
+	 * This needs to occur after static verification as the new (last) cpEntry intended for
+	 * the anonClassName is not initialized until ROMClassBuilder::handleAnonClassName() is
+	 * invoked later in building the corresponding ROMClass.
+	 */
+	classfile->constantPoolCount = constantPoolAllocationSize;
 
 	VERBOSE_START(ParseClassFileInlineJSRs);
 	/* perform jsr inlining in necessary */
@@ -3108,6 +3481,12 @@ readAnnotationElement(J9CfrClassFile * classfile, J9CfrAnnotationElement ** pAnn
 		break;
 			
 	case 'e':
+	{
+		J9CfrConstantPoolInfo* cpBase = classfile->constantPool;
+		U_16 cpCount = classfile->constantPoolCount;
+		U_16 typeNameIndex = 0;
+		U_16 constNameIndex = 0;
+
 		if (!ALLOC_CAST(element, J9CfrAnnotationElementEnum, J9CfrAnnotationElement)) {
 			return -2;
 		}
@@ -3115,8 +3494,17 @@ readAnnotationElement(J9CfrClassFile * classfile, J9CfrAnnotationElement ** pAnn
 		CHECK_EOF(4);
 		NEXT_U16(((J9CfrAnnotationElementEnum *)element)->typeNameIndex, index);
 		NEXT_U16(((J9CfrAnnotationElementEnum *)element)->constNameIndex, index);
+		
+		typeNameIndex = ((J9CfrAnnotationElementEnum *)element)->typeNameIndex;
+		constNameIndex = ((J9CfrAnnotationElementEnum *)element)->constNameIndex;
+		if ((0 == typeNameIndex) || (typeNameIndex >= cpCount) || (0 == constNameIndex) || (constNameIndex >= cpCount)) {
+			return BCT_ERR_INVALID_ANNOTATION_BAD_CP_INDEX_OUT_OF_RANGE;
+		}
+		if ((CFR_CONSTANT_Utf8 != cpBase[typeNameIndex].tag) || (CFR_CONSTANT_Utf8 != cpBase[constNameIndex].tag)) {
+			return BCT_ERR_INVALID_ANNOTATION_BAD_CP_UTF8_STRING;
+		}
 		break;
-
+	}
 	case 'c':
 		if (!ALLOC_CAST(element, J9CfrAnnotationElementClass, J9CfrAnnotationElement)) {
 			return -2;
@@ -3134,7 +3522,7 @@ readAnnotationElement(J9CfrClassFile * classfile, J9CfrAnnotationElement ** pAnn
 		annotation = &((J9CfrAnnotationElementAnnotation *)element)->annotationValue;
 
 		result = readAnnotations(classfile, annotation, 1, data, dataEnd, segment, segmentEnd, &index, &freePointer, flags);
-		if (result != 0) {
+		if (BCT_ERR_NO_ERROR != result) {
 			return result;
 		}
 
@@ -3275,5 +3663,17 @@ sortMethodIndex(J9CfrConstantPoolInfo* constantPool, J9CfrMethod *list, IDATA st
 	}
 }
 
-
+#if JAVA_SPEC_VERSION >= 15
+I_32
+checkClassBytes(J9VMThread *currentThread, U_8* classBytes, UDATA classBytesLength, U_8* segment, U_32 segmentLength) 
+{
+	I_32 rc = 0;
+	U_32 cfrFlags = BCT_JavaMaxMajorVersionShifted | BCT_AnyPreviewVersion | BCT_BasicCheckOnly;
+	PORT_ACCESS_FROM_VMC(currentThread);
+	if (NULL != classBytes) {
+		rc = j9bcutil_readClassFileBytes(PORTLIB, NULL, classBytes, classBytesLength, segment, segmentLength, cfrFlags, NULL, NULL, 0, 0);
+	}
+	return rc;
+}
+#endif /* JAVA_SPEC_VERSION >= 15 */
 

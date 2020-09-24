@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -403,7 +403,7 @@ jniCheckCallV(const char* function, JNIEnv* env, jobject receiver, UDATA methodT
 	PORT_ACCESS_FROM_JAVAVM(vm);
 	J9Method *ramMethod = ((J9JNIMethodID*)method)->method;
 	J9ROMMethod* romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(ramMethod);
-	J9UTF8* sig = J9ROMMETHOD_GET_SIGNATURE(UNTAGGED_METHOD_CP(ramMethod)->ramClass->romClass, romMethod);
+	J9UTF8* sig = J9ROMMETHOD_SIGNATURE(romMethod);
 	char* sigArgs;
 	va_list args;
 	UDATA argNum;
@@ -464,7 +464,7 @@ jniCheckCallA(const char* function, JNIEnv* env, jobject receiver, UDATA methodT
 	PORT_ACCESS_FROM_JAVAVM(vm);
 	J9Method *ramMethod = ((J9JNIMethodID*)method)->method;
 	J9ROMMethod* romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(ramMethod);
-	J9UTF8* sig = J9ROMMETHOD_GET_SIGNATURE(UNTAGGED_METHOD_CP(ramMethod)->ramClass->romClass, romMethod);
+	J9UTF8* sig = J9ROMMETHOD_SIGNATURE(romMethod);
 	char* sigArgs;
 	UDATA argNum;
 	UDATA trace = vm->checkJNIData.options & JNICHK_TRACE;
@@ -543,7 +543,7 @@ jniCheckArgs(const char *function, int exceptionSafe, int criticalSafe, J9JniChe
 	}
 
 	if (criticalSafe != CRITICAL_SAFE) {
-		if ((vmThread->jniVMAccessCount != 0) || (vmThread->jniCriticalCopyCount != 0) || (vmThread->jniCriticalDirectCount != 0)) {
+		if ((vmThread->jniCriticalCopyCount != 0) || (vmThread->jniCriticalDirectCount != 0)) {
 			if (criticalSafe == CRITICAL_WARN) {
 				if (warn) {
 					j9nls_printf(PORTLIB, J9NLS_WARNING, J9NLS_JNICHK_CRITICAL_UNSAFE_WARN, function);
@@ -587,16 +587,58 @@ jniCheckArgs(const char *function, int exceptionSafe, int criticalSafe, J9JniChe
 
 		case JNIC_JMETHODID:
 			aJmethodID = va_arg(va, jmethodID);
+			if (NULL == aJmethodID) {
+				jniCheckFatalErrorNLS(env, J9NLS_JNICHK_NULL_ARGUMENT, function, argNum);
+			}
 			if (trace) {
 				jniTraceMethodID(env, aJmethodID);
 			}
 			break;
 		case JNIC_JFIELDID:
+		{
+			jboolean aJboolean = JNI_FALSE;
+			U_32 modifiers = 0;
+
 			aJfieldID = va_arg(va, jfieldID);
+			if (NULL == aJfieldID) {
+				jniCheckFatalErrorNLS(env, J9NLS_JNICHK_NULL_ARGUMENT, function, argNum);
+			}
+			code += 1;
+			argNum += 1;
+			aJboolean = va_arg(va, int);
+			jniCheckRange(env, function, "jboolean", (IDATA)aJboolean, argNum, 0, 1);
+			modifiers = ((J9JNIFieldID*)aJfieldID)->field->modifiers;
+			if ((0 != (modifiers & J9AccStatic)) && !aJboolean) {
+				jniCheckFatalErrorNLS(env, J9NLS_JNICHK_STATIC_FIELDID_PASSED, function, argNum);
+			} else if ((0 == (modifiers & J9AccStatic)) && aJboolean) {
+				jniCheckFatalErrorNLS(env, J9NLS_JNICHK_NON_STATIC_FIELDID_PASSED, function, argNum);
+			}
+			if (trace) {
+				jniTraceFieldID(env, aJfieldID);
+				j9tty_printf(PORTLIB, ", ");
+				j9tty_printf(PORTLIB, "%s", aJboolean ? "true" : "false");
+			}
+			break;
+		}
+		case JNIC_JFIELDINSTANCEID:
+		case JNIC_JFIELDSTATICID:
+		{
+			U_32 modifiers = 0;
+			aJfieldID = va_arg(va, jfieldID);
+			if (NULL == aJfieldID) {
+				jniCheckFatalErrorNLS(env, J9NLS_JNICHK_NULL_ARGUMENT, function, argNum);
+			}
+			modifiers = ((J9JNIFieldID*)aJfieldID)->field->modifiers;
+			if ((JNIC_JFIELDINSTANCEID == asciiCode) && (0 != (modifiers & J9AccStatic))) {
+				jniCheckFatalErrorNLS(env, J9NLS_JNICHK_STATIC_FIELDID_PASSED, function, argNum);
+			} else if ((JNIC_JFIELDSTATICID == asciiCode) && (0 == (modifiers & J9AccStatic))) {
+				jniCheckFatalErrorNLS(env, J9NLS_JNICHK_NON_STATIC_FIELDID_PASSED, function, argNum);
+			}
 			if (trace) {
 				jniTraceFieldID(env, aJfieldID);
 			}
 			break;
+		}
 		case JNIC_VALIST:
 			va_arg(va, va_list*);
 			if (trace) {
@@ -880,11 +922,8 @@ jnichk_getObjectClazz(JNIEnv* env, jobject objRef)
 {
 	J9VMThread* vmThread = (J9VMThread*)env;
 	J9Class* clazz = NULL;
-	BOOLEAN enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
-	
-	if (enteredWithoutVMAccess) {
-		acquireVMAccess(vmThread);
-	}
+
+	enterVM(vmThread);
 
 	if (objRef != NULL) {
 		j9object_t obj = *(j9object_t*)objRef;
@@ -894,9 +933,7 @@ jnichk_getObjectClazz(JNIEnv* env, jobject objRef)
 		}
 	}
 
-	if (enteredWithoutVMAccess) {
-		releaseVMAccess(vmThread);
-	}
+	exitVM(vmThread);
 
 	return clazz;
 }
@@ -906,11 +943,8 @@ static BOOLEAN jnichk_isObjectArray(JNIEnv* env, jobject obj) {
 	J9JavaVM* vm = vmThread->javaVM;
 	J9Class* clazz = NULL;
 	BOOLEAN result = FALSE;
-	BOOLEAN enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
 
-	if (enteredWithoutVMAccess) {
-		acquireVMAccess(vmThread);
-	}
+	enterVM(vmThread);
 
 	clazz = J9OBJECT_CLAZZ(vmThread, *(j9object_t*)obj);
 
@@ -919,9 +953,7 @@ static BOOLEAN jnichk_isObjectArray(JNIEnv* env, jobject obj) {
 
 	}
 
-	if (enteredWithoutVMAccess) {
-		releaseVMAccess(vmThread);
-	}
+	exitVM(vmThread);
 
 	return result;
 }
@@ -931,18 +963,13 @@ static BOOLEAN jnichk_isIndexable(JNIEnv* env, jobject obj) {
 	J9JavaVM* vm = vmThread->javaVM;
 	J9Class* clazz = NULL;
 	BOOLEAN result;
-	BOOLEAN enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
 
-	if (enteredWithoutVMAccess) {
-		acquireVMAccess(vmThread);
-	}
+	enterVM(vmThread);
 
 	clazz = J9OBJECT_CLAZZ(vmThread, *(j9object_t*)obj);
 	result = J9CLASS_IS_ARRAY(clazz);
 
-	if (enteredWithoutVMAccess) {
-		releaseVMAccess(vmThread);
-	}
+	exitVM(vmThread);
 
 	return result;
 }
@@ -955,17 +982,12 @@ jniVerboseGetID(const char *function, JNIEnv *env, jclass classRef, const char *
 	if ( vmThread->javaVM->checkJNIData.options & JNICHK_VERBOSE) {
 		J9UTF8 *className;
 		PORT_ACCESS_FROM_VMC(vmThread);
-		BOOLEAN enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
-	
-		if (enteredWithoutVMAccess) {
-			acquireVMAccess(vmThread);
-		}
+
+		enterVM(vmThread);
 
 		className = J9ROMCLASS_CLASSNAME(J9VM_J9CLASS_FROM_JCLASS(vmThread, classRef)->romClass);
 
-		if (enteredWithoutVMAccess) {
-			releaseVMAccess(vmThread);
-		}
+		exitVM(vmThread);
 
 		Trc_JNI_GetID(env, function, J9UTF8_DATA(className), name, sig);
 		j9tty_printf(PORTLIB, "<JNI %s: %.*s.%s %s>\n",
@@ -1025,8 +1047,8 @@ jniCheckPrintMethod(JNIEnv* env, U_32 level)
 	if (method != NULL) {
 		J9UTF8 * className = J9ROMCLASS_CLASSNAME(UNTAGGED_METHOD_CP(method)->ramClass->romClass);
 		J9ROMMethod * romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(method);
-		J9UTF8 * name = J9ROMMETHOD_GET_NAME(UNTAGGED_METHOD_CP(method)->ramClass->romClass, romMethod);
-		J9UTF8 * sig = J9ROMMETHOD_GET_SIGNATURE(UNTAGGED_METHOD_CP(method)->ramClass->romClass, romMethod);
+		J9UTF8 * name = J9ROMMETHOD_NAME(romMethod);
+		J9UTF8 * sig = J9ROMMETHOD_SIGNATURE(romMethod);
 
 		/* special case for JNI_OnLoad */
 		if (isLoadLibraryWithPath(className, name)) {
@@ -1091,7 +1113,8 @@ static UDATA jniIsLocalRef(JNIEnv * currentEnv, JNIEnv* env, jobject reference)
 			return ((UDATA) reference & (sizeof(UDATA) - 1)) == 0 && *(j9object_t*) reference != NULL;
 		} else {
 			J9StackWalkState walkState;
-			UDATA releaseAccess = FALSE;
+
+			enterVM(vmThread);
 
 			walkState.userData1 = reference;
 			walkState.userData2 = vmThread->jniLocalReferences;
@@ -1102,14 +1125,9 @@ static UDATA jniIsLocalRef(JNIEnv * currentEnv, JNIEnv* env, jobject reference)
 			walkState.objectSlotWalkFunction = jniIsLocalRefOSlotWalkFunction;
 			walkState.walkThread = vmThread;
 
-			if ((vmThread->publicFlags & J9_PUBLIC_FLAGS_VM_ACCESS) == 0) {
-				vmThread->javaVM->internalVMFunctions->internalAcquireVMAccess(vmThread);
-				releaseAccess = TRUE;
-			}
 			vmThread->javaVM->walkStackFrames(vmThread, &walkState);
-			if (releaseAccess) {
-				vmThread->javaVM->internalVMFunctions->internalReleaseVMAccess(vmThread);
-			}
+
+			exitVM(vmThread);
 
 			return walkState.userData3 == reference;
 		}
@@ -1129,11 +1147,7 @@ static UDATA jniIsLocalRef(JNIEnv * currentEnv, JNIEnv* env, jobject reference)
 		/* is it in the local references? */
 		frame = (J9JNIReferenceFrame*)vmThread->jniLocalReferences;
 		if (frame != NULL) {
-			BOOLEAN hasNoVMAccess = !HAS_VM_ACCESS(currentThread);
-
-			if (hasNoVMAccess) {
-				acquireVMAccess(currentThread);
-			}
+			enterVM(vmThread);
 			while (frame != NULL) {
 				/* walk the pool */
 				if (pool_includesElement(frame->references, reference)) {
@@ -1142,9 +1156,7 @@ static UDATA jniIsLocalRef(JNIEnv * currentEnv, JNIEnv* env, jobject reference)
 				}
 				frame = frame->previous;
 			}
-			if (hasNoVMAccess) {
-				releaseVMAccess(currentThread);
-			}
+			exitVM(vmThread);
 		}
 
 		return rc;
@@ -1161,11 +1173,8 @@ jniIsGlobalRef(JNIEnv* env, jobject reference)
 	UDATA rc;
 	JNICHK_GREF_HASHENTRY entry;
 	JNICHK_GREF_HASHENTRY* actualResult;
-	BOOLEAN enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
-	
-	if (enteredWithoutVMAccess) {
-		acquireVMAccess(vmThread);
-	}
+
+	enterVM(vmThread);
 
 #ifdef J9VM_THR_PREEMPTIVE
 	omrthread_monitor_enter(vm->jniFrameMutex);
@@ -1193,9 +1202,7 @@ jniIsGlobalRef(JNIEnv* env, jobject reference)
 	omrthread_monitor_exit(vm->jniFrameMutex);
 #endif
 
-	if (enteredWithoutVMAccess) {
-		releaseVMAccess(vmThread);
-	}
+	exitVM(vmThread);
 
 	return rc;
 }
@@ -1213,8 +1220,8 @@ static void jniIsLocalRefOSlotWalkFunction(J9VMThread* aThread, J9StackWalkState
 	if (method != NULL) {
 		J9UTF8 * className = J9ROMCLASS_CLASSNAME(UNTAGGED_METHOD_CP(method)->ramClass->romClass);
 		J9ROMMethod * romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(method);
-		J9UTF8 * name = J9ROMMETHOD_GET_NAME(UNTAGGED_METHOD_CP(method)->ramClass->romClass, romMethod);
-		J9UTF8 * sig = J9ROMMETHOD_GET_SIGNATURE(UNTAGGED_METHOD_CP(method)->ramClass->romClass, romMethod);
+		J9UTF8 * name = J9ROMMETHOD_NAME(romMethod);
+		J9UTF8 * sig = J9ROMMETHOD_SIGNATURE(romMethod);
 		printf("Found in frame %d in %.*s.%.*s%.*s\n", walkState->framesWalked + 1, J9UTF8_LENGTH(className), J9UTF8_DATA(className), J9UTF8_LENGTH(name), J9UTF8_DATA(name), J9UTF8_LENGTH(sig), J9UTF8_DATA(sig));
 	}
 }
@@ -1230,12 +1237,9 @@ static UDATA jniIsLocalRefFrameWalkFunction(J9VMThread* vmThread, J9StackWalkSta
 		case J9SF_FRAME_TYPE_JNI_NATIVE_METHOD:
 			if (walkState->frameFlags & J9_SSF_CALL_OUT_FRAME_ALLOC) {
 				J9JNIReferenceFrame* frame = walkState->userData2;
-				BOOLEAN enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
 				UDATA frameType = 0;
 
-				if (enteredWithoutVMAccess) {
-					acquireVMAccess(vmThread);
-				}
+				enterVM(vmThread);
 
 				/* Walk the pools - each native frame with J9_SSF_CALL_OUT_FRAME_ALLOC set pushes
 				 * and internal reference frame first, so stop once that one has been inspected.
@@ -1252,9 +1256,7 @@ static UDATA jniIsLocalRefFrameWalkFunction(J9VMThread* vmThread, J9StackWalkSta
 				} while (frameType != JNIFRAME_TYPE_INTERNAL);
 				walkState->userData2 = frame;
 
-				if (enteredWithoutVMAccess) {
-					releaseVMAccess(vmThread);
-				}
+				exitVM(vmThread);
 			}
 	}
 
@@ -1297,12 +1299,9 @@ jniCheckRef(JNIEnv* env,  const char* function, IDATA argNum, jobject reference)
 static UDATA jniIsWeakGlobalRef(JNIEnv* env, jobject reference) {
 	J9VMThread* vmThread = (J9VMThread*)env;
 	J9JavaVM* vm = vmThread->javaVM;
-	BOOLEAN enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
 	UDATA rc;
 
-	if (enteredWithoutVMAccess) {
-		acquireVMAccess(vmThread);
-	}
+	enterVM(vmThread);
 
 #ifdef J9VM_THR_PREEMPTIVE
 	omrthread_monitor_enter(vm->jniFrameMutex);
@@ -1313,9 +1312,7 @@ static UDATA jniIsWeakGlobalRef(JNIEnv* env, jobject reference) {
 	omrthread_monitor_exit(vm->jniFrameMutex);
 #endif
 
-	if (enteredWithoutVMAccess) {
-		releaseVMAccess(vmThread);
-	}
+	exitVM(vmThread);
 
 	return rc;
 }
@@ -1326,7 +1323,6 @@ getRefType(JNIEnv* env, jobject reference)
 {
 	JNIEnv* thread;
 	J9VMThread *vmThread = (J9VMThread *) env;
-	UDATA releaseAccess = FALSE;
 	PORT_ACCESS_FROM_ENV(env);
 
 	if (reference == NULL) {
@@ -1342,25 +1338,20 @@ getRefType(JNIEnv* env, jobject reference)
 		return j9nls_lookup_message(J9NLS_DO_NOT_PRINT_MESSAGE_TAG, J9NLS_JNICHK_WEAK_GLOBAL_REF, NULL);
 	}
 
-	if ((vmThread->publicFlags & J9_PUBLIC_FLAGS_VM_ACCESS) == 0) {
-		vmThread->javaVM->internalVMFunctions->internalAcquireVMAccess(vmThread);
-		releaseAccess = TRUE;
-	}
-	omrthread_monitor_enter( vmThread->javaVM->vmThreadListMutex );
-	thread = (JNIEnv*)((J9VMThread*)env)->linkNext;
-	while (thread != env) {
-		if (jniIsLocalRef(env, thread, reference)) {
-			omrthread_monitor_exit( vmThread->javaVM->vmThreadListMutex );
-			if (releaseAccess) {
-				vmThread->javaVM->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	{
+		enterVM(vmThread);
+		omrthread_monitor_enter( vmThread->javaVM->vmThreadListMutex );
+		thread = (JNIEnv*)((J9VMThread*)env)->linkNext;
+		while (thread != env) {
+			if (jniIsLocalRef(env, thread, reference)) {
+				omrthread_monitor_exit( vmThread->javaVM->vmThreadListMutex );
+				exitVM(vmThread);
+				return j9nls_lookup_message(J9NLS_DO_NOT_PRINT_MESSAGE_TAG, J9NLS_JNICHK_BAD_LOCAL_REF, NULL);
 			}
-			return j9nls_lookup_message(J9NLS_DO_NOT_PRINT_MESSAGE_TAG, J9NLS_JNICHK_BAD_LOCAL_REF, NULL);
+			thread = (JNIEnv*)((J9VMThread*)thread)->linkNext;
 		}
-		thread = (JNIEnv*)((J9VMThread*)thread)->linkNext;
-	}
-	omrthread_monitor_exit( vmThread->javaVM->vmThreadListMutex );
-	if (releaseAccess) {
-		vmThread->javaVM->internalVMFunctions->internalReleaseVMAccess(vmThread);
+		omrthread_monitor_exit( vmThread->javaVM->vmThreadListMutex );
+		exitVM(vmThread);
 	}
 
 	if (*(j9object_t*)reference == NULL) {
@@ -1407,7 +1398,6 @@ jniTraceObject(JNIEnv* env, jobject aJobject)
 	J9VMThread *vmThread = (J9VMThread*)env;
 	J9JavaVM * vm = vmThread->javaVM;
 	J9Class* jlClass, *clazz;
-	BOOLEAN enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
 	PORT_ACCESS_FROM_VMC(vmThread);
 
 	jlClass = J9VMJAVALANGCLASS_OR_NULL(vm);
@@ -1419,15 +1409,11 @@ jniTraceObject(JNIEnv* env, jobject aJobject)
 	} else if (clazz == jlClass) {
 		J9UTF8* utf8;
 
-		if (enteredWithoutVMAccess) {
-			acquireVMAccess(vmThread);
-		}
+		enterVM(vmThread);
 
 		utf8 = J9ROMCLASS_CLASSNAME(J9VM_J9CLASS_FROM_JCLASS(vmThread, aJobject)->romClass);
 
-		if (enteredWithoutVMAccess) {
-			releaseVMAccess(vmThread);
-		}
+		exitVM(vmThread);
 
 		j9tty_printf(PORTLIB, "%.*s", J9UTF8_LENGTH(utf8), J9UTF8_DATA(utf8));
 	} else {
@@ -1444,8 +1430,8 @@ static void jniTraceMethodID(JNIEnv* env, jmethodID mid) {
 
 	J9Method* method = ((J9JNIMethodID*)mid)->method;
 	J9ROMMethod* romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(method);
-	J9UTF8* name = J9ROMMETHOD_GET_NAME(UNTAGGED_METHOD_CP(method)->ramClass->romClass, romMethod);
-	J9UTF8* sig = J9ROMMETHOD_GET_SIGNATURE(UNTAGGED_METHOD_CP(method)->ramClass->romClass, romMethod);
+	J9UTF8* name = J9ROMMETHOD_NAME(romMethod);
+	J9UTF8* sig = J9ROMMETHOD_SIGNATURE(romMethod);
 
 	j9tty_printf(PORTLIB, "%.*s%.*s", J9UTF8_LENGTH(name), J9UTF8_DATA(name), J9UTF8_LENGTH(sig), J9UTF8_DATA(sig));
 
@@ -1528,7 +1514,6 @@ jniCheckStringUTFRange(JNIEnv* env, const char* function, jstring string, jint s
 static void jniCheckValidClass(JNIEnv* env, const char* function, UDATA argNum, jobject obj) {
 	J9VMThread *vmThread = (J9VMThread*)env;
 	J9JavaVM *vm = vmThread->javaVM;
-	BOOLEAN enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
 	UDATA classDepthAndFlags;
 	UDATA options = vm->checkJNIData.options;
 	J9ROMClass * romClass;
@@ -1541,17 +1526,15 @@ static void jniCheckValidClass(JNIEnv* env, const char* function, UDATA argNum, 
 		}
 	}
 
-	if (enteredWithoutVMAccess) {
-		acquireVMAccess(vmThread);
-	}
-	clazz = J9VM_J9CLASS_FROM_JCLASS((J9VMThread *)env, obj);
-	classDepthAndFlags = J9CLASS_FLAGS(clazz);
-	romClass = clazz->romClass;
-	if (enteredWithoutVMAccess) {
-		releaseVMAccess(vmThread);
+	{
+		enterVM(vmThread);
+		clazz = J9VM_J9CLASS_FROM_JCLASS((J9VMThread *)env, obj);
+		classDepthAndFlags = J9CLASS_FLAGS(clazz);
+		romClass = clazz->romClass;
+		exitVM(vmThread);
 	}
 
-	if (classDepthAndFlags & J9_JAVA_CLASS_HOT_SWAPPED_OUT) {
+	if (classDepthAndFlags & J9AccClassHotSwappedOut) {
 		J9UTF8* className = J9ROMCLASS_CLASSNAME(romClass);
 		jniCheckFatalErrorNLS(env, J9NLS_JNICHK_OBSOLETE_CLASS, function, J9UTF8_LENGTH(className), J9UTF8_DATA(className));
 	}
@@ -1731,8 +1714,8 @@ methodEnterHook(J9HookInterface** hook, UDATA eventNum, void* eventData, void* u
 	if (trace) {
 		PORT_ACCESS_FROM_VMC(vmThread);
 		J9ROMMethod * romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(method);
-		J9UTF8 * nameUTF = J9ROMMETHOD_GET_NAME(UNTAGGED_METHOD_CP(method)->ramClass->romClass, romMethod);
-		J9UTF8 * sigUTF = J9ROMMETHOD_GET_SIGNATURE(UNTAGGED_METHOD_CP(method)->ramClass->romClass, romMethod);
+		J9UTF8 * nameUTF = J9ROMMETHOD_NAME(romMethod);
+		J9UTF8 * sigUTF = J9ROMMETHOD_SIGNATURE(romMethod);
 		J9UTF8 * classNameUTF = J9ROMCLASS_CLASSNAME(J9_CLASS_FROM_METHOD(method)->romClass);
 		char argBuffer[2048 + 3];
 		UDATA remainingSize = sizeof(argBuffer) - 3;
@@ -1784,14 +1767,14 @@ methodExitHook(J9HookInterface** hook, UDATA eventNum, void* eventData, void* us
 	UDATA* returnValues = event->returnValuePtr;
 	jobject returnRef = event->poppedByException ? (jobject)NULL : event->returnRef;
 	J9ROMMethod * romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(method);
-	J9UTF8 * sigUTF = J9ROMMETHOD_GET_SIGNATURE(UNTAGGED_METHOD_CP(method)->ramClass->romClass, romMethod);
+	J9UTF8 * sigUTF = J9ROMMETHOD_SIGNATURE(romMethod);
 	U_8 * sigData = J9UTF8_DATA(sigUTF) + 1;
     UDATA sigChar;
 
 	/* check for unreleased memory (a warning) before checking the critical section count */
 	jniCheckForUnreleasedMemory( (JNIEnv*)vmThread );
 
-	if (vmThread->jniVMAccessCount > 0) {
+	if ((vmThread->jniCriticalCopyCount != 0) || (vmThread->jniCriticalDirectCount != 0)) {
 		jniCheckFatalErrorNLS((JNIEnv*)vmThread, J9NLS_JNICHK_UNRELEASED_CRITICAL_SECTION);
 	}
 
@@ -2039,18 +2022,14 @@ jniCheckPrintJNIOnLoad(JNIEnv *env, U_32 level)
 	UDATA alloc = FALSE;
 	char *data;
 	J9VMThread *vmThread = (J9VMThread*)env;
-	BOOLEAN enteredWithoutVMAccess = !HAS_VM_ACCESS(vmThread);
 	PORT_ACCESS_FROM_VMC(vmThread);
 
-	if (enteredWithoutVMAccess) {
-		acquireVMAccess(vmThread);
-	}
+	enterVM(vmThread);
 
 	/* loadLibrary is a static method, and its first argument is the name of the library */
 	libName = (j9array_t *)vmThread->arg0EA;
 	size = J9INDEXABLEOBJECT_SIZE(vmThread, *libName);
 
-#if defined(J9VM_GC_ARRAYLETS)
 	{
 		UDATA i;
 
@@ -2065,9 +2044,6 @@ jniCheckPrintJNIOnLoad(JNIEnv *env, U_32 level)
 			size = 0;
 		}
 	}
-#else /* J9VM_GC_ARRAYLETS */
-	data = (char *)(*libName + 1);
-#endif /* J9VM_GC_ARRAYLETS */
 
 	switch (level) {
 	case J9NLS_ERROR:
@@ -2086,9 +2062,7 @@ jniCheckPrintJNIOnLoad(JNIEnv *env, U_32 level)
 		j9mem_free_memory(data);
 	}
 
-	if (enteredWithoutVMAccess) {
-		releaseVMAccess(vmThread);
-	}
+	exitVM(vmThread);
 }
 
 
@@ -2128,7 +2102,7 @@ inBootstrapClass(JNIEnv* env)
 				if (cpEntry.flags & CPE_FLAG_BOOTSTRAP) {
 					J9UTF8 * className = J9ROMCLASS_CLASSNAME(clazz->romClass);
 					J9ROMMethod * romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(method);
-					J9UTF8 * name = J9ROMMETHOD_GET_NAME(UNTAGGED_METHOD_CP(method)->ramClass->romClass, romMethod);
+					J9UTF8 * name = J9ROMMETHOD_NAME(romMethod);
 
 					/* special case for JNI_OnLoad */
 					if (isLoadLibraryWithPath(className, name)) {
@@ -2304,7 +2278,7 @@ jniCheckCall(const char* function, JNIEnv* env, jobject receiver, UDATA methodTy
 	J9Class *declaringClass = J9_CLASS_FROM_METHOD(ramMethod);
 	jclass declaringClassRef;
 	J9ROMMethod *romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(ramMethod);
-	J9UTF8 *sig = J9ROMMETHOD_GET_SIGNATURE(UNTAGGED_METHOD_CP(ramMethod)->ramClass->romClass,romMethod);
+	J9UTF8 *sig = J9ROMMETHOD_SIGNATURE(romMethod);
 	char *returnSig;
 	UDATA novalist = vm->checkJNIData.options & JNICHK_NOVALIST;
 
@@ -2313,13 +2287,13 @@ jniCheckCall(const char* function, JNIEnv* env, jobject receiver, UDATA methodTy
 	jniCallIn((J9VMThread *) env);
 
 	if (methodType == METHOD_CONSTRUCTOR) {
-		J9UTF8* name = J9ROMMETHOD_GET_NAME(UNTAGGED_METHOD_CP(ramMethod)->ramClass->romClass,romMethod);
+		J9UTF8* name = J9ROMMETHOD_NAME(romMethod);
 		if ( (J9UTF8_DATA(name)[0] != '<') || (J9UTF8_LENGTH(name) != sizeof("<init>") - 1) ) {
 			jniCheckFatalErrorNLS(env, J9NLS_JNICHK_METHOD_IS_NOT_CONSTRUCTOR, function);
 		}
 	}
 
-	if ( ((romMethod->modifiers & J9_JAVA_STATIC) == J9_JAVA_STATIC) != (methodType == METHOD_STATIC) ) {
+	if ( ((romMethod->modifiers & J9AccStatic) == J9AccStatic) != (methodType == METHOD_STATIC) ) {
 		if (methodType == METHOD_STATIC) {
 			jniCheckFatalErrorNLS(env, J9NLS_JNICHK_METHOD_IS_NOT_STATIC, function);
 		} else {

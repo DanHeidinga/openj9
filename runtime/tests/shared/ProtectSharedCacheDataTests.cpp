@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2015 IBM Corp. and others
+ * Copyright (c) 2001, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -137,7 +137,7 @@ testProtectSharedCacheData_test1(J9JavaVM* vm)
 	INFOPRINTF("Case mprotect=nopartialpages\n");
 #endif
 
-	vm->internalVMFunctions->internalAcquireVMAccess(vm->mainThread);
+	vm->internalVMFunctions->internalEnterVMFromJNI(vm->mainThread);
 
 	if (NULL == (osCacheMem = (char *)j9mem_allocate_memory(ProtectSharedCacheDataOSCache::getRequiredConstrBytes(), J9MEM_CATEGORY_CLASSES))) {
 		ERRPRINTF("Failed to allocate memory for testProtectNewROMClassData_test1");
@@ -157,6 +157,7 @@ testProtectSharedCacheData_test1(J9JavaVM* vm)
 		rc = FAIL;
 		goto done;
 	}
+	UnitTest::unitTest = UnitTest::PROTECT_NEW_ROMCLASS_DATA_TEST;
 
 	myfakeoscache->resetTestVars();
 
@@ -313,6 +314,7 @@ testProtectSharedCacheData_test1(J9JavaVM* vm)
 		rc = FAIL;
 		goto done;
 	}
+	UnitTest::unitTest = UnitTest::PROTECT_NEW_ROMCLASS_DATA_TEST;
 
 	cacheMap = (SH_CacheMap *)vm->sharedClassConfig->sharedClassCache;
 	cc = (SH_CompositeCacheImpl *)cacheMap->getCompositeCacheAPI();
@@ -340,7 +342,8 @@ done:
 	if (NULL != osCacheMem) {
 		j9mem_free_memory(osCacheMem);
 	}
-	vm->internalVMFunctions->internalReleaseVMAccess(vm->mainThread);
+	vm->internalVMFunctions->internalExitVMToJNI(vm->mainThread);
+	UnitTest::unitTest = UnitTest::NO_TEST;
 	return rc;
 }
 
@@ -384,7 +387,7 @@ testProtectSharedCacheData_test2(J9JavaVM* vm)
 	INFOPRINTF("Case mprotect=default or mprotect=partialpages\n");
 #endif
 
-	vm->internalVMFunctions->internalAcquireVMAccess(vm->mainThread);
+	vm->internalVMFunctions->internalEnterVMFromJNI(vm->mainThread);
 
 	if (NULL == (osCacheMem = (char *)j9mem_allocate_memory(ProtectSharedCacheDataOSCache::getRequiredConstrBytes(), J9MEM_CATEGORY_CLASSES))) {
 		ERRPRINTF("Failed to allocate memory for testProtectNewROMClassData_test2");
@@ -404,6 +407,7 @@ testProtectSharedCacheData_test2(J9JavaVM* vm)
 		rc = FAIL;
 		goto done;
 	}
+	UnitTest::unitTest = UnitTest::PROTECT_NEW_ROMCLASS_DATA_TEST;
 
 	myfakeoscache->resetTestVars();
 
@@ -601,6 +605,7 @@ testProtectSharedCacheData_test2(J9JavaVM* vm)
 		rc = FAIL;
 		goto done;
 	}
+	UnitTest::unitTest = UnitTest::PROTECT_NEW_ROMCLASS_DATA_TEST;
 
 	cacheMap = (SH_CacheMap *)vm->sharedClassConfig->sharedClassCache;
 	cc = (SH_CompositeCacheImpl *)cacheMap->getCompositeCacheAPI();
@@ -628,7 +633,8 @@ done:
 	if (NULL != osCacheMem) {
 		j9mem_free_memory(osCacheMem);
 	}
-	vm->internalVMFunctions->internalReleaseVMAccess(vm->mainThread);
+	vm->internalVMFunctions->internalExitVMToJNI(vm->mainThread);
+	UnitTest::unitTest = UnitTest::NO_TEST;
 	return rc;
 }
 
@@ -665,7 +671,7 @@ testProtectSharedCacheData_test3(J9JavaVM* vm)
 
 	INFOPRINTF("Case mprotect=onfind\n");
 
-	vm->internalVMFunctions->internalAcquireVMAccess(vm->mainThread);
+	vm->internalVMFunctions->internalEnterVMFromJNI(vm->mainThread);
 
 	if (NULL == (osCacheMem = (char *)j9mem_allocate_memory(ProtectSharedCacheDataOSCache::getRequiredConstrBytes(), J9MEM_CATEGORY_CLASSES))) {
 		ERRPRINTF("Failed to allocate memory for testProtectNewROMClassData_test1");
@@ -685,6 +691,7 @@ testProtectSharedCacheData_test3(J9JavaVM* vm)
 		rc = FAIL;
 		goto done;
 	}
+	UnitTest::unitTest = UnitTest::PROTECT_NEW_ROMCLASS_DATA_TEST;
 
 	myfakeoscache->resetTestVars();
 
@@ -739,6 +746,7 @@ done:
 	if (NULL != osCacheMem) {
 		j9mem_free_memory(osCacheMem);
 	}
-	vm->internalVMFunctions->internalReleaseVMAccess(vm->mainThread);
+	vm->internalVMFunctions->internalExitVMToJNI(vm->mainThread);
+	UnitTest::unitTest = UnitTest::NO_TEST;
 	return rc;
 }

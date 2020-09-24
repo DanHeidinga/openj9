@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -53,21 +52,45 @@ private:
 	UDATA _descriptionIndex;	/**< current bit number in description word */
 	UDATA *_leafDescriptionPtr;	/**< current leaf-bit description pointer */
 	UDATA _leafDescription;		/**< current leaf-bit description word */
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+	bool const _compressObjectReferences;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 
 protected:
 
 public:
+	/**
+	 * Return back true if object references are compressed
+	 * @return true, if object references are compressed
+	 */
+	MMINLINE bool compressObjectReferences() {
+#if defined(OMR_GC_COMPRESSED_POINTERS)
+#if defined(OMR_GC_FULL_POINTERS)
+#if defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES)
+		return (bool)OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES;
+#else /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+		return _compressObjectReferences;
+#endif /* defined(OMR_OVERRIDE_COMPRESS_OBJECT_REFERENCES) */
+#else /* defined(OMR_GC_FULL_POINTERS) */
+		return true;
+#endif /* defined(OMR_GC_FULL_POINTERS) */
+#else /* defined(OMR_GC_COMPRESSED_POINTERS) */
+		return false;
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) */
+	}
+
 	/**
 	 * Return SlotObject for next leaf slot (or NULL if there are no more leaf slots)
 	 * @return SlotObject
 	 */
 	MMINLINE GC_SlotObject *nextLeafSlot()
 	{
+		bool const compressed = compressObjectReferences();
 		while(_scanPtr < _endPtr) {
 			/* Record the slot information */
 			if ((1 == (_description & 1)) && (1 == (_leafDescription & 1))) {
 				_slotObject.writeAddressToSlot(_scanPtr);
-				_scanPtr += 1;
+				_scanPtr = GC_SlotObject::addToSlotAddress(_scanPtr, 1, compressed);
 
 				/* Advance the description pointer information */
 				if(--_descriptionIndex) {
@@ -82,7 +105,7 @@ public:
 				}
 				return &_slotObject;
 			} else {
-				_scanPtr += 1;
+				_scanPtr = GC_SlotObject::addToSlotAddress(_scanPtr, 1, compressed);
 
 				/* Advance the description pointer information */
 				if(--_descriptionIndex) {
@@ -107,11 +130,12 @@ public:
 	 */
 	MMINLINE GC_SlotObject *nextNonLeafSlot()
 	{
+		bool const compressed = compressObjectReferences();
 		while(_scanPtr < _endPtr) {
 			/* Record the slot information */
 			if ((1 == (_description & 1)) && (0 == (_leafDescription & 1))) {
 				_slotObject.writeAddressToSlot(_scanPtr);
-				_scanPtr += 1;
+				_scanPtr = GC_SlotObject::addToSlotAddress(_scanPtr, 1, compressed);
 
 				/* Advance the description pointer information */
 				if(--_descriptionIndex) {
@@ -126,7 +150,7 @@ public:
 				}
 				return &_slotObject;
 			} else {
-				_scanPtr += 1;
+				_scanPtr = GC_SlotObject::addToSlotAddress(_scanPtr, 1, compressed);
 
 				/* Advance the description pointer information */
 				if(--_descriptionIndex) {
@@ -153,7 +177,7 @@ public:
 	MMINLINE void advanceToSlot(fj9object_t *slotPtr)
 	{
 		Assert_MM_true(slotPtr >= _scanPtr);
-		UDATA bitsToTravel = slotPtr - _scanPtr;
+		UDATA bitsToTravel = GC_SlotObject::subtractSlotAddresses(slotPtr, _scanPtr, compressObjectReferences());
 		if (NULL != _descriptionPtr) {
 			Assert_MM_true(J9BITS_BITS_IN_SLOT >= _descriptionIndex);
 			/* _descriptionIndex uses backward math so put it in forward-facing bit counts */
@@ -194,9 +218,12 @@ public:
 		, _descriptionIndex(0)
 		, _leafDescriptionPtr(NULL)
 		, _leafDescription(0)
+#if defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS)
+		, _compressObjectReferences(J9JAVAVM_COMPRESS_OBJECT_REFERENCES(vm))
+#endif /* defined(OMR_GC_COMPRESSED_POINTERS) && defined(OMR_GC_FULL_POINTERS) */
 	  {
 		_objectPtr = objectPtr;
-		J9Class *clazzPtr = J9GC_J9OBJECT_CLAZZ(objectPtr);
+		J9Class *clazzPtr = J9GC_J9OBJECT_CLAZZ_VM(objectPtr, vm);
 		/* Set up the description bits */
 		UDATA tempDescription = (UDATA)clazzPtr->instanceDescription;
 		UDATA tempLeafDescription = (UDATA)clazzPtr->instanceLeafDescription;
@@ -216,8 +243,8 @@ public:
 		_descriptionIndex = J9BITS_BITS_IN_SLOT;
 
 		/* Set current and end scan pointers */
-		_scanPtr = (fj9object_t *)(objectPtr + 1);
-		_endPtr = (fj9object_t *)((U_8*)_scanPtr +clazzPtr->totalInstanceSize);
+		_scanPtr = (fj9object_t *)((U_8*)objectPtr + J9JAVAVM_OBJECT_HEADER_SIZE(vm));
+		_endPtr = (fj9object_t *)((U_8*)_scanPtr + clazzPtr->totalInstanceSize);
 	  }
 };
 

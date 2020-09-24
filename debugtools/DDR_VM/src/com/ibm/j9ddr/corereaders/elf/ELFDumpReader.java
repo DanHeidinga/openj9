@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2009, 2018 IBM Corp. and others
+ * Copyright (c) 2009, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -25,8 +25,10 @@ import static com.ibm.j9ddr.corereaders.elf.ELFFileReader.ARCH_AMD64;
 import static com.ibm.j9ddr.corereaders.elf.ELFFileReader.ARCH_IA32;
 import static com.ibm.j9ddr.corereaders.elf.ELFFileReader.ARCH_PPC32;
 import static com.ibm.j9ddr.corereaders.elf.ELFFileReader.ARCH_PPC64;
+import static com.ibm.j9ddr.corereaders.elf.ELFFileReader.ARCH_RISCV64;
 import static com.ibm.j9ddr.corereaders.elf.ELFFileReader.ARCH_S390;
 import static com.ibm.j9ddr.corereaders.elf.ELFFileReader.ARCH_ARM;
+import static com.ibm.j9ddr.corereaders.elf.ELFFileReader.ARCH_AARCH64;
 import static com.ibm.j9ddr.corereaders.elf.ELFFileReader.AT_ENTRY;
 import static com.ibm.j9ddr.corereaders.elf.ELFFileReader.AT_HWCAP;
 import static com.ibm.j9ddr.corereaders.elf.ELFFileReader.AT_NULL;
@@ -228,11 +230,11 @@ public abstract class ELFDumpReader implements ILibraryDependentCore
 				return new ELFS39031DumpReader(reader);
 			}
 		case (ARCH_ARM) :
-			if(reader.is64Bit()) {
-				throw new IOException("Unsupported architecture - ARM 64");
-			} else {
-				return new ELFARM32DumpReader(reader);
-			}
+			return new ELFARM32DumpReader(reader);
+		case (ARCH_AARCH64) :
+			return new ELFAArch64DumpReader(reader);
+		case (ARCH_RISCV64) :
+			return new ELFRISCV64DumpReader(reader);
 		default:
 			throw new IOException("Unrecognised machine type: " + reader.getMachineType());
 		}
@@ -495,7 +497,7 @@ public abstract class ELFDumpReader implements ILibraryDependentCore
 			}
 		}
 		
-		// TODO - Sort modules. For the sake of tidyness.
+		// TODO - Sort modules. For the sake of tidiness.
 		_modules.addAll(allModules);
 		ELFFileReader readerForExectuableOnDiskOrAppended = getReaderForModuleOnDiskOrAppended(executableName);
 		_executable = createModuleFromElfReader(executableBaseAddress, executableName, executableELF, readerForExectuableOnDiskOrAppended);
@@ -1210,8 +1212,10 @@ public abstract class ELFDumpReader implements ILibraryDependentCore
 				instructionPointer = maskInstructionPointer(getLinkRegisterFrom(registers));
 			}
 
-			if (0 != instructionPointer && 0 != basePointer	&& isValidAddress(instructionPointer)
-					&& isValidAddress(stackPointer)) {
+			if ((0 != instructionPointer)
+				&& isValidAddress(instructionPointer)
+				&& isValidAddress(stackPointer)
+			) {
 				IMemoryRange range = _process.getRangeForAddress(stackPointer);
 				memoryRanges.add(new MemoryRange(_process.getAddressSpace(), range, "stack"));
 				UnwindTable unwindTable = null;
@@ -1267,7 +1271,7 @@ public abstract class ELFDumpReader implements ILibraryDependentCore
 							unwindTable = unwinder.getUnwindTableForInstructionAddress(instructionPointer);
 							// basePointer = newStackPointer;
 
-						} else {
+						} else if (basePointer != 0) {
 //							 System.err.printf("Using basic unwind for frame %d, ip: 0x%x\n", loops, instructionPointer);
 							// previousBasePointer = basePointer;
 							if( isValidAddress(instructionPointer) ) {
@@ -1278,7 +1282,9 @@ public abstract class ELFDumpReader implements ILibraryDependentCore
 							ptr += _process.bytesPerPointer() * getOffsetToIPFromBP();
 							instructionPointer = maskInstructionPointer(_process.getPointerAt(ptr));
 							unwindTable = unwinder.getUnwindTableForInstructionAddress(instructionPointer);
-							// TODO - if we do tranistion back to unwinding with DWARF we need to get the registers right.
+							// TODO - if we do transition back to unwinding with DWARF we need to get the registers right.
+						} else {
+							logger.log(Level.FINER, "Base pointer is zero");
 						}
 
 //						System.err.printf("Instruction pointer is 0x%x, unwind table is: %s\n", instructionPointer, unwindTable);

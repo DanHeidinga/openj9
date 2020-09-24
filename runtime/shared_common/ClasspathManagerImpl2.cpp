@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2016 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -390,7 +390,7 @@ SH_ClasspathManagerImpl2::hasTimestampChanged(J9VMThread* currentThread, Classpa
 		if (knownLLH) {
 			header = knownLLH;		/* Optimization: Don't need to get mutex and do lookup if header is provided */
 		} else {
-			itemPath = itemToCheck->getPath(&pathLen);
+			itemPath = itemToCheck->getLocation(&pathLen);
 			header = cpeTableLookup(currentThread, itemPath, pathLen, 0);			/* 0 = isToken. Certainly won't be a token. */
 			if (header == NULL) {
 				/* CMVC 131285: This is not expected to happen, but has been seen with concurrent writing 
@@ -705,24 +705,24 @@ SH_ClasspathManagerImpl2::localUpdate_FindIdentified(J9VMThread* currentThread, 
  * Associates a classpath in the cache with a classpath from a local classloader by adding it to the identified array.
  * Note that since the modified context does not change for a single JVM, it is irrelevant to classpath cacheing.
  * Returns 0 if ok or -1 for failure.
+ * 
+ * Caller must hold _identifiedMutex.
  */
 IDATA
 SH_ClasspathManagerImpl2::local_StoreIdentified(J9VMThread* currentThread, ClasspathItem* localCP, ClasspathWrapper* cpInCache) 
 {
 	Trc_SHR_CMI_local_StoreIdentified_Entry(currentThread, localCP, cpInCache);
+	Trc_SHR_Assert_ShouldHaveLocalMutex(_identifiedMutex);
 
-	if (_cache->enterLocalMutex(currentThread, _identifiedMutex, "identifiedMutex", "local_StoreIdentified")==0) {
-		if (testForClasspathReset(currentThread)) {
-			setIdentifiedClasspath(currentThread, &_identifiedClasspaths, localCP->getHelperID(), localCP->getItemsAdded(), NULL, 0, cpInCache);
-		}
-		_cache->exitLocalMutex(currentThread, _identifiedMutex, "identifiedMutex", "local_StoreIdentified");
-		if ((_identifiedClasspaths == NULL) || (_identifiedClasspaths->size == 0)) {
-			/* Now that we can choose to make the identified array NULL if we exceed a number of classpaths, this is no longer an error condition */
-			/* CMI_ERR_TRACE(J9NLS_SHRC_CMI_FAILED_CREATE_IDCPARRAY); */
-			*_runtimeFlagsPtr &= ~J9SHR_RUNTIMEFLAG_ENABLE_LOCAL_CACHEING;
-			Trc_SHR_CMI_local_StoreIdentified_Exit1(currentThread);
-			return -1;
-		}
+	if (testForClasspathReset(currentThread)) {
+		setIdentifiedClasspath(currentThread, &_identifiedClasspaths, localCP->getHelperID(), localCP->getItemsAdded(), NULL, 0, cpInCache);
+	}
+	if ((_identifiedClasspaths == NULL) || (_identifiedClasspaths->size == 0)) {
+		/* Now that we can choose to make the identified array NULL if we exceed a number of classpaths, this is no longer an error condition */
+		/* CMI_ERR_TRACE(J9NLS_SHRC_CMI_FAILED_CREATE_IDCPARRAY); */
+		*_runtimeFlagsPtr &= ~J9SHR_RUNTIMEFLAG_ENABLE_LOCAL_CACHEING;
+		Trc_SHR_CMI_local_StoreIdentified_Exit1(currentThread);
+		return -1;
 	}
 
 	Trc_SHR_CMI_local_StoreIdentified_Exit2(currentThread);
@@ -743,7 +743,7 @@ SH_ClasspathManagerImpl2::localUpdate_CheckManually(J9VMThread* currentThread, C
 
 	Trc_SHR_CMI_localUpdate_CheckManually_Entry(currentThread, cp);
 
-	path = cp->itemAt(0)->getPath(&pathLen);
+	path = cp->itemAt(0)->getLocation(&pathLen);
 	known = cpeTableLookup(currentThread, path, pathLen, (cp->getType()==CP_TYPE_TOKEN));
 	if (known && known->_list) {
 		CpLinkedListImpl* cpInCache = NULL;
@@ -831,9 +831,16 @@ SH_ClasspathManagerImpl2::update(J9VMThread* currentThread, ClasspathItem* local
 
 	/* If we found the classpath in the cache, it wasn't stale and it hasn't already been identified, add it to the identified array */
 	if ((*foundCP && !foundIdentified) && (localCP->getType()==CP_TYPE_CLASSPATH) && (*_runtimeFlagsPtr & J9SHR_RUNTIMEFLAG_ENABLE_LOCAL_CACHEING)) {
-		if (local_StoreIdentified(currentThread, localCP, *foundCP)==-1) {
-			Trc_SHR_CMI_Update_Exit1(currentThread);
-			return -1;		/* Error already reported */
+		if (0 == _cache->enterLocalMutex(currentThread, _identifiedMutex, "identifiedMutex", "update")) {
+			if (local_StoreIdentified(currentThread, localCP, *foundCP)==-1) {
+				Trc_SHR_CMI_Update_Exit1(currentThread);
+				_cache->exitLocalMutex(currentThread, _identifiedMutex, "identifiedMutex", "update");
+				return -1;		/* Error already reported */
+			}
+			_cache->exitLocalMutex(currentThread, _identifiedMutex, "identifiedMutex", "update");
+		} else {
+			Trc_SHR_CMI_Update_Exit5(currentThread);
+			return -1;
 		}
 	}
 
@@ -845,6 +852,8 @@ SH_ClasspathManagerImpl2::update(J9VMThread* currentThread, ClasspathItem* local
  * Looks for identified classpath in identified array.
  * Note that since the modified context does not change for a single JVM, it is irrelevant to classpath cacheing.
  * Returns helperID of identified classpath if one is found. Else returns ID_NOT_FOUND.
+ * 
+ * Caller must hold _identifiedMutex.
  */
 IDATA
 SH_ClasspathManagerImpl2::localValidate_FindIdentified(J9VMThread* currentThread, ClasspathWrapper* cpInCache, IDATA walkFromID) 
@@ -852,14 +861,10 @@ SH_ClasspathManagerImpl2::localValidate_FindIdentified(J9VMThread* currentThread
 	IDATA identifiedID = ID_NOT_FOUND;
 
 	Trc_SHR_CMI_localValidate_FindIdentified_Entry(currentThread, cpInCache);
-
-	if (_cache->enterLocalMutex(currentThread, _identifiedMutex, "identifiedMutex", "localValidate_FindIdentified")==0) {
-		if (testForClasspathReset(currentThread)) {
-			identifiedID = getIDForIdentified(_portlib, _identifiedClasspaths, cpInCache, walkFromID);
-		}
-		_cache->exitLocalMutex(currentThread, _identifiedMutex, "identifiedMutex", "localValidate_FindIdentified");
-	} /* If monitor_enter fails, just do manual match */
-
+	Trc_SHR_Assert_ShouldHaveLocalMutex(_identifiedMutex);
+	if (testForClasspathReset(currentThread)) {
+		identifiedID = getIDForIdentified(_portlib, _identifiedClasspaths, cpInCache, walkFromID);
+	}
 	if (identifiedID==ID_NOT_FOUND) {
 		Trc_SHR_CMI_localValidate_FindIdentified_ExitNotFound(currentThread);
 	} else {
@@ -899,6 +904,7 @@ SH_ClasspathManagerImpl2::localValidate_CheckAndTimestampManually(J9VMThread* cu
 	if ((indexInCompare < 0) || (indexInCompare > testCPIndex)) {
 		if (!(foundIdentified & (ID_NOT_FOUND | ID_NOT_SET)) && (compareTo->getType()==CP_TYPE_CLASSPATH) && (*_runtimeFlagsPtr & J9SHR_RUNTIMEFLAG_ENABLE_LOCAL_CACHEING)) {
 			Trc_SHR_CMI_localValidate_CheckAndTimestampManually_RegisterFailed(currentThread);
+			Trc_SHR_Assert_ShouldHaveLocalMutex(_identifiedMutex);
 			registerFailedMatch(currentThread, _identifiedClasspaths, compareTo->getHelperID(), foundIdentified, testCPIndex, NULL, 0);
 		}
 		Trc_SHR_CMI_localValidate_CheckAndTimestampManually_Exit1(currentThread, indexInCompare);
@@ -974,8 +980,8 @@ SH_ClasspathManagerImpl2::localValidate_CheckAndTimestampManually(J9VMThread* cu
 			 * and running this check, store the stale item (markStale happens later) and return -1
 			 * which will cause the FIND to fail. 
 			 */
-			/* doTryLockJar = false for non-boostrap because we are trying to load from the cache, not from disk, so JARs may not yet be locked by the classloader.
-				Boostrap loader is always helperID==0 and it DOES lock its jars, so this is safe. */
+			/* doTryLockJar = false for non-bootstrap because we are trying to load from the cache, not from disk, so JARs may not yet be locked by the classloader.
+				Bootstrap loader is always helperID==0 and it DOES lock its jars, so this is safe. */
 			if (rc == 1) {
 				Trc_SHR_CMI_localValidate_CheckAndTimestampManually_DetectedStaleCPEI(currentThread, foundItem);
 				if (!(*staleItem)) {
@@ -1029,6 +1035,7 @@ SH_ClasspathManagerImpl2::validate(J9VMThread* currentThread, ROMClassWrapper* f
 	ClasspathItem* testCPI = NULL;
 	I_16 localFoundAtIndex = -1;
 	bool addToIdentified = false;
+	bool releaseIdentifiedMutex = false;
 	IDATA result = -2;
 	IDATA foundIdentified = ID_NOT_SET;
 
@@ -1041,7 +1048,7 @@ SH_ClasspathManagerImpl2::validate(J9VMThread* currentThread, ROMClassWrapper* f
 		return -1;
 	}
 	
-	testCP = (ClasspathWrapper*)RCWCLASSPATH(foundROMClass);
+	testCP = (ClasspathWrapper*)_cache->getAddressFromJ9ShrOffset(&(foundROMClass->theCpOffset));
 	testCPIndex = foundROMClass->cpeIndex;
 	testCPI = (ClasspathItem*)CPWDATA(testCP);
 
@@ -1065,29 +1072,35 @@ SH_ClasspathManagerImpl2::validate(J9VMThread* currentThread, ROMClassWrapper* f
 		IDATA prevMatch = ID_NOT_FOUND;
 
 		foundIdentified = -1;
-
-		/* Multiple ClassLoaders could have the same classpath, so search until the matching helperID is found */
-		do {
-			if ((foundIdentified = localValidate_FindIdentified(currentThread, testCP, foundIdentified+1)) != ID_NOT_FOUND) {
-				prevMatch = foundIdentified;
-			}
-		} while ((foundIdentified != ID_NOT_FOUND) && (foundIdentified != compareToID));
-
-		/* This means we have a positive match - testCP is the same classpath as that of the caller classloader */
-		if (foundIdentified==compareToID) {
-			localFoundAtIndex = testCPIndex;
-		} else {
-			/* At this point, foundIdentified will always be ID_NOT_FOUND. This means that testCP is not exactly the same classpath as the caller
-			 * classloader's, but we have identified it and it could still be a valid match. Test to see if we have tried this match before and failed it. */
-			foundIdentified = prevMatch;
-			if (foundIdentified != ID_NOT_FOUND) {
-				if (hasMatchFailedBefore(currentThread, _identifiedClasspaths, compareToID, foundIdentified, testCPIndex, NULL, 0)) {
-					/* trace event is at level 1 and trace exit message is at level 2 as per CMVC 155318/157683 */
-					Trc_SHR_CMI_validate_ExitFailedBefore_Event(currentThread, foundROMClass, compareTo, confirmedEntries);
-					Trc_SHR_CMI_validate_ExitFailedBefore(currentThread);
-					goto _done;
+		if (0 == _cache->enterLocalMutex(currentThread, _identifiedMutex, "identifiedMutex", "validate")) {
+			releaseIdentifiedMutex = true;
+			/* Multiple ClassLoaders could have the same classpath, so search until the matching helperID is found */
+			do {
+				if ((foundIdentified = localValidate_FindIdentified(currentThread, testCP, foundIdentified+1)) != ID_NOT_FOUND) {
+					prevMatch = foundIdentified;
+				}
+			} while ((foundIdentified != ID_NOT_FOUND) && (foundIdentified != compareToID));
+	
+			/* This means we have a positive match - testCP is the same classpath as that of the caller classloader */
+			if (foundIdentified==compareToID) {
+				localFoundAtIndex = testCPIndex;
+			} else {
+				/* At this point, foundIdentified will always be ID_NOT_FOUND. This means that testCP is not exactly the same classpath as the caller
+				 * classloader's, but we have identified it and it could still be a valid match. Test to see if we have tried this match before and failed it. */
+				foundIdentified = prevMatch;
+				if (foundIdentified != ID_NOT_FOUND) {
+					if (hasMatchFailedBefore(currentThread, _identifiedClasspaths, compareToID, foundIdentified, testCPIndex, NULL, 0)) {
+						/* trace event is at level 1 and trace exit message is at level 2 as per CMVC 155318/157683 */
+						Trc_SHR_CMI_validate_ExitFailedBefore_Event(currentThread, foundROMClass, compareTo, confirmedEntries);
+						Trc_SHR_CMI_validate_ExitFailedBefore(currentThread);
+						_cache->exitLocalMutex(currentThread, _identifiedMutex, "identifiedMutex", "validate");
+						goto _done;
+					}
 				}
 			}
+		} else {
+			Trc_SHR_CMI_validate_Exit_IdentifiedMutex_Failed(currentThread);
+			return -1;
 		}
 	}
 
@@ -1099,7 +1112,34 @@ SH_ClasspathManagerImpl2::validate(J9VMThread* currentThread, ROMClassWrapper* f
 	if (localFoundAtIndex == -1) {
 		/* We didn't find an exact classpath match. Walk the classpaths and check for validity. Note that the timestamp check is incorporated for efficiency. */
 		localFoundAtIndex = localValidate_CheckAndTimestampManually(currentThread, testCP, testCPIndex, compareTo, foundIdentified, &addToIdentified, staleItem);
+		/* If the classpath has just been identified by localValidate_CheckAndTimestampManually, store it in the identified array */
+		if (addToIdentified 
+			&& (CP_TYPE_CLASSPATH == compareTo->getType()) 
+			&& J9_ARE_ALL_BITS_SET(*_runtimeFlagsPtr, J9SHR_RUNTIMEFLAG_ENABLE_LOCAL_CACHEING)
+		) {
+			if (!releaseIdentifiedMutex) {
+				if (0 == _cache->enterLocalMutex(currentThread, _identifiedMutex, "identifiedMutex", "validate")) {
+					releaseIdentifiedMutex = true;
+				}
+			}
+			/* Identification succeeded. Store identified classpath. */
+			if (releaseIdentifiedMutex) {
+				if (-1 == local_StoreIdentified(currentThread, compareTo, testCP)) {
+					/* trace event is at level 1 and trace exit message is at level 2 as per CMVC 155318/157683  */
+					Trc_SHR_CMI_validate_ExitError_Event(currentThread, foundROMClass, compareTo, confirmedEntries);
+					Trc_SHR_CMI_validate_ExitError(currentThread);
+					_cache->exitLocalMutex(currentThread, _identifiedMutex, "identifiedMutex", "validate");
+					return -1;		/* Error already reported */
+				}
+			}
+		}
+		if (releaseIdentifiedMutex) {
+			_cache->exitLocalMutex(currentThread, _identifiedMutex, "identifiedMutex", "validate");
+		}
 	} else {
+		if (releaseIdentifiedMutex) {
+			_cache->exitLocalMutex(currentThread, _identifiedMutex, "identifiedMutex", "validate");
+		}
 		/* If we found an identified classpath, check timestamps on the entries from jarsLockedToIndex upto and including localFoundAtIndex */
 		if ((compareTo->getType()!=CP_TYPE_TOKEN) && (*_runtimeFlagsPtr & J9SHR_RUNTIMEFLAG_ENABLE_TIMESTAMP_CHECKS)) {
 			I_16 jarsLockedToIndex = compareTo->getJarsLockedToIndex();
@@ -1109,8 +1149,8 @@ SH_ClasspathManagerImpl2::validate(J9VMThread* currentThread, ROMClassWrapper* f
 				ClasspathEntryItem* foundItem = testCPI->itemAt(i);
 				IDATA tsChangedVal;
 
-				/* doTryLockJar = false for non-boostrap because we are trying to load from the cache, not from disk, so JARs may not yet be locked by the classloader.
-					Boostrap loader is always helperID==0 and it DOES lock its jars, so this is safe. */
+				/* doTryLockJar = false for non-bootstrap because we are trying to load from the cache, not from disk, so JARs may not yet be locked by the classloader.
+					Bootstrap loader is always helperID==0 and it DOES lock its jars, so this is safe. */
 				tsChangedVal = hasTimestampChanged(currentThread, foundItem, NULL, (compareTo->getHelperID()==0));
 				if (tsChangedVal==JAR_LOCKED && i==jarsLockedToIndex+1) {
 					jarsLockedToIndex = i;
@@ -1133,17 +1173,6 @@ SH_ClasspathManagerImpl2::validate(J9VMThread* currentThread, ROMClassWrapper* f
 				}
 			}
 			compareTo->setJarsLockedToIndex(jarsLockedToIndex);
-		}
-	}
-
-	/* If the classpath has just been identified by localValidate_CheckAndTimestampManually, store it in the identified array */
-	if (addToIdentified && (compareTo->getType()==CP_TYPE_CLASSPATH) && (*_runtimeFlagsPtr & J9SHR_RUNTIMEFLAG_ENABLE_LOCAL_CACHEING)) {
-		/* Identification succeeded. Store identified classpath. */
-		if (local_StoreIdentified(currentThread, compareTo, testCP)==-1) {
-			/* trace event is at level 1 and trace exit message is at level 2 as per CMVC 155318/157683  */
-			Trc_SHR_CMI_validate_ExitError_Event(currentThread, foundROMClass, compareTo, confirmedEntries);
-			Trc_SHR_CMI_validate_ExitError(currentThread);
-			return -1;		/* Error already reported */
 		}
 	}
 
@@ -1229,7 +1258,7 @@ SH_ClasspathManagerImpl2::storeNew(J9VMThread* currentThread, const ShcItem* ite
 	for (I_16 i=0; i<cpi->getItemsAdded(); i++) {
 		bool isLastItem = (i==(cpi->getItemsAdded()-1));
 		U_16 pathLen = 0;
-		const char* path = cpi->itemAt(i)->getPath(&pathLen);
+		const char* path = cpi->itemAt(i)->getLocation(&pathLen);
 		U_8 isToken = (cpi->getType()==CP_TYPE_TOKEN);
 
 		if (!cpeTableUpdate(currentThread, path, pathLen, i, itemInCache, isToken, isLastItem, cachelet)) {
@@ -1272,7 +1301,7 @@ SH_ClasspathManagerImpl2::markClasspathsStale(J9VMThread* currentThread, Classpa
 	const char* path = NULL;
 	CpLinkedListHdr* header = NULL;
 
-	path = cpei->getPath(&pathLen);
+	path = cpei->getLocation(&pathLen);
 	Trc_SHR_CMI_markClasspathsStale_Entry(currentThread, pathLen, path);
 
 	header = cpeTableLookup(currentThread, path, pathLen, 0);		/* 0 == isToken. We will never mark token cpei stale */
@@ -1282,7 +1311,7 @@ SH_ClasspathManagerImpl2::markClasspathsStale(J9VMThread* currentThread, Classpa
 		Trc_SHR_Assert_ShouldNeverHappen();
 		return;
 	}
-	
+
 	if (cpToMark) {
 		walk = cpToMark;
 		do {

@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -609,6 +609,46 @@ j9gc_objaccess_cloneObject(J9VMThread *vmThread, J9Object *srcObject, J9Object *
 }
 
 /**
+ *
+ */
+BOOLEAN
+j9gc_objaccess_structuralCompareFlattenedObjects(J9VMThread *vmThread, J9Class *valueClass, j9object_t lhsObject, j9object_t rhsObject, UDATA startOffset)
+{
+	MM_ObjectAccessBarrier *barrier = MM_GCExtensions::getExtensions(vmThread)->accessBarrier;
+	return barrier->structuralCompareFlattenedObjects(vmThread, valueClass, lhsObject, rhsObject, startOffset);
+}
+
+/**
+ * Called by certain specs to copy objects
+ */
+void
+j9gc_objaccess_copyObjectFields(J9VMThread *vmThread, J9Class *valueClass, J9Object *srcObject, UDATA srcOffset, J9Object *destObject, UDATA destOffset)
+{
+	MM_ObjectAccessBarrier *barrier = MM_GCExtensions::getExtensions(vmThread)->accessBarrier;
+	return barrier->copyObjectFields(vmThread, valueClass, srcObject, srcOffset, destObject, destOffset);
+}
+
+/**
+ * Called by Interpreter during aastore of a flattend array
+ */
+void
+j9gc_objaccess_copyObjectFieldsToFlattenedArrayElement(J9VMThread *vmThread, J9ArrayClass *arrayClazz, j9object_t srcObject, J9IndexableObject *arrayRef, I_32 index)
+{
+	MM_ObjectAccessBarrier *barrier = MM_GCExtensions::getExtensions(vmThread)->accessBarrier;
+	return barrier->copyObjectFieldsToFlattenedArrayElement(vmThread, arrayClazz, srcObject, arrayRef, index);
+}
+
+/**
+ * Called by Interpreter during aaload of a flattend array
+ */
+void
+j9gc_objaccess_copyObjectFieldsFromFlattenedArrayElement(J9VMThread *vmThread, J9ArrayClass *arrayClazz, j9object_t destObject, J9IndexableObject *arrayRef, I_32 index)
+{
+	MM_ObjectAccessBarrier *barrier = MM_GCExtensions::getExtensions(vmThread)->accessBarrier;
+	return barrier->copyObjectFieldsFromFlattenedArrayElement(vmThread, arrayClazz, destObject, arrayRef, index);
+}
+
+/**
  * Called by certain specs to clone objects. See J9VMObjectAccessBarrier#cloneArray:into:sizeInElements:class:
  */
 void
@@ -678,38 +718,33 @@ J9WriteBarrierJ9ClassBatchStore(J9VMThread *vmThread, J9Class *dstJ9Class)
 	barrier->preBatchObjectStore(vmThread, dstJ9Class);	
 }
 
-/* The only read barrier is Scavenger concurrent copy, pre read */
 void
 J9ReadBarrier(J9VMThread *vmThread, fj9object_t *srcAddress)
 {
-#if defined(OMR_GC_CONCURRENT_SCAVENGER)
 	MM_ObjectAccessBarrier *barrier = MM_GCExtensions::getExtensions(vmThread->javaVM)->accessBarrier;
 	barrier->preObjectRead(vmThread, NULL, srcAddress);
-#endif
 }
 
 void
 J9ReadBarrierJ9Class(J9VMThread *vmThread, j9object_t *srcAddress)
 {
-#if defined(OMR_GC_CONCURRENT_SCAVENGER)
 	MM_ObjectAccessBarrier *barrier = MM_GCExtensions::getExtensions(vmThread->javaVM)->accessBarrier;
 	barrier->preObjectRead(vmThread, NULL, srcAddress);
-#endif
 }
 
 j9object_t
-j9gc_objaccess_monitorTableReadObject(J9VMThread *vmThread, j9object_t *srcAddress)
+j9gc_weakRoot_readObject(J9VMThread *vmThread, j9object_t *srcAddress)
 {
 	MM_ObjectAccessBarrier *barrier = MM_GCExtensions::getExtensions(vmThread->javaVM)->accessBarrier;
-	barrier->preMonitorTableSlotRead(vmThread, srcAddress);
+	barrier->preWeakRootSlotRead(vmThread, srcAddress);
 	return *srcAddress;
 }
 
 j9object_t
-j9gc_objaccess_monitorTableReadObjectVM(J9JavaVM *vm, j9object_t *srcAddress)
+j9gc_weakRoot_readObjectVM(J9JavaVM *vm, j9object_t *srcAddress)
 {
 	MM_ObjectAccessBarrier *barrier = MM_GCExtensions::getExtensions(vm)->accessBarrier;
-	barrier->preMonitorTableSlotRead(vm, srcAddress);
+	barrier->preWeakRootSlotRead(vm, srcAddress);
 	return *srcAddress;
 }
 

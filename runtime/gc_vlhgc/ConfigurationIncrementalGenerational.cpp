@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -40,6 +40,9 @@
 #include "HeapRegionDescriptorVLHGC.hpp"
 #include "HeapRegionManager.hpp"
 #include "HeapRegionManagerVLHGC.hpp"
+#if defined(OMR_GC_VLHGC_CONCURRENT_COPY_FORWARD)
+#include "HeapRegionStateTable.hpp"
+#endif /* defined(OMR_GC_VLHGC_CONCURRENT_COPY_FORWARD) */
 #include "HeapVirtualMemory.hpp"
 #include "MemorySpace.hpp"
 #include "MemorySubSpaceTarok.hpp"
@@ -49,6 +52,7 @@
 #include "PhysicalArenaRegionBased.hpp"
 #include "PhysicalSubArenaRegionBased.hpp"
 #include "SweepPoolManagerVLHGC.hpp"
+
 
 #define TAROK_MINIMUM_REGION_SIZE_BYTES (512 * 1024)
 
@@ -87,26 +91,68 @@ MM_Heap *
 MM_ConfigurationIncrementalGenerational::createHeapWithManager(MM_EnvironmentBase *env, UDATA heapBytesRequested, MM_HeapRegionManager *regionManager)
 {
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
-	
+
 	MM_Heap *heap = MM_HeapVirtualMemory::newInstance(env, extensions->heapAlignment, heapBytesRequested, regionManager);
-	if (NULL != heap) {
-		/* when we try to attach this heap to a region manager, we will need the card table since it needs to be NUMA-affinitized using the same logic as the heap so initialize it here */
-		extensions->cardTable = MM_IncrementalCardTable::newInstance(MM_EnvironmentVLHGC::getEnvironment(env), heap);
-		if (NULL == extensions->cardTable) {
-			heap->kill(env);
-			heap = NULL;
-		} else {
-			if (extensions->tarokEnableCompressedCardTable) {
-				extensions->compressedCardTable = MM_CompressedCardTable::newInstance(MM_EnvironmentVLHGC::getEnvironment(env), heap);
-				if (NULL == extensions->compressedCardTable) {
-					extensions->cardTable->kill(env);
-					extensions->cardTable = NULL;
-					heap->kill(env);
-					heap = NULL;
-				}
-			}
+	if (NULL == heap) {
+		return NULL;
+	}
+
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+	/* Enable double mapping if glibc version 2.27 or newer is found. For double map to
+	 * work we need a file descriptor, to get one we use shm_open(3)  or memfd_create(2);
+	 * shm_open(3) has 2 drawbacks: [I] shared memory is used; [II] does not support
+	 * anonymous huge pages. [I] shared memory in Linux systems has a limit (half of
+	 * physical memory). [II] if we create a file descriptor using shm_open(3) and then
+	 * try to mmap with huge pages with the respective file descriptor the mmap call
+	 * fails. It would only succeed if MAP_ANON flag was provided, but doing so ignores
+	 * the file descriptor which is the opposite of what we want. In a newer glibc
+	 * version (glibc 2.27 onwards) there’s a new function that does exactly what we
+	 * want, and that's memfd_create(2); however that's only supported in glibc 2.27. We
+	 * also need to check if region size is a bigger or equal to multiple of page size.
+	 *
+	 */
+	if (extensions->isArrayletDoubleMapRequested && extensions->isArrayletDoubleMapAvailable) {
+		uintptr_t pagesize = heap->getPageSize();
+		if (!extensions->memoryManager->isLargePage(env, pagesize) || (pagesize <= extensions->getOmrVM()->_arrayletLeafSize)) {
+			extensions->indexableObjectModel.setEnableDoubleMapping(true);
 		}
 	}
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
+
+	/* when we try to attach this heap to a region manager, we will need the card table since it needs to be NUMA-affinitized using the same logic as the heap so initialize it here */
+	extensions->cardTable = MM_IncrementalCardTable::newInstance(MM_EnvironmentVLHGC::getEnvironment(env), heap);
+	if (NULL == extensions->cardTable) {
+		heap->kill(env);
+		return NULL;
+	}
+
+	if (extensions->tarokEnableCompressedCardTable) {
+		extensions->compressedCardTable = MM_CompressedCardTable::newInstance(MM_EnvironmentVLHGC::getEnvironment(env), heap);
+		if (NULL == extensions->compressedCardTable) {
+			extensions->cardTable->kill(env);
+			extensions->cardTable = NULL;
+			heap->kill(env);
+			return NULL;
+		}
+	}
+
+#if defined(OMR_GC_VLHGC_CONCURRENT_COPY_FORWARD)
+	if (extensions->isConcurrentCopyForwardEnabled()) {
+		uintptr_t heapBase = (uintptr_t) heap->getHeapBase();
+		uintptr_t regionShift = regionManager->getRegionShift();
+		uintptr_t regionCount = heap->getMaximumPhysicalRange() >> regionShift;
+
+		extensions->heapRegionStateTable =  OMR::GC::HeapRegionStateTable::newInstance(env->getForge(), heapBase, regionShift, regionCount);
+		if (NULL == extensions->heapRegionStateTable) {
+			extensions->compressedCardTable->kill(env);
+			extensions->compressedCardTable = NULL;
+			extensions->cardTable->kill(env);
+			extensions->cardTable = NULL;
+			heap->kill(env);
+			return NULL;
+		}
+	}
+#endif /* defined(OMR_GC_VLHGC_CONCURRENT_COPY_FORWARD) */
 
 	return heap;
 }
@@ -267,11 +313,6 @@ MM_ConfigurationIncrementalGenerational::tearDown(MM_EnvironmentBase *env)
 {
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
 
-	if (NULL != extensions->globalAllocationManager) {
-		extensions->globalAllocationManager->kill(env);
-		extensions->globalAllocationManager = NULL;
-	}
-
 	if (NULL != extensions->sweepPoolManagerBumpPointer) {
 		extensions->sweepPoolManagerBumpPointer->kill(env);
 		extensions->sweepPoolManagerBumpPointer = NULL;
@@ -286,6 +327,13 @@ MM_ConfigurationIncrementalGenerational::tearDown(MM_EnvironmentBase *env)
 		extensions->compressedCardTable->kill(env);
 		extensions->compressedCardTable = NULL;
 	}
+
+#if defined(OMR_GC_VLHGC_CONCURRENT_COPY_FORWARD)
+	if (NULL != extensions->heapRegionStateTable) {
+		extensions->heapRegionStateTable->kill(env->getForge());
+		extensions->heapRegionStateTable = NULL;
+	}
+#endif /* defined(OMR_GC_VLHGC_CONCURRENT_COPY_FORWARD) */
 
 	MM_Configuration::tearDown(env);
 

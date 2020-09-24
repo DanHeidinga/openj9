@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -26,6 +25,12 @@
 #include "IndexableObjectAllocationModel.hpp"
 #include "Math.hpp"
 #include "MemorySpace.hpp"
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+#include "ArrayletLeafIterator.hpp"
+#include "HeapRegionManager.hpp"
+#include "HeapRegionDescriptorVLHGC.hpp"
+#include "Heap.hpp"
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
 
 /**
  * Allocation description and layout initialization. This is called before OMR allocates
@@ -67,10 +72,9 @@ MM_IndexableObjectAllocationModel::initializeAllocateDescription(MM_EnvironmentB
 		break;
 
 	case GC_ArrayletObjectModel::Discontiguous:
-		Assert_MM_true(0 < _numberOfArraylets);
 		/* non-empty discontiguous arrays require slow-path allocate */
 		if (isGCAllowed() || (0 == _numberOfIndexedFields)) {
-			/* _numberOfArraylets discontiguous leaves, all but last contains leaf size bytes */
+			/* _numberOfArraylets discontiguous leaves, all contains leaf size bytes */
 			layoutSizeInBytes = _dataSize;
 			_allocateDescription.setChunkedArray(true);
 			Trc_MM_allocateAndConnectNonContiguousArraylet_Entry(env->getLanguageVMThread(),
@@ -119,41 +123,28 @@ MM_IndexableObjectAllocationModel::initializeIndexableObject(MM_EnvironmentBase 
 	_allocateDescription.setSpine(spine);
 	if (NULL != spine) {
 		/* Set the array size */
-#if defined(OMR_GC_HYBRID_ARRAYLETS)
 		if (getAllocateDescription()->isChunkedArray()) {
 			extensions->indexableObjectModel.setSizeInElementsForDiscontiguous(spine, _numberOfIndexedFields);
 		} else {
 			extensions->indexableObjectModel.setSizeInElementsForContiguous(spine, _numberOfIndexedFields);
 		}
-#else
-		extensions->indexableObjectModel.setSizeInElementsForDiscontiguous(spine, _numberOfIndexedFields);
-#endif	/* defined(OMR_GC_HYBRID_ARRAYLETS) */
 	}
 
 
 	/* Lay out arraylet and arrayoid pointers */
 	switch (_layout) {
 	case GC_ArrayletObjectModel::InlineContiguous:
-#if defined(OMR_GC_HYBRID_ARRAYLETS)
 		Assert_MM_true(1 == _numberOfArraylets);
-#else /* OMR_GC_HYBRID_ARRAYLETS */
-		if (NULL != spine) {
-			/* Establish arraylet pointers */
-			spine = layoutContiguousArraylet(env, spine);
-		}
-#endif /* OMR_GC_HYBRID_ARRAYLETS */
 		break;
 
 	case GC_ArrayletObjectModel::Discontiguous:
 	case GC_ArrayletObjectModel::Hybrid:
 		if (NULL != spine) {
-#if defined(J9VM_GC_HYBRID_ARRAYLETS)
 			if(0 == _numberOfIndexedFields) {
 				/* Don't try to initialize the arrayoid for an empty NUA */
 				Trc_MM_allocateAndConnectNonContiguousArraylet_Exit(env->getLanguageVMThread(), spine);
 				break;
 			}
-#endif /* defined(J9VM_GC_HYBRID_ARRAYLETS) */
 			Trc_MM_allocateAndConnectNonContiguousArraylet_Summary(env->getLanguageVMThread(),
 					_numberOfIndexedFields, getAllocateDescription()->getContiguousBytes(), _numberOfArraylets);
 			spine = layoutDiscontiguousArraylet(env, spine);
@@ -190,10 +181,11 @@ MM_IndexableObjectAllocationModel::layoutContiguousArraylet(MM_EnvironmentBase *
 {
 	Assert_MM_true(_numberOfArraylets == _allocateDescription.getNumArraylets());
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
+	bool const compressed = env->compressObjectReferences();
 
 	/* set arraylet pointers in the spine. these all point into the data part of the spine */
 	fj9object_t *arrayoidPtr = extensions->indexableObjectModel.getArrayoidPointer(spine);
-	uintptr_t leafOffset = (uintptr_t)(arrayoidPtr + _numberOfArraylets);
+	uintptr_t leafOffset = (uintptr_t)GC_SlotObject::addToSlotAddress(arrayoidPtr, _numberOfArraylets, compressed);
 	if (_alignSpineDataSection) {
 		leafOffset = MM_Math::roundToCeiling(sizeof(uint64_t), leafOffset);
 	}
@@ -202,7 +194,7 @@ MM_IndexableObjectAllocationModel::layoutContiguousArraylet(MM_EnvironmentBase *
 		GC_SlotObject slotObject(env->getOmrVM(), arrayoidPtr);
 		slotObject.writeReferenceToSlot((omrobjectptr_t)leafOffset);
 		leafOffset += arrayletLeafSize;
-		arrayoidPtr += 1;
+		arrayoidPtr = GC_SlotObject::addToSlotAddress(arrayoidPtr, 1, compressed);
 	}
 
 	return spine;
@@ -224,6 +216,8 @@ MM_IndexableObjectAllocationModel::layoutDiscontiguousArraylet(MM_EnvironmentBas
 	Assert_MM_true(_numberOfArraylets == _allocateDescription.getNumArraylets());
 
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
+	GC_ArrayObjectModel *indexableObjectModel = &extensions->indexableObjectModel;
+	bool const compressed = env->compressObjectReferences();
 
 	/* determine how many bytes to allocate outside of the spine (in arraylet leaves) */
 	const uintptr_t arrayletLeafSize = env->getOmrVM()->_arrayletLeafSize;
@@ -234,7 +228,7 @@ MM_IndexableObjectAllocationModel::layoutDiscontiguousArraylet(MM_EnvironmentBas
 
 	/* allocate leaf for each arraylet and attach it to its leaf pointer in the spine */
 	uintptr_t arrayoidIndex = 0;
-	fj9object_t *arrayoidPtr = extensions->indexableObjectModel.getArrayoidPointer(spine);
+	fj9object_t *arrayoidPtr = indexableObjectModel->getArrayoidPointer(spine);
 	while (0 < bytesRemaining) {
 		/* allocate the next arraylet leaf */
 		void *leaf = env->_objectAllocationInterface->allocateArrayletLeaf(env, &_allocateDescription,
@@ -251,10 +245,10 @@ MM_IndexableObjectAllocationModel::layoutDiscontiguousArraylet(MM_EnvironmentBas
 
 		/* refresh the spine -- it might move if we GC while allocating the leaf */
 		spine = _allocateDescription.getSpine();
-		arrayoidPtr = extensions->indexableObjectModel.getArrayoidPointer(spine);
+		arrayoidPtr = indexableObjectModel->getArrayoidPointer(spine);
 
 		/* set the arrayoid pointer in the spine to point to the new leaf */
-		GC_SlotObject slotObject(env->getOmrVM(), &arrayoidPtr[arrayoidIndex]);
+		GC_SlotObject slotObject(env->getOmrVM(), GC_SlotObject::addToSlotAddress(arrayoidPtr, arrayoidIndex, compressed));
 		slotObject.writeReferenceToSlot((omrobjectptr_t)leaf);
 
 		bytesRemaining -= OMR_MIN(bytesRemaining, arrayletLeafSize);
@@ -264,29 +258,39 @@ MM_IndexableObjectAllocationModel::layoutDiscontiguousArraylet(MM_EnvironmentBas
 	if (NULL != spine) {
 		switch (_layout) {
 		case GC_ArrayletObjectModel::Discontiguous:
-			/* if last arraylet leaf is empty (contains 0 bytes) arrayoid pointer is set to NULL */
-			if (arrayoidIndex == (_numberOfArraylets - 1)) {
-				Assert_MM_true(0 == (_dataSize % arrayletLeafSize));
-				GC_SlotObject slotObject(env->getOmrVM(), &(arrayoidPtr[arrayoidIndex]));
-				slotObject.writeReferenceToSlot(NULL);
-			} else {
-				Assert_MM_true(0 != (_dataSize % arrayletLeafSize));
-				Assert_MM_true(arrayoidIndex == _numberOfArraylets);
+			indexableObjectModel->AssertArrayletIsDiscontiguous(spine);
+			Assert_MM_true(arrayoidIndex == _numberOfArraylets);
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+			if (indexableObjectModel->isDoubleMappingEnabled()) {
+				/**
+				 * There are some special cases where double mapping an arraylet is
+				 * not necessary; isArrayletDataDiscontiguous() details those cases.
+				 */
+				if (indexableObjectModel->isArrayletDataDiscontiguous(spine)) {
+					doubleMapArraylets(env, (J9Object *)spine);
+				}
 			}
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
 			break;
 
 		case GC_ArrayletObjectModel::Hybrid:
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+			/* Unreachable if double map is enabled */
+			if (indexableObjectModel->isDoubleMappingEnabled()) {
+				Assert_MM_double_map_unreachable();
+			}
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
 			/* last arrayoid points to end of arrayoid array in spine header (object-aligned if
 			 * required). (data size % leaf size) bytes of data are stored here (may be empty).
 			 */
 			Assert_MM_true(arrayoidIndex == (_numberOfArraylets - 1));
 			{
-				uintptr_t leafOffset = (uintptr_t)&(arrayoidPtr[_numberOfArraylets]);
+				uintptr_t leafOffset = (uintptr_t)GC_SlotObject::addToSlotAddress(arrayoidPtr, _numberOfArraylets, compressed);
 				if (_alignSpineDataSection) {
 					leafOffset = MM_Math::roundToCeiling(env->getObjectAlignmentInBytes(), leafOffset);
 				}
 				/* set the last arrayoid pointer to point to remainder data */
-				GC_SlotObject slotObject(env->getOmrVM(), &(arrayoidPtr[arrayoidIndex]));
+				GC_SlotObject slotObject(env->getOmrVM(), GC_SlotObject::addToSlotAddress(arrayoidPtr, arrayoidIndex, compressed));
 				slotObject.writeReferenceToSlot((omrobjectptr_t)leafOffset);
 			}
 			break;
@@ -300,5 +304,79 @@ MM_IndexableObjectAllocationModel::layoutDiscontiguousArraylet(MM_EnvironmentBas
 	return spine;
 }
 
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+#if !(defined(LINUX) && defined(J9VM_ENV_DATA64))
+/* Double map is only supported on LINUX 64 bit Systems for now */
+#error "Platform not supported by Double Map API"
+#endif /* !(defined(LINUX) && defined(J9VM_ENV_DATA64)) */
+void * 
+MM_IndexableObjectAllocationModel::doubleMapArraylets(MM_EnvironmentBase *env, J9Object *objectPtr) 
+{
+	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
+	J9JavaVM *javaVM = extensions->getJavaVM();
 
+	GC_ArrayletLeafIterator arrayletLeafIterator(javaVM, (J9IndexableObject *)objectPtr);
+	MM_Heap *heap = extensions->getHeap();
+	UDATA arrayletLeafSize = env->getOmrVM()->_arrayletLeafSize;
+	UDATA arrayletLeafCount = MM_Math::roundToCeiling(arrayletLeafSize, _dataSize) / arrayletLeafSize;
+	Trc_MM_double_map_Entry(env->getLanguageVMThread(), (void *)objectPtr, arrayletLeafSize, arrayletLeafCount);
+
+	void *result = NULL;
+
+#define ARRAYLET_ALLOC_THRESHOLD 64
+	void *leaves[ARRAYLET_ALLOC_THRESHOLD];
+	void **arrayletLeaveAddrs = leaves;
+	if (arrayletLeafCount > ARRAYLET_ALLOC_THRESHOLD) {
+		arrayletLeaveAddrs = (void **)env->getForge()->allocate(arrayletLeafCount * sizeof(uintptr_t), MM_AllocationCategory::GC_HEAP, J9_GET_CALLSITE());
+	}
+
+	if (NULL == arrayletLeaveAddrs) {
+		return NULL;
+	}
+
+	GC_SlotObject *slotObject = NULL;
+	uintptr_t count = 0;
+
+	while (NULL != (slotObject = arrayletLeafIterator.nextLeafPointer())) {
+		void *currentLeaf = slotObject->readReferenceFromSlot();
+		arrayletLeaveAddrs[count] = currentLeaf;
+		count++;
+	}
+
+	/* Number of arraylet leaves in the iterator must match the number of leaves calculated */
+	Assert_MM_true(arrayletLeafCount == count);
+
+	GC_SlotObject objectSlot(env->getOmrVM(), extensions->indexableObjectModel.getArrayoidPointer((J9IndexableObject *)objectPtr));
+	J9Object *firstLeafSlot = objectSlot.readReferenceFromSlot();
+
+	MM_HeapRegionDescriptorVLHGC *firstLeafRegionDescriptor = (MM_HeapRegionDescriptorVLHGC *)heap->getHeapRegionManager()->tableDescriptorForAddress(firstLeafSlot);
+
+	/* Retrieve actual page size */
+	UDATA pageSize = heap->getPageSize();
+
+	/* Get heap and from there call an OMR API that will doble map everything */
+	result = heap->doubleMapArraylet(env, arrayletLeaveAddrs, count, arrayletLeafSize, _dataSize,
+				&firstLeafRegionDescriptor->_arrayletDoublemapID,
+				pageSize);
+
+	if (arrayletLeafCount > ARRAYLET_ALLOC_THRESHOLD) {
+		env->getForge()->free((void *)arrayletLeaveAddrs);
+	}
+
+	/*
+	 * Double map failed.
+	 * If doublemap fails the caller must handle it appropriately. The only case being
+	 * JNI critical, where it will fall back to copying each element of the array to
+	 * a temporary array (logic handled by JNI Critical). It might hurt performance
+	 * but execution won't halt.
+	 */
+	if (NULL == firstLeafRegionDescriptor->_arrayletDoublemapID.address) {
+		Trc_MM_double_map_Failed(env->getLanguageVMThread());
+		result = NULL;
+	}
+
+	Trc_MM_double_map_Exit(env->getLanguageVMThread(), result);
+	return result;
+}
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
 

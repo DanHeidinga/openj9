@@ -1,5 +1,5 @@
 ###############################################################################
-# Copyright (c) 2016, 2018 IBM Corp. and others
+# Copyright (c) 2016, 2020 IBM Corp. and others
 #
 # This program and the accompanying materials are made available under
 # the terms of the Eclipse Public License 2.0 which accompanies this
@@ -33,14 +33,14 @@ ifeq (linux_x86-64_cmprssptrs, $(SPEC))
 		--enable-OMRTHREAD_LIB_UNIX \
 		--enable-OMR_ARCH_X86 \
 		--enable-OMR_ENV_DATA64 \
+		--enable-OMR_GC_DOUBLE_MAP_ARRAYLETS \
 		--enable-OMR_ENV_LITTLE_ENDIAN \
-		--enable-OMR_GC_COMPRESSED_POINTERS \
 		--enable-OMR_GC_IDLE_HEAP_MANAGER \
 		--enable-OMR_GC_TLH_PREFETCH_FTA \
-		--enable-OMR_INTERP_COMPRESSED_OBJECT_HEADER \
-		--enable-OMR_INTERP_SMALL_MONITOR_SLOT \
+		--enable-OMR_GC_CONCURRENT_SCAVENGER \
 		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS \
-		--enable-OMR_PORT_NUMA_SUPPORT
+		--enable-OMR_PORT_NUMA_SUPPORT \
+		OMR_GC_POINTER_MODE=compressed
 endif
 
 ifeq (linux_x86-64_cmprssptrs_panama, $(SPEC))
@@ -48,26 +48,14 @@ ifeq (linux_x86-64_cmprssptrs_panama, $(SPEC))
 		--enable-OMRTHREAD_LIB_UNIX \
 		--enable-OMR_ARCH_X86 \
 		--enable-OMR_ENV_DATA64 \
+		--enable-OMR_GC_DOUBLE_MAP_ARRAYLETS \
 		--enable-OMR_ENV_LITTLE_ENDIAN \
-		--enable-OMR_GC_COMPRESSED_POINTERS \
 		--enable-OMR_GC_IDLE_HEAP_MANAGER \
 		--enable-OMR_GC_TLH_PREFETCH_FTA \
-		--enable-OMR_INTERP_COMPRESSED_OBJECT_HEADER \
-		--enable-OMR_INTERP_SMALL_MONITOR_SLOT \
 		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS \
 		--enable-OMR_PORT_NUMA_SUPPORT \
-		--enable-OMR_JITBUILDER
-endif
-
-ifeq (linux_x86-64_codecov, $(SPEC))
-	CONFIGURE_ARGS += \
-		--enable-OMRTHREAD_LIB_UNIX \
-		--enable-OMR_ARCH_X86 \
-		--enable-OMR_ENV_DATA64 \
-		--enable-OMR_ENV_LITTLE_ENDIAN \
-		--enable-OMR_GC_TLH_PREFETCH_FTA \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS \
-		--enable-OMR_PORT_NUMA_SUPPORT
+		--enable-OMR_JITBUILDER \
+		OMR_GC_POINTER_MODE=compressed
 endif
 
 ifeq (linux_x86-64, $(SPEC))
@@ -75,21 +63,14 @@ ifeq (linux_x86-64, $(SPEC))
 		--enable-OMRTHREAD_LIB_UNIX \
 		--enable-OMR_ARCH_X86 \
 		--enable-OMR_ENV_DATA64 \
+		--enable-OMR_GC_DOUBLE_MAP_ARRAYLETS \
 		--enable-OMR_ENV_LITTLE_ENDIAN \
 		--enable-OMR_GC_IDLE_HEAP_MANAGER \
 		--enable-OMR_GC_TLH_PREFETCH_FTA \
+		--enable-OMR_GC_CONCURRENT_SCAVENGER \
 		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS \
-		--enable-OMR_PORT_NUMA_SUPPORT
-endif
-
-ifeq (linux_x86_codecov, $(SPEC))
-	CONFIGURE_ARGS += \
-		--enable-OMRTHREAD_LIB_UNIX \
-		--enable-OMR_ARCH_X86 \
-		--enable-OMR_ENV_LITTLE_ENDIAN \
-		--enable-OMR_GC_TLH_PREFETCH_FTA \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS \
-		--enable-OMR_PORT_NUMA_SUPPORT
+		--enable-OMR_PORT_NUMA_SUPPORT \
+		OMR_GC_POINTER_MODE=full
 endif
 
 ifeq (linux_x86, $(SPEC))
@@ -100,75 +81,33 @@ ifeq (linux_x86, $(SPEC))
 		--enable-OMR_GC_IDLE_HEAP_MANAGER \
 		--enable-OMR_GC_TLH_PREFETCH_FTA \
 		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS \
-		--enable-OMR_PORT_NUMA_SUPPORT
-endif
-
-ifeq (linux_x86-64_cmprssptrs_purec, $(SPEC))
-	CONFIGURE_ARGS += \
-		--enable-OMRTHREAD_LIB_UNIX \
-		--enable-OMR_ARCH_X86 \
-		--enable-OMR_ENV_DATA64 \
-		--enable-OMR_ENV_LITTLE_ENDIAN \
-		--enable-OMR_GC_COMPRESSED_POINTERS \
-		--enable-OMR_GC_TLH_PREFETCH_FTA \
-		--enable-OMR_INTERP_COMPRESSED_OBJECT_HEADER \
-		--enable-OMR_INTERP_SMALL_MONITOR_SLOT \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS \
-		--enable-OMR_PORT_NUMA_SUPPORT
-endif
-
-ifeq (linux_x86-64_cmprssptrs_cs, $(SPEC))
-	CONFIGURE_ARGS += \
-		--enable-OMRTHREAD_LIB_UNIX \
-		--enable-OMR_ARCH_X86 \
-		--enable-OMR_ENV_DATA64 \
-		--enable-OMR_ENV_LITTLE_ENDIAN \
-		--enable-OMR_GC_COMPRESSED_POINTERS \
-		--enable-OMR_GC_TLH_PREFETCH_FTA \
-		--enable-OMR_GC_CONCURRENT_SCAVENGER \
-		--enable-OMR_INTERP_COMPRESSED_OBJECT_HEADER \
-		--enable-OMR_INTERP_SMALL_MONITOR_SLOT \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS \
-		--enable-OMR_PORT_NUMA_SUPPORT
-endif
-
-ifeq (linux_x86-64_purec, $(SPEC))
-	CONFIGURE_ARGS += \
-		--enable-OMRTHREAD_LIB_UNIX \
-		--enable-OMR_ARCH_X86 \
-		--enable-OMR_ENV_DATA64 \
-		--enable-OMR_ENV_LITTLE_ENDIAN \
-		--enable-OMR_GC_TLH_PREFETCH_FTA \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS \
-		--enable-OMR_PORT_NUMA_SUPPORT
-endif
-
-ifeq (linux_x86_purec, $(SPEC))
-	CONFIGURE_ARGS += \
-		--enable-OMRTHREAD_LIB_UNIX \
-		--enable-OMR_ARCH_X86 \
-		--enable-OMR_ENV_LITTLE_ENDIAN \
-		--enable-OMR_GC_TLH_PREFETCH_FTA \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS \
-		--enable-OMR_PORT_NUMA_SUPPORT
+		--enable-OMR_PORT_NUMA_SUPPORT \
+		OMR_GC_POINTER_MODE=full
 endif
 
 CONFIGURE_ARGS += libprefix=lib exeext= solibext=.so arlibext=.a objext=.o
 
+ifeq (default,$(origin CC))
+	CC=gcc
+endif
 ifeq (default,$(origin CXX))
-	CXX=c++
+	CXX=g++
 endif
 
+CONFIGURE_ARGS += 'AR=$(AR)'
 CONFIGURE_ARGS += 'AS=$(AS)'
 CONFIGURE_ARGS += 'CC=$(CC)'
+CONFIGURE_ARGS += 'CCLINKEXE=$(CC)'
+CONFIGURE_ARGS += 'CCLINKSHARED=$(CC)'
 CONFIGURE_ARGS += 'CXX=$(CXX)'
-CONFIGURE_ARGS += 'CCLINKEXE=$$(CC)'
-CONFIGURE_ARGS += 'CCLINKSHARED=$$(CC)'
-CONFIGURE_ARGS += 'CXXLINKEXE=$$(CXX)'
-CONFIGURE_ARGS += 'CXXLINKSHARED=$$(CXX)'
-CONFIGURE_ARGS += 'AR=$(AR)'
+CONFIGURE_ARGS += 'CXXLINKEXE=$(CXX)'
+CONFIGURE_ARGS += 'CXXLINKSHARED=$(CXX)'
+CONFIGURE_ARGS += 'RM=$(RM)'
 
 CONFIGURE_ARGS += 'OMR_HOST_OS=linux'
 CONFIGURE_ARGS += 'OMR_HOST_ARCH=x86'
 CONFIGURE_ARGS += 'OMR_TARGET_DATASIZE=$(TEMP_TARGET_DATASIZE)'
 CONFIGURE_ARGS += 'OMR_TOOLCHAIN=gcc'
+
+CONFIGURE_ARGS+= 'GLOBAL_CFLAGS=-fstack-protector'
+CONFIGURE_ARGS+= 'GLOBAL_CXXFLAGS=-fstack-protector'

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2017 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -30,9 +30,6 @@
 
 #define CACHE_ROOT_PREFIX "sharedcc"
 
-/* Maximum length of the cache name (including NULL char) specified by user in the command line */
-#define USER_SPECIFIED_CACHE_NAME_MAXLEN 65
-
 /*
  * For Windows,  cacheNameWithVersionString
  * = version string + prefix separator char + cacheName + prefix separator char + generation string
@@ -43,18 +40,24 @@
  * Pick the unix version since it has the maximum possible length for cacheNameWithVersionString
  * compared to windows version for the same cacheName.
  *
- * length of version string =>  11 chars
+ * length of version string =>  11 chars for Java 8, 12 chars for Java 11 and up
  * identifier string is "_memory_" length => 8 chars
  * maximum length of user specified or default cacheName  => 64 chars
  * prefix separator char is _     => 1 char
  * generation string is of form Gnn where nn stands for 2 digit number => 3 chars
+ * layer number string is of form Lnn where nn stands for 2 digit number => 3 chars
  *
- * Total chars needed  = 11 + 8 + 64 + 1 + 3 = 87 chars.
+ * Total chars needed  = 11 + 8 + 64 + 1 + 3 + 3 = 91 chars for Java 8
+ *                       12 + 8 + 64 + 1 + 3 + 3 = 92 chars for Java 11 and up
  *
- * Add 1 to above length to accomodate NULL char.
+ * Add 1 to above length to accommodate NULL char.
  * Reference:  getCacheVersionAndGen function
  */
-#define CACHE_ROOT_MAXLEN 88
+#if JAVA_SPEC_VERSION == 8
+#define CACHE_ROOT_MAXLEN 91
+#else /* JAVA_SPEC_VERSION == 8 */
+#define CACHE_ROOT_MAXLEN 92
+#endif /* JAVA_SPEC_VERSION == 8 */
 
 #define SHR_SUBOPT_BUFLEN (2 * J9SH_MAXPATH)
 
@@ -80,7 +83,7 @@
 
 /* Public Filters */
 #define PRINTSTATS_SHOW_NONE 0x0
-#define PRINTSTATS_SHOW_ALL (PRINTSTATS_SHOW_CLASSPATH|PRINTSTATS_SHOW_URL|PRINTSTATS_SHOW_TOKEN|PRINTSTATS_SHOW_ROMCLASS|PRINTSTATS_SHOW_ROMMETHOD|PRINTSTATS_SHOW_AOT|PRINTSTATS_SHOW_JITPROFILE|PRINTSTATS_SHOW_JITHINT|PRINTSTATS_SHOW_ZIPCACHE|PRINTSTATS_SHOW_INVALIDATEDAOT|PRINTSTATS_SHOW_ALL_STALE)
+#define PRINTSTATS_SHOW_ALL (PRINTSTATS_SHOW_CLASSPATH|PRINTSTATS_SHOW_URL|PRINTSTATS_SHOW_TOKEN|PRINTSTATS_SHOW_ROMCLASS|PRINTSTATS_SHOW_ROMMETHOD|PRINTSTATS_SHOW_AOT|PRINTSTATS_SHOW_JITPROFILE|PRINTSTATS_SHOW_JITHINT|PRINTSTATS_SHOW_ZIPCACHE|PRINTSTATS_SHOW_INVALIDATEDAOT|PRINTSTATS_SHOW_ALL_STALE|PRINTSTATS_SHOW_STARTUPHINT)
 #define PRINTSTATS_SHOW_CLASSPATH 0x1
 #define PRINTSTATS_SHOW_URL 0x2
 #define PRINTSTATS_SHOW_TOKEN 0x4
@@ -92,6 +95,8 @@
 #define PRINTSTATS_SHOW_JITHINT  0x100
 #define PRINTSTATS_SHOW_INVALIDATEDAOT 0x20000
 #define PRINTSTATS_SHOW_ALL_STALE 0x40000
+#define PRINTSTATS_SHOW_STARTUPHINT 0x80000
+#define PRINTSTATS_SHOW_TOP_LAYER_ONLY 0x100000
 
 /* Private filters */
 #define PRINTSTATS_SHOW_EXTRA (PRINTSTATS_SHOW_ALL|PRINTSTATS_SHOW_ORPHAN|PRINTSTATS_SHOW_AOTCH|PRINTSTATS_SHOW_AOTTHUNK|PRINTSTATS_SHOW_AOTDATA|PRINTSTATS_SHOW_JCL|PRINTSTATS_SHOW_BYTEDATA)

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -23,22 +23,15 @@
 #if !defined(ENVIRONMENTREALTIME_HPP_)
 #define ENVIRONMENTREALTIME_HPP_
 
-#include "j9.h"
-#include "j9cfg.h"
-
 #include "Base.hpp"
 #include "EnvironmentBase.hpp"
+#include "GCExtensionsBase.hpp"
 #include "OSInterface.hpp"
-#include "OwnableSynchronizerObjectBufferRealtime.hpp"
-#include "ReferenceObjectBufferRealtime.hpp"
 #include "Scheduler.hpp"
-#include "UnfinalizedObjectBufferRealtime.hpp"
-#include "WorkStack.hpp"
-
-#include "GCExtensions.hpp"
 
 class MM_AllocationContextRealtime;
 class MM_HeapRegionDescriptorRealtime;
+class MM_RealtimeRootScanner;
 class MM_Timer;
 
 class MM_EnvironmentRealtime : public MM_EnvironmentBase
@@ -49,18 +42,17 @@ public:
 
 protected:
 private:
-	MM_Scheduler *_scheduler;	
+	MM_Scheduler *_scheduler;
+	MM_RealtimeRootScanner *_rootScanner;
 	
 	MM_OSInterface *_osInterface;
 	
 	I_32 _yieldDisableDepth;
 
-	UDATA _scannedBytes;         /**< Number of bytes, objects, pointer fields scanned in current major GC */
-	UDATA _scannedObjects;
-	UDATA _scannedPointerFields;
+	uintptr_t _scannedObjects;			/**< Number of objects scanned in current major GC */
 	
 	MM_HeapRegionDescriptorRealtime **_overflowCache; /**< Local cache of overflowed regions.  Can only be manipulated by IncrementalOverflow */
-	UDATA _overflowCacheCount; /**< Count of used elements in the _overflowCache array. Can on be manipulated by IncrementalOverflow */
+	uintptr_t _overflowCacheCount; /**< Count of used elements in the _overflowCache array. Can on be manipulated by IncrementalOverflow */
 	MM_Timer *_timer;
 	
 	U_32 _distanceToYieldTimeCheck; /**< Number of condYield that can be skipped before actual checking for yield, when the quanta time has been relaxed */
@@ -72,7 +64,6 @@ public:
 	static MM_EnvironmentRealtime *newInstance(MM_GCExtensionsBase *extensions, OMR_VMThread *omrVMThread);
 	virtual void kill();
 
-	MMINLINE static MM_EnvironmentRealtime *getEnvironment(J9VMThread *vmThread) { return (MM_EnvironmentRealtime *)vmThread->gcExtensions; }
 	MMINLINE static MM_EnvironmentRealtime *getEnvironment(OMR_VMThread *omrVMThread) { return static_cast<MM_EnvironmentRealtime*>(omrVMThread->_gcOmrVMThreadExtensions); }
 	MMINLINE static MM_EnvironmentRealtime *getEnvironment(MM_EnvironmentBase *ptr) { return (MM_EnvironmentRealtime *)ptr; }
 	
@@ -107,28 +98,28 @@ public:
 		return shouldSkipTimeCheck;
 	}
 	
-	UDATA getScannedBytes() const { return 	_scannedBytes; }
-	void addScannedBytes(UDATA scannedBytes) { _scannedBytes += scannedBytes; }
-	UDATA getScannedObjects() const { return _scannedObjects; }
+	void reportScanningSuspended();
+	void reportScanningResumed();
+	
+	void setRootScanner(MM_RealtimeRootScanner *rootScanner) { _rootScanner = rootScanner; }
+	
+	uintptr_t getScannedObjects() const { return _scannedObjects; }
 	void incScannedObjects() { _scannedObjects++; }
-	UDATA getScannedPointerFields() const { return _scannedPointerFields; }
-	void addScannedPointerFields(UDATA scannedPointerFields) { _scannedPointerFields += scannedPointerFields; }
 	void resetScannedCounters() 
 	{
-		_scannedBytes = 0;
 		_scannedObjects = 0;
-		_scannedPointerFields = 0;
 	}
 	MM_Timer *getTimer() {return _timer;}
 	
-	MMINLINE UDATA getOverflowCacheUsedCount() {return _overflowCacheCount;}
+	MMINLINE uintptr_t getOverflowCacheUsedCount() {return _overflowCacheCount;}
 	MMINLINE void incrementOverflowCacheUsedCount() {_overflowCacheCount += 1;}
 	MMINLINE void resetOverflowCacheUsedCount() {_overflowCacheCount = 0;}
 	MMINLINE MM_HeapRegionDescriptorRealtime **getOverflowCache() {return _overflowCache;}
 	
 	MM_EnvironmentRealtime(OMR_VMThread *omrVMThread) :
 		MM_EnvironmentBase(omrVMThread),
-		_scheduler((MM_Scheduler *)MM_GCExtensions::getExtensions(omrVMThread)->dispatcher),
+		_scheduler((MM_Scheduler *)MM_GCExtensionsBase::getExtensions(omrVMThread->_vm)->dispatcher),
+		_rootScanner(NULL),
 		_osInterface(_scheduler->_osInterface),
 		_overflowCache(NULL),
 		_overflowCacheCount(0),
@@ -139,9 +130,10 @@ public:
 		_typeId = __FUNCTION__;
 	}
 	
-	MM_EnvironmentRealtime(J9JavaVM *vm) :
-		MM_EnvironmentBase(vm->omrVM),
-		_scheduler((MM_Scheduler *)MM_GCExtensions::getExtensions(vm)->dispatcher),
+	MM_EnvironmentRealtime(OMR_VM *vm) :
+		MM_EnvironmentBase(vm),
+		_scheduler((MM_Scheduler *)MM_GCExtensionsBase::getExtensions(vm)->dispatcher),
+		_rootScanner(NULL),
 		_osInterface(_scheduler->_osInterface),
 		_overflowCache(NULL),
 		_overflowCacheCount(0),

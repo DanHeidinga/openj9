@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2002, 2017 IBM Corp. and others
+ * Copyright (c) 2002, 2018 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -56,18 +56,20 @@
 #define LAUNCHERS
 #include "jvm.h"
 
-#if defined(J9UNIX) || defined(OSX)
+#if defined(J9UNIX)
 #include <sys/socket.h>
 #include <dlfcn.h>
 #include <sys/ioctl.h>
 #include <setjmp.h>
 #include <sys/time.h>
-#ifdef J9ZTPF
+
+/* On OSX, fstat64 is deprecated. So, fstat is used on OSX. */
+#if defined(J9ZTPF) || defined(OSX)
 #define J9FSTAT fstat
-#else /* defined(J9ZTPF) */
+#else /* defined(J9ZTPF) || defined(OSX) */
 #define J9FSTAT fstat64
-#endif /* !defined(J9ZTPF) */
-#endif /* J9UNIX */
+#endif /* defined(J9ZTPF) || defined(OSX) */
+#endif /* defined(J9UNIX) */
 
 
 /* required for poll support on some Unix platforms (called in JVM_Available) */

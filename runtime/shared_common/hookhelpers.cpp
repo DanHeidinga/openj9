@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2017 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -54,6 +54,7 @@ ClasspathItem*
 getBootstrapClasspathItem(J9VMThread* currentThread, J9ClassPathEntry* bootstrapCPE, UDATA entryCount)
 {
 	J9JavaVM* vm = currentThread->javaVM;
+	Trc_SHR_Assert_ShouldHaveLocalMutex(vm->classMemorySegments->segmentMutex);
 
 	if (bootstrapCPE == vm->sharedClassConfig->lastBootstrapCPE) {
 		ClasspathItem* cpi = (ClasspathItem*) vm->sharedClassConfig->bootstrapCPI;
@@ -71,7 +72,7 @@ makeClasspathItems(J9JavaVM* vm, J9ClassPathEntry* classPathEntries, I_16 entryC
 	bool ret = true;
 	bool ignoreStateChange = false;
 
-	if (bootstrap && (J2SE_VERSION(vm) >= J2SE_19)) {
+	if (bootstrap && (J2SE_VERSION(vm) >= J2SE_V11)) {
 		J9ClassPathEntry* modulePath = vm->modulesPathEntry;
 		if (CPE_TYPE_JIMAGE == modulePath->type) {
 			prototype = PROTO_JIMAGE;
@@ -154,7 +155,7 @@ checkForStoreFilter(J9JavaVM* vm, J9ClassLoader* classloader, const char* classn
 	anElement = (struct ClassNameFilterData*)pool_startDo(filterPool, &aState);
 	while (anElement) {
 		if (anElement->classloader == classloader) {
-			if ((anElement->classnameLen == classnameLen) && (strncmp(anElement->classname, classname, classnameLen) == 0)) {
+			if ((anElement->classnameLen == classnameLen) && (memcmp(anElement->classname, classname, classnameLen) == 0)) {
 				theElement = anElement;
 				break;
 			}
@@ -223,10 +224,11 @@ createClasspath(J9VMThread* currentThread, J9ClassPathEntry* classPathEntries, U
 {
 	ClasspathItem *classpath;
 	PORT_ACCESS_FROM_VMC(currentThread);
+	Trc_SHR_Assert_ShouldHaveLocalMutex(currentThread->javaVM->classMemorySegments->segmentMutex);
 
 	I_16 supportedEntries = (I_16)entryCount;
 	
-	if (!infoFound && J2SE_VERSION(currentThread->javaVM) >= J2SE_19) {
+	if (!infoFound && J2SE_VERSION(currentThread->javaVM) >= J2SE_V11) {
 		/* Add module entry */
 		supportedEntries += 1;
 	}
@@ -258,7 +260,7 @@ createClasspath(J9VMThread* currentThread, J9ClassPathEntry* classPathEntries, U
 		if (vm->sharedClassConfig->bootstrapCPI) {
 			j9mem_free_memory(vm->sharedClassConfig->bootstrapCPI);
 		}
-		if (J2SE_VERSION(vm) >= J2SE_19) {
+		if (J2SE_VERSION(vm) >= J2SE_V11) {
 			vm->sharedClassConfig->lastBootstrapCPE = vm->modulesPathEntry;
 		} else {
 			vm->sharedClassConfig->lastBootstrapCPE = classPathEntries;

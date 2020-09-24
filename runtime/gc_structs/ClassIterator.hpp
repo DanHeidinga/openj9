@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2016 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -38,6 +38,7 @@
 #include "EnvironmentBase.hpp"
 #include "GCExtensionsBase.hpp"
 #include "MethodTypesIterator.hpp"
+#include "ValueTypesIterator.hpp"
 
 /**
  * State constants representing the current stage of the iteration process
@@ -51,6 +52,7 @@ enum {
 	classiterator_state_callsites,
 	classiterator_state_methodtypes,
 	classiterator_state_varhandlemethodtypes,
+	classiterator_state_valuetypes,
 	classiterator_state_end
 };
 
@@ -72,17 +74,21 @@ protected:
 	GC_CallSitesIterator _callSitesIterator;
 	GC_MethodTypesIterator _methodTypesIterator;
 	GC_MethodTypesIterator _varHandlesMethodTypesIterator;
+	GC_ValueTypesIterator _valueTypesIterator;
+	const bool _shouldScanClassObject; /**< Boolean needed for balanced GC to prevent ClassObject from being scanned twice  */
 
 public:
-	GC_ClassIterator(MM_EnvironmentBase *env, J9Class *clazz)
-		:_clazzPtr(clazz)
+	GC_ClassIterator(MM_EnvironmentBase *env, J9Class *clazz, bool shouldScanClassObject = true)
+		: _clazzPtr(clazz)
 		, _state(classiterator_state_start)
 		, _scanIndex(0)
 		, _classStaticsIterator(env, clazz)
-		, _constantPoolObjectSlotIterator(clazz)
+		, _constantPoolObjectSlotIterator((J9JavaVM *)env->getLanguageVM(), clazz)
 		, _callSitesIterator(clazz)
 		, _methodTypesIterator(clazz->romClass->methodTypeCount, clazz->methodTypes)
 		, _varHandlesMethodTypesIterator(clazz->romClass->varHandleMethodTypeCount, clazz->varHandleMethodTypes)
+		, _valueTypesIterator(clazz)
+		, _shouldScanClassObject(shouldScanClassObject)
 	{}
 
 	GC_ClassIterator(MM_GCExtensionsBase *extensions, J9Class *clazz)
@@ -90,10 +96,12 @@ public:
 		, _state(classiterator_state_start)
 		, _scanIndex(0)
 		, _classStaticsIterator(extensions, clazz)
-		, _constantPoolObjectSlotIterator(clazz)
+		, _constantPoolObjectSlotIterator((J9JavaVM *)extensions->getOmrVM()->_language_vm, clazz)
 		, _callSitesIterator(clazz)
 		, _methodTypesIterator(clazz->romClass->methodTypeCount, clazz->methodTypes)
 		, _varHandlesMethodTypesIterator(clazz->romClass->varHandleMethodTypeCount, clazz->varHandleMethodTypes)
+		, _valueTypesIterator(clazz)
+		, _shouldScanClassObject(true)
 	{}
 
 	MMINLINE int getState() 

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -220,10 +220,10 @@ buildBranchMap (J9BytecodeVerificationData * verifyData)
 			Trc_BCV_buildBranchMap_UnknownInstruction(verifyData->vmStruct,
 					(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 					J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)),
 					bc, verifyData->errorPC, verifyData->errorPC);
 			return BCV_ERR_INTERNAL_ERROR;
 		}
@@ -314,10 +314,10 @@ buildBranchMap (J9BytecodeVerificationData * verifyData)
 	Trc_BCV_buildBranchMap_branchCount(verifyData->vmStruct,
 			(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 			J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-			J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
-			J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
+			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(romMethod)),
+			J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod)),
+			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(romMethod)),
+			J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)),
 			count);
 
 	return count;
@@ -399,10 +399,10 @@ decompressStackMaps (J9BytecodeVerificationData * verifyData, IDATA localsCount,
 			Trc_BCV_decompressStackMaps_LocalsArrayOverFlowUnderFlow(verifyData->vmStruct,
 					(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 					J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)),
 					i, mapPC);
 			rc = BCV_FAIL;
 			break;
@@ -421,10 +421,10 @@ decompressStackMaps (J9BytecodeVerificationData * verifyData, IDATA localsCount,
 			Trc_BCV_decompressStackMaps_StackArrayOverFlow(verifyData->vmStruct,
 					(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 					J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)),
 					i, mapPC);
 			rc = BCV_FAIL;
 			break;
@@ -436,10 +436,10 @@ decompressStackMaps (J9BytecodeVerificationData * verifyData, IDATA localsCount,
 			Trc_BCV_decompressStackMaps_MapOutOfRange(verifyData->vmStruct,
 					(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 					J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)),
 					i, mapPC, length);
 			rc = BCV_FAIL;
 			break;
@@ -500,13 +500,13 @@ parseLocals (J9BytecodeVerificationData * verifyData, U_8** stackMapData, J9Bran
 		for (;localDelta; localDelta--) {
 			stackEntry = parseElement (verifyData, stackMapData);
 			if (localsCount >= maxLocals) {
-				/* Oveflow */
+				/* Overflow */
 				goto _overflow;
 			}
 			liveStack->stackElements[localsCount++] = stackEntry;
 			if ((BCV_BASE_TYPE_DOUBLE == stackEntry) || (BCV_BASE_TYPE_LONG == stackEntry)) {
 				if (localsCount >= maxLocals) {
-					/* Oveflow */
+					/* Overflow */
 					goto _overflow;
 				}
 				liveStack->stackElements[localsCount++] = BCV_BASE_TYPE_TOP;
@@ -529,10 +529,10 @@ _underflow:
 	Trc_BCV_parseLocals_LocalsArrayUnderFlow(verifyData->vmStruct,
 		(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 		J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-		(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-		J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-		(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-		J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)));
+		(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+		J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+		(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+		J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)));
 	return BCV_ERR_INTERNAL_ERROR;
 
 _overflow:
@@ -546,10 +546,10 @@ _overflow:
 	Trc_BCV_parseLocals_LocalsArrayOverFlow(verifyData->vmStruct,
 		(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 		J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-		(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-		J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-		(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-		J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)));
+		(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+		J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+		(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+		J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)));
 	return BCV_ERR_INTERNAL_ERROR;
 }
 
@@ -695,20 +695,20 @@ mergeObjectTypes (J9BytecodeVerificationData *verifyData, UDATA sourceType, UDAT
 			Trc_BCV_mergeObjectTypes_UnableToLoadClass(verifyData->vmStruct,
 				(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 				J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 				sourceType, targetType);
 			return (IDATA) BCV_FAIL;
 		} else if (BCV_ERR_INSUFFICIENT_MEMORY == reasonCode) {
 			Trc_BCV_mergeObjectTypes_MergeClasses_OutOfMemoryException(verifyData->vmStruct,
 				(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 				J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)));
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)));
 			return BCV_ERR_INSUFFICIENT_MEMORY;
 		}
 	}
@@ -720,10 +720,10 @@ mergeObjectTypes (J9BytecodeVerificationData *verifyData, UDATA sourceType, UDAT
 		Trc_BCV_mergeObjectTypes_NullTargetOverwritten(verifyData->vmStruct,
 				(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 				J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 				sourceType);
 		*targetTypePointer = sourceType;
 		/* cause a re-walk */
@@ -736,10 +736,10 @@ mergeObjectTypes (J9BytecodeVerificationData *verifyData, UDATA sourceType, UDAT
 		Trc_BCV_mergeObjectTypes_DecaySourceArray(verifyData->vmStruct,
 				(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 				J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 				sourceType);
 		sourceType = (sourceType & BCV_ARITY_MASK) | ((U_32)BCV_JAVA_LANG_OBJECT_INDEX << BCV_CLASS_INDEX_SHIFT);
 	}
@@ -748,10 +748,10 @@ mergeObjectTypes (J9BytecodeVerificationData *verifyData, UDATA sourceType, UDAT
 		Trc_BCV_mergeObjectTypes_DecayTargetArray(verifyData->vmStruct,
 				(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 				J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 				targetType);
 		targetType = (targetType & BCV_ARITY_MASK) | ((U_32)BCV_JAVA_LANG_OBJECT_INDEX << BCV_CLASS_INDEX_SHIFT);
 	}
@@ -792,19 +792,19 @@ mergeObjectTypes (J9BytecodeVerificationData *verifyData, UDATA sourceType, UDAT
  				Trc_BCV_mergeObjectTypes_MergeClasses_OutOfMemoryException(verifyData->vmStruct,
 					(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 					J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)));
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)));
  				return BCV_ERR_INSUFFICIENT_MEMORY;
  			} else {
  				Trc_BCV_mergeObjectTypes_MergeClassesFail(verifyData->vmStruct,
 					(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 					J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 					sourceLength, sourceName, targetLength, targetName);
  				*targetTypePointer = sourceType;
  				/* cause a re-walk */
@@ -816,10 +816,10 @@ mergeObjectTypes (J9BytecodeVerificationData *verifyData, UDATA sourceType, UDAT
 		Trc_BCV_mergeObjectTypes_MergeClassesSucceed(verifyData->vmStruct,
 				(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 				J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 				sourceLength, sourceName, targetLength, targetName, J9UTF8_LENGTH(name), J9UTF8_DATA(name), classIndex);
 
 	} else {
@@ -830,10 +830,10 @@ mergeObjectTypes (J9BytecodeVerificationData *verifyData, UDATA sourceType, UDAT
 		Trc_BCV_mergeObjectTypes_MergeClassesMinimumArity(verifyData->vmStruct,
 				(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 				J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 				classArity, targetArity);
 		/* Find minimum common arity of arrays */ 
 		if( targetArity < classArity ) {
@@ -846,10 +846,10 @@ mergeObjectTypes (J9BytecodeVerificationData *verifyData, UDATA sourceType, UDAT
 	Trc_BCV_mergeObjectTypes_MergedClass(verifyData->vmStruct,
 			(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 			J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-			J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-			J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+			J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+			J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 			*targetTypePointer);
 	/* cause a re-walk */
 	return (IDATA) BCV_FAIL;
@@ -881,10 +881,10 @@ mergeStacks (J9BytecodeVerificationData * verifyData, UDATA target)
 	Trc_BCV_mergeStacks_Entry(verifyData->vmStruct,
 			(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 			J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-			J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-			J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+			J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+			J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 			target, target);
 
 	if (targetStack->stackBaseIndex == -1) {
@@ -897,10 +897,10 @@ mergeStacks (J9BytecodeVerificationData * verifyData, UDATA target)
 		Trc_BCV_mergeStacks_CopyStack(verifyData->vmStruct,
 				(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 				J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 				stackIndex, target, target);
 		goto _finished;
 
@@ -914,10 +914,10 @@ mergeStacks (J9BytecodeVerificationData * verifyData, UDATA target)
 			Trc_BCV_mergeStacks_DepthMismatch(verifyData->vmStruct,
 					(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 					J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 					stackIndex, target, target,
 					liveStack->stackTopIndex, targetStack->stackTopIndex);
 			goto _finished;
@@ -935,10 +935,10 @@ mergeStacks (J9BytecodeVerificationData * verifyData, UDATA target)
 		Trc_BCV_mergeStacks_MergeStacks(verifyData->vmStruct,
 				(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 				J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 				stackIndex, target, target);
 
 		while (sourceStackPtr != sourceStackTop) {
@@ -954,8 +954,15 @@ mergeStacks (J9BytecodeVerificationData * verifyData, UDATA target)
 					/* Merge when either the source or target not an object */
 					if ((sourceItem | targetItem) & (BCV_BASE_OR_SPECIAL)) {
 
-						/* Mismatch results in undefined local - rewalk if modified stack */
-						if (*targetStackPtr != (UDATA) (BCV_BASE_TYPE_TOP)) {
+						/* Mismatch results in undefined local - rewalk if modified stack
+						 * Note: BCV_SPECIAL (specifically BCV_SPECIAL_INIT) must be reserved
+						 * to flag the uninitialized_this object existing in the stackmap frame
+						 * when invoking setInitializedThisStatus() after the stackmaps is
+						 * successfully built.
+						 */
+						if ((targetItem != (UDATA) (BCV_BASE_TYPE_TOP))
+						&& ((targetItem & BCV_SPECIAL) == 0)
+						) {
 							*targetStackPtr = (UDATA) (BCV_BASE_TYPE_TOP);
 							rewalk = TRUE;
 						}
@@ -1003,20 +1010,20 @@ mergeStacks (J9BytecodeVerificationData * verifyData, UDATA target)
 										Trc_BCV_mergeStacks_OptMergeRequired(verifyData->vmStruct,
 												(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 												J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-												J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-												J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+												J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+												J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 												origSource, origTarget, *targetStackPtr);
 
 									} else {
 										Trc_BCV_mergeStacks_OptMergeNotRequired(verifyData->vmStruct,
 												(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 												J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-												J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-												J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+												J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+												(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+												J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 												*sourceStackPtr, *targetStackPtr);
 										/* Tag undefined - local variable is dead */
 										*targetStackPtr = (UDATA) (BCV_BASE_TYPE_TOP);
@@ -1062,10 +1069,10 @@ mergeStacks (J9BytecodeVerificationData * verifyData, UDATA target)
 			Trc_BCV_mergeStacks_QueueForRewalk(verifyData->vmStruct,
 					(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 					J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 					target, target);
 			verifyData->rewalkQueue[verifyData->rewalkQueueTail++] = target;
 			verifyData->rewalkQueueTail %= (verifyData->rootQueueSize / sizeof(UDATA));
@@ -1079,10 +1086,10 @@ _finished:
 	Trc_BCV_mergeStacks_Exit(verifyData->vmStruct,
 			(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 			J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-			J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, verifyData->romMethod)),
-			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
-			J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, verifyData->romMethod)),
+			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(verifyData->romMethod)),
+			J9UTF8_DATA(J9ROMMETHOD_NAME(verifyData->romMethod)),
+			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
+			J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(verifyData->romMethod)),
 			rc);
 
 	return rc;
@@ -1117,7 +1124,7 @@ printMethod (J9BytecodeVerificationData * verifyData)
 	}
   
 	/* Return type. */
-	string = J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(romClass, method));
+	string = J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(method));
 	i = 0;
 	while(string[i++] != ')');
 	arity = 0;
@@ -1172,7 +1179,7 @@ printMethod (J9BytecodeVerificationData * verifyData)
 	for(i = 0; i < arity; i++)
 		printf( "[]");
 
-	printf( " %.*s(", J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(romClass, method)), J9UTF8_DATA(J9ROMMETHOD_GET_NAME(romClass, method)));
+	printf( " %.*s(", J9UTF8_LENGTH(J9ROMMETHOD_NAME(method)), J9UTF8_DATA(J9ROMMETHOD_NAME(method)));
 
 	for(i = 1; string[i] != ')'; i++)
 	{
@@ -1351,7 +1358,7 @@ simulateStack (J9BytecodeVerificationData * verifyData)
 	maxStack = J9_MAX_STACK_FROM_ROM_METHOD(romMethod);
 
 	/* Jazz 105041: Initialize the 1st data slot on 'stack' with 'top' (placeholdler)
-	 * to avoid storing gargbage data type in the error message buffer
+	 * to avoid storing garbage data type in the error message buffer
 	 * when stack underflow occurs.
 	 */
 	liveStack->stackElements[liveStack->stackBaseIndex] = BCV_BASE_TYPE_TOP;
@@ -1510,7 +1517,7 @@ simulateStack (J9BytecodeVerificationData * verifyData)
 				} else {
 					index = PARAM_16(bcIndex, 1);
 				}
-				stackTop = pushLdcType(romClass, index, stackTop);
+				stackTop = pushLdcType(verifyData, romClass, index, stackTop);
 				break;
 
 			/* Change lookup table to generate constant of correct type */
@@ -1689,7 +1696,7 @@ simulateStack (J9BytecodeVerificationData * verifyData)
 
 		case RTV_SEND:
 			if (bc == JBinvokeinterface2) {
-				/* Set to point to JBinvokenterface */
+				/* Set to point to JBinvokeinterface */
 				bcIndex += 2;
 			}
 			index = PARAM_16(bcIndex, 1);
@@ -1708,11 +1715,11 @@ simulateStack (J9BytecodeVerificationData * verifyData)
 			stackTop -= getSendSlotsFromSignature(J9UTF8_DATA(utf8string));
 
 			if ((JBinvokestatic != bc) 
-				&& (JBinvokedynamic != bc)
-				&& (JBinvokestaticsplit != bc)
+			&& (JBinvokedynamic != bc)
+			&& (JBinvokestaticsplit != bc)
 			) {
 				if ((JBinvokespecial == bc) 
-					|| (JBinvokespecialsplit == bc)
+				|| (JBinvokespecialsplit == bc)
 				) {
 
 					type = POP;
@@ -1981,10 +1988,10 @@ _checkFinished:
 			Trc_BCV_simulateStack_NewWalkFrom(verifyData->vmStruct, 
 					(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 					J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)),
 					start, start, pc, pc);
 		} else if (verifyData->rewalkQueueHead != verifyData->rewalkQueueTail) {
 			pc = verifyData->rewalkQueue[verifyData->rewalkQueueHead++];
@@ -2002,10 +2009,10 @@ _checkFinished:
 			Trc_BCV_simulateStack_RewalkFrom(verifyData->vmStruct, 
 					(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 					J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
-					J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod)),
+					(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(romMethod)),
+					J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)),
 					start, start, pc, pc);
 		} else {
 			Trc_BCV_simulateStack_Exit(verifyData->vmStruct);
@@ -2028,10 +2035,10 @@ _verifyError:
 	Trc_BCV_simulateStack_verifyErrorBytecode(verifyData->vmStruct,
 			(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 			J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-			J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
-			J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
+			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(romMethod)),
+			J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod)),
+			(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(romMethod)),
+			J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)),
 			verifyData->errorCode, verifyData->errorPC, verifyData->errorPC, bc);
 	Trc_BCV_simulateStack_Exit(verifyData->vmStruct);
 
@@ -2046,10 +2053,10 @@ _outOfMemoryError:
 	Trc_BCV_simulateStack_verifyErrorBytecode_OutOfMemoryException(verifyData->vmStruct,
 		(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 		J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-		(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-		J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-		(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
-		J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
+		(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(romMethod)),
+		J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod)),
+		(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(romMethod)),
+		J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)),
 		verifyData->errorCode, verifyData->errorPC, verifyData->errorPC, bc);
 	Trc_BCV_simulateStack_Exit(verifyData->vmStruct);
 
@@ -2290,7 +2297,7 @@ j9bcv_initializeVerificationData(J9JavaVM* javaVM)
 	J9BytecodeVerificationData * verifyData;
 	PORT_ACCESS_FROM_JAVAVM(javaVM);
 	JavaVM* jniVM = (JavaVM*)javaVM;
-    J9ThreadEnv* threadEnv;
+	J9ThreadEnv* threadEnv;
 
 	(*jniVM)->GetEnv(jniVM, (void**)&threadEnv, J9THREAD_VERSION_1_1);
 
@@ -2414,24 +2421,25 @@ j9bcv_verifyBytecodes (J9PortLibrary * portLib, J9Class * clazz, J9ROMClass * ro
 		UDATA createStackMaps;
 		
 		verifyData->ignoreStackMaps = (verifyData->verificationFlags & J9_VERIFY_IGNORE_STACK_MAPS) != 0;
-		
+		verifyData->createdStackMap = FALSE;
 		verifyData->romMethod = romMethod;
 
 		Trc_BCV_j9bcv_verifyBytecodes_VerifyMethod(verifyData->vmStruct,
 				(UDATA) J9UTF8_LENGTH((J9ROMCLASS_CLASSNAME(romClass))),
 				J9UTF8_DATA(J9ROMCLASS_CLASSNAME(romClass)),
-				(UDATA) J9UTF8_LENGTH((J9ROMMETHOD_GET_NAME(romClass, romMethod))),
-				J9UTF8_DATA(J9ROMMETHOD_GET_NAME(romClass, romMethod)),
-				(UDATA) J9UTF8_LENGTH((J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod))),
-				J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod)),
+				(UDATA) J9UTF8_LENGTH((J9ROMMETHOD_NAME(romMethod))),
+				J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod)),
+				(UDATA) J9UTF8_LENGTH((J9ROMMETHOD_SIGNATURE(romMethod))),
+				J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)),
 				romMethod->modifiers);
 
 		/* If native or abstract method, do nothing */
 		if (!((romMethod->modifiers & J9AccNative) || (romMethod->modifiers & J9AccAbstract))) {
 			BOOLEAN isInitMethod = FALSE;
 
-	        /* BCV_TARGET_STACK_HEADER_UDATA_SIZE for pc/stackBase/stackEnd in J9BranchTargetStack and */
-	        /* BCV_STACK_OVERFLOW_BUFFER_UDATA_SIZE for late overflow detection of longs/doubles */
+			/* BCV_TARGET_STACK_HEADER_UDATA_SIZE for pc/stackBase/stackEnd in J9BranchTargetStack and
+			 * BCV_STACK_OVERFLOW_BUFFER_UDATA_SIZE for late overflow detection of longs/doubles
+			 */
 			verifyData->stackSize = (J9_MAX_STACK_FROM_ROM_METHOD(romMethod)
 									+ J9_ARG_COUNT_FROM_ROM_METHOD(romMethod)
 									+ J9_TEMP_COUNT_FROM_ROM_METHOD(romMethod)
@@ -2452,7 +2460,6 @@ _fallBack:
 			createStackMaps = !classVersionRequiresStackmaps && (verifyData->ignoreStackMaps || !hasStackMaps);
 
 			if (createStackMaps) {
-				
 				verifyData->stackMapsCount = buildBranchMap(verifyData);
 				
 				if (verifyData->stackMapsCount == (UDATA)BCV_ERR_INTERNAL_ERROR) {
@@ -2480,6 +2487,8 @@ _fallBack:
 		
 			if (createStackMaps && verifyData->stackMapsCount) {
 				UDATA mapIndex = 0;
+				/* Non-empty internal stackMap created */
+				verifyData->createdStackMap = TRUE;
 	
 				liveStack = BCV_FIRST_STACK ();
 				/* Initialize stackMaps */
@@ -2583,10 +2592,10 @@ _fallBack:
 					Trc_BCV_j9bcv_verifyBytecodes_ReverifyMethod(verifyData->vmStruct,
 							(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(romClass)),
 							J9UTF8_DATA(J9ROMCLASS_CLASSNAME(romClass)),
-							(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(romClass, romMethod)),
-							J9UTF8_DATA(J9ROMMETHOD_GET_NAME(romClass, romMethod)),
-							(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod)),
-							J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod)));
+							(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(romMethod)),
+							J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod)),
+							(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(romMethod)),
+							J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)));
 
 					/* retry with ignoreStackMaps enabled */
 					verifyData->ignoreStackMaps = TRUE;
@@ -2610,10 +2619,10 @@ _done:
 		Trc_BCV_j9bcv_verifyBytecodes_OutOfMemory(verifyData->vmStruct, 
 				(UDATA) J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
 				J9UTF8_DATA(J9ROMCLASS_CLASSNAME(verifyData->romClass)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_NAME(verifyData->romClass, romMethod)),
-				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)),
-				J9UTF8_DATA(J9ROMMETHOD_GET_SIGNATURE(verifyData->romClass, romMethod)));
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_NAME(romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_NAME(romMethod)),
+				(UDATA) J9UTF8_LENGTH(J9ROMMETHOD_SIGNATURE(romMethod)),
+				J9UTF8_DATA(J9ROMMETHOD_SIGNATURE(romMethod)));
 	}
 
 	if (verboseVerification) {
@@ -2644,6 +2653,8 @@ j9bcv_J9VMDllMain (J9JavaVM* vm, IDATA stage, void* reserved)
 	IDATA noVerboseVerificationIndex = -1;
 	IDATA verifyErrorDetailsIndex = -1;
 	IDATA noVerifyErrorDetailsIndex = -1;
+	IDATA classRelationshipVerifierIndex = -1;
+	IDATA noClassRelationshipVerifierIndex = -1;
 	IDATA returnVal = J9VMDLLMAIN_OK;
 #if defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING)
 	J9HookInterface ** vmHooks = vm->internalVMFunctions->getVMHookInterface(vm);
@@ -2719,6 +2730,19 @@ j9bcv_J9VMDllMain (J9JavaVM* vm, IDATA stage, void* reserved)
 			if (verifyErrorDetailsIndex >= noVerifyErrorDetailsIndex) {
 				vm->bytecodeVerificationData->verificationFlags |= J9_VERIFY_ERROR_DETAILS;
 			}
+
+			/* Set runtime flag for -XX:+ClassRelationshipVerifier */
+			classRelationshipVerifierIndex = FIND_AND_CONSUME_ARG(EXACT_MATCH, VMOPT_XXCLASSRELATIONSHIPVERIFIER, NULL);
+			noClassRelationshipVerifierIndex = FIND_AND_CONSUME_ARG(EXACT_MATCH, VMOPT_XXNOCLASSRELATIONSHIPVERIFIER, NULL);
+			if (classRelationshipVerifierIndex > noClassRelationshipVerifierIndex) {
+				if (J9_ARE_ANY_BITS_SET(vm->runtimeFlags, J9_RUNTIME_XFUTURE)) {
+					loadInfo->fatalErrorStr = "-XX:+ClassRelationshipVerifier cannot be used if -Xfuture or if -Xverify:all is enabled";
+					returnVal = J9VMDLLMAIN_FAILED;
+				} else {
+					vm->extendedRuntimeFlags2 |= J9_EXTENDED_RUNTIME2_ENABLE_CLASS_RELATIONSHIP_VERIFIER;
+				}
+			}
+
 			break;
 
 		case LIBRARIES_ONUNLOAD :

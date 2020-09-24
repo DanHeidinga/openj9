@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar17 & !Sidecar19-SE]*/
 /*******************************************************************************
- * Copyright (c) 2005, 2017 IBM Corp. and others
+ * Copyright (c) 2005, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -246,7 +246,7 @@ public class ManagementFactory {
 			security.checkPermission(new MBeanServerPermission("createMBeanServer")); //$NON-NLS-1$
 		}
 
-		return ServerHolder.platformServer;
+		return ServerHolder.instance.get();
 	}
 
 	/**
@@ -466,28 +466,52 @@ public class ManagementFactory {
 		return ManagementUtils.getPlatformManagementInterfaces();
 	}
 
-	private static final class ServerHolder {
+	/**
+	 * This singleton class holds a lazily initialized instance of a {@code MBeanServer}.
+	 * It implements {@code PrivilegedAction} to avoid the cost of an extra class
+	 * to capture the initialization action. Because creating the server may throw
+	 * exceptions, that should be propagated to the caller, we cannot use a static
+	 * initializer which would propagate an {@code Error} to the caller.
+	 */
+	private static final class ServerHolder implements PrivilegedAction<MBeanServer> {
 
-		static final MBeanServer platformServer;
+		static final ServerHolder instance = new ServerHolder();
 
-		static {
-			platformServer = MBeanServerFactory.createMBeanServer();
+		private volatile MBeanServer platformServer;
 
-			PrivilegedAction<?> action = (PrivilegedAction<?>) ServerHolder::registerPlatformBeans;
+		/**
+		 * Get the {@code MBeanServer}, lazily creating it if necessary.
+		 */
+		MBeanServer get() {
+			MBeanServer server = platformServer;
 
-			AccessController.doPrivileged(action);
+			if (server == null) {
+				synchronized (this) {
+					server = platformServer;
+
+					if (server == null) {
+						server = AccessController.doPrivileged(this);
+						platformServer = server;
+					}
+				}
+			}
+
+			return server;
 		}
 
-		private static Void registerPlatformBeans() {
+		@Override
+		public MBeanServer run() {
+			MBeanServer server = MBeanServerFactory.createMBeanServer();
+
 			for (PlatformManagedObject bean : ManagementUtils.getAllAvailableMXBeans()) {
 				ObjectName objectName = bean.getObjectName();
 
-				if (platformServer.isRegistered(objectName)) {
+				if (server.isRegistered(objectName)) {
 					continue;
 				}
 
 				try {
-					platformServer.registerMBean(bean, objectName);
+					server.registerMBean(bean, objectName);
 				} catch (InstanceAlreadyExistsException | MBeanRegistrationException | NullPointerException e) {
 					if (ManagementUtils.VERBOSE_MODE) {
 						e.printStackTrace(System.err);
@@ -500,7 +524,7 @@ public class ManagementFactory {
 				}
 			}
 
-			return null;
+			return server;
 		}
 
 	}

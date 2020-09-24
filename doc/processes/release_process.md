@@ -1,5 +1,5 @@
 <!--
-Copyright (c) 2018, 2018 IBM Corp. and others
+Copyright (c) 2018, 2020 IBM Corp. and others
 
 This program and the accompanying materials are made available under
 the terms of the Eclipse Public License 2.0 which accompanies this
@@ -27,13 +27,19 @@ The OpenJ9 JVM is composed of two code repositories:
 * OpenJ9 https://github.com/eclipse/openj9
 * OMR https://github.com/eclipse/openj9-omr
 
+and one has an external test repo:
+
+* https://github.com/eclipse/openj9-systemtest
+
 OpenJ9 needs to be combined with code from OpenJDK to create a Java SDK.
 The OpenJDK code is managed in separate github repos referred to as the 
 "Extensions for OpenJDKx for OpenJ9".  Currently there are two 
 extensions repos:
 
 * JDK8 https://github.com/ibmruntimes/openj9-openjdk-jdk8
-* JDK9 https://github.com/ibmruntimes/openj9-openjdk-jdk9
+* JDK11 https://github.com/ibmruntimes/openj9-openjdk-jdk11
+* JDK14 https://github.com/ibmruntimes/openj9-openjdk-jdk14
+* JDK.next https://github.com/ibmruntimes/openj9-openjdk-jdk
 
 OpenJ9 binaries are built by the AdoptOpenJDK community.  
 
@@ -50,6 +56,7 @@ binaries at the correct levels have been created.
 * Should not regress performance from release to release.
 * Use Github releases to identify releases and link to the relevant
 data.
+* Should tag the openj9-systemtest repo as well so the systemtest level used to validate a build is know.
 
 
 ## Release cadence
@@ -109,7 +116,13 @@ them.  They are merely points in time.
 Update the Extensions branches to pull the tagged levels from the `openj9` 
 & `openj9-omr` release branches.
 1. Rebuild the tagged levels and ensure they pass the quality bar defined by 
-AdoptOpenJDK.
+AdoptOpenJDK. These builds need to have extra configure options which will
+ identify them as release builds.  These options are`--with-milestone=fcs`
+ (JDK8 - don't use the default option for an internal build) or
+ `--without-version-pre --without-version-opt` (JDK9+ - don't set
+ pre-release identifier or OPT field that contains a timestamp) added to the
+ `./configure` command line.  These ensure that the correct version string
+ is displayed in the `java -version` output.
 1. Provide a window of time (a week?) for any stakeholders to highlight any 
 stopship issues with the release candidate build.  If any are found, a 
 determination can be made to either:

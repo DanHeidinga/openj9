@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -36,6 +36,8 @@
 
 class ObjectFieldInfo {
 private:
+	U_32 _objectHeaderSize;
+	U_32 _referenceSize;
 	U_32 _cacheLineSize;
 	bool _useContendedClassLayout; /* check this in constructor. Forced to false if we can't get the line size */
 	J9ROMClass *_romClass;
@@ -54,6 +56,15 @@ private:
 	U_32 _contendedObjectCount;
 	U_32 _contendedSingleCount;
 	U_32 _contendedDoubleCount;
+
+#ifdef J9VM_OPT_VALHALLA_VALUE_TYPES
+	bool _isValue;
+	J9FlattenedClassCache *_flattenedClassCache;
+	U_32 _totalFlatFieldDoubleBytes;
+	U_32 _totalFlatFieldRefBytes;
+	U_32 _totalFlatFieldSingleBytes;
+#endif /* J9VM_OPT_VALHALLA_VALUE_TYPES */
+
 	bool _hiddenFieldOffsetResolutionRequired;
 	bool _instanceFieldBackfillEligible; /* use this to give instance fields priority over the hidden fields for backfill slots */
 	U_32 _hiddenFieldCount;
@@ -68,8 +79,8 @@ private:
 	VMINLINE U_32
 	getPaddedTrueNonContendedSize(void) const
 	{
-		U_32 accumulator = _superclassFieldsSize +  sizeof(J9Object); /* get the true size with header */
-		accumulator += (_totalObjectCount * sizeof(J9Object)) + (_totalSingleCount * sizeof(U_32)) + (_totalDoubleCount * sizeof(U_64)); /* add the non-contended and hidden fields */
+		U_32 accumulator = _superclassFieldsSize +  _objectHeaderSize; /* get the true size with header */
+		accumulator += (_totalObjectCount * _objectHeaderSize) + (_totalSingleCount * sizeof(U_32)) + (_totalDoubleCount * sizeof(U_64)); /* add the non-contended and hidden fields */
 		accumulator = ROUND_DOWN_TO_POWEROF2(accumulator, OBJECT_SIZE_INCREMENT_IN_BYTES) + _cacheLineSize; /* get the worst-case cache line boundary and add a cache size */
 		return accumulator;
 	}
@@ -79,17 +90,21 @@ public:
 	enum {
 		NO_BACKFILL_AVAILABLE = -1,
 		BACKFILL_SIZE = sizeof(U_32),
-		LOCKWORD_SIZE = sizeof(j9objectmonitor_t),
-		FINALIZE_LINK_SIZE = sizeof(fj9object_t),
 		OBJECT_SIZE_INCREMENT_IN_BYTES = 8
 	};
 
+#ifdef J9VM_OPT_VALHALLA_VALUE_TYPES
+	ObjectFieldInfo(J9JavaVM *vm, J9ROMClass *romClass, J9FlattenedClassCache *flattenedClassCache):
+#else
 	ObjectFieldInfo(J9JavaVM *vm, J9ROMClass *romClass):
+#endif /* J9VM_OPT_VALHALLA_VALUE_TYPES */
+		_objectHeaderSize(J9JAVAVM_OBJECT_HEADER_SIZE(vm)),
+		_referenceSize(J9JAVAVM_REFERENCE_SIZE(vm)),
 		_cacheLineSize(0),
 		_useContendedClassLayout(false),
 		_romClass(romClass),
 		_superclassFieldsSize((U_32) -1),
-		_objectCanUseBackfill((sizeof(fj9object_t) == BACKFILL_SIZE)),
+		_objectCanUseBackfill(J9JAVAVM_REFERENCE_SIZE(vm) == BACKFILL_SIZE),
 		_instanceObjectCount(0),
 		_instanceSingleCount(0),
 		_instanceDoubleCount(0),
@@ -99,7 +114,13 @@ public:
 		_contendedObjectCount(0),
 		_contendedSingleCount(0),
 		_contendedDoubleCount(0),
-
+#ifdef J9VM_OPT_VALHALLA_VALUE_TYPES
+		_isValue(J9ROMCLASS_IS_VALUE(romClass)),
+		_flattenedClassCache(flattenedClassCache),
+		_totalFlatFieldDoubleBytes(0),
+		_totalFlatFieldRefBytes(0),
+		_totalFlatFieldSingleBytes(0),
+#endif /* J9VM_OPT_VALHALLA_VALUE_TYPES */
 		_hiddenFieldOffsetResolutionRequired(false),
 		_instanceFieldBackfillEligible(false),
 		_hiddenFieldCount(0),
@@ -108,18 +129,10 @@ public:
 		_subclassBackfillOffset(NO_BACKFILL_AVAILABLE)
 	{
 		if (J9ROMCLASS_IS_CONTENDED(romClass)) {
-			PORT_ACCESS_FROM_VMC(vm);
-			J9CacheInfoQuery cQuery;
-			memset(&cQuery, 0, sizeof(cQuery));
-			cQuery.cmd = J9PORT_CACHEINFO_QUERY_LINESIZE;
-			cQuery.level = 1;
-			cQuery.cacheType = J9PORT_CACHEINFO_DCACHE;
-			IDATA queryResult = j9sysinfo_get_cache_info(&cQuery);
-			if (queryResult > 0) {
-				_cacheLineSize = (U_32) queryResult;
+			UDATA dCacheLineSize = vm->dCacheLineSize;
+			if (dCacheLineSize > 0) {
+				_cacheLineSize = (U_32) dCacheLineSize;
 				_useContendedClassLayout = true;
-			} else {
-				Trc_VM_contendedLinesizeFailed(queryResult);
 			}
 		}
 	}
@@ -271,7 +284,7 @@ public:
 	VMINLINE IDATA
 	getMyBackfillOffsetForHiddenField(void) const
 	{
-		return _myBackfillOffset + sizeof(J9Object);
+		return _myBackfillOffset + _objectHeaderSize;
 	}
 
 	VMINLINE U_32
@@ -283,7 +296,7 @@ public:
 	VMINLINE U_32
 	getSuperclassObjectSize(void) const
 	{
-		return _superclassFieldsSize + sizeof(J9Object);
+		return _superclassFieldsSize + _objectHeaderSize;
 	}
 
 	VMINLINE void
@@ -306,7 +319,7 @@ public:
 
 	/**
 	 * Compute the total size of the object including padding to end on 8-byte boundary.
-	 * Update the backfill values to use for this class's fields and thoise of subclasses
+	 * Update the backfill values to use for this class's fields and those of subclasses
 	 * @return size of the object in bytes, not including the header
 	 */
 	U_32
@@ -323,11 +336,15 @@ public:
 	{
 		U_32 fieldDataStart = 0;
 		if (!isContendedClassLayout()) {
-			fieldDataStart = getSuperclassFieldsSize();
+			bool doubleAlignment = (_totalDoubleCount > 0);
+#ifdef J9VM_OPT_VALHALLA_VALUE_TYPES
+			doubleAlignment = doubleAlignment || (_totalFlatFieldDoubleBytes > 0);
+#endif /* J9VM_OPT_VALHALLA_VALUE_TYPES */
 
+			fieldDataStart = getSuperclassFieldsSize();
 			if (
 					((getSuperclassObjectSize() % OBJECT_SIZE_INCREMENT_IN_BYTES) != 0) && /* superclass is not end-aligned */
-					((_totalDoubleCount > 0) || (!_objectCanUseBackfill && (_totalObjectCount > 0)))
+					(doubleAlignment || (!_objectCanUseBackfill && (_totalObjectCount > 0)))
 			){ /* our fields start on a 8-byte boundary */
 				fieldDataStart += BACKFILL_SIZE;
 			}
@@ -338,7 +355,7 @@ public:
 				U_8 *utfData = J9UTF8_DATA(className);
 				Trc_VM_contendedClass(utfLength, utfData);
 			}
-			fieldDataStart = getPaddedTrueNonContendedSize() - sizeof(J9Object);
+			fieldDataStart = getPaddedTrueNonContendedSize() - _objectHeaderSize;
 		}
 		return fieldDataStart;
 	}
@@ -362,8 +379,46 @@ public:
 	VMINLINE UDATA
 	addObjectsArea(UDATA start) const
 	{
-		return start + (isContendedClassLayout() ? _contendedObjectCount: getNonBackfilledObjectCount()) * sizeof(fj9object_t);
+		return start + (isContendedClassLayout() ? _contendedObjectCount: getNonBackfilledObjectCount()) * _referenceSize;
 	}
+
+#ifdef J9VM_OPT_VALHALLA_VALUE_TYPES
+	/**
+	 * @param start end of previous field area, which should be the first field area
+	 * @return offset to end of the flat doubles area
+	 */
+	VMINLINE UDATA
+	addFlatDoublesArea(UDATA start) const
+	{
+		return start + _totalFlatFieldDoubleBytes;
+	}
+
+	/**
+	 * @param start end of previous field area, which should be after doubles
+	 * @return offset to end of the flat doubles area
+	 */
+	VMINLINE UDATA
+	addFlatObjectsArea(UDATA start) const
+	{
+		return start + _totalFlatFieldRefBytes;
+	}
+
+	/**
+	 * @param start end of previous field area, which should be after objects
+	 * @return offset to end of the flat doubles area
+	 */
+	VMINLINE UDATA
+	addFlatSinglesArea(UDATA start) const
+	{
+		return start + _totalFlatFieldSingleBytes;
+	}
+
+	VMINLINE bool
+	isValue() const
+	{
+		return _isValue;
+	}
+#endif /* J9VM_OPT_VALHALLA_VALUE_TYPES */
 
 	VMINLINE bool
 	isHiddenFieldOffsetResolutionRequired(void) const

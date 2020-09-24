@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2009, 2018 IBM Corp. and others
+ * Copyright (c) 2009, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -26,6 +26,7 @@ import static com.ibm.j9ddr.vm29.j9.ROMHelp.J9_ROM_METHOD_FROM_RAM_METHOD;
 import static com.ibm.j9ddr.vm29.structure.J9NonbuilderConstants.J9_ROMCLASS_OPTINFO_CLASS_ANNOTATION_INFO;
 import static com.ibm.j9ddr.vm29.structure.J9NonbuilderConstants.J9_ROMCLASS_OPTINFO_ENCLOSING_METHOD;
 import static com.ibm.j9ddr.vm29.structure.J9NonbuilderConstants.J9_ROMCLASS_OPTINFO_GENERIC_SIGNATURE;
+import static com.ibm.j9ddr.vm29.structure.J9NonbuilderConstants.J9_ROMCLASS_OPTINFO_PERMITTEDSUBCLASSES_ATTRIBUTE;
 import static com.ibm.j9ddr.vm29.structure.J9NonbuilderConstants.J9_ROMCLASS_OPTINFO_SIMPLE_NAME;
 import static com.ibm.j9ddr.vm29.structure.J9NonbuilderConstants.J9_ROMCLASS_OPTINFO_SOURCE_DEBUG_EXTENSION;
 import static com.ibm.j9ddr.vm29.structure.J9NonbuilderConstants.J9_ROMCLASS_OPTINFO_SOURCE_FILE_NAME;
@@ -50,6 +51,7 @@ import com.ibm.j9ddr.vm29.pointer.generated.J9ROMClassPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9SourceDebugExtensionPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9UTF8Pointer;
 import com.ibm.j9ddr.vm29.pointer.helper.J9MethodDebugInfoHelper;
+import com.ibm.j9ddr.vm29.pointer.helper.J9ROMClassHelper;
 import com.ibm.j9ddr.vm29.pointer.helper.J9UTF8Helper;
 import com.ibm.j9ddr.vm29.structure.J9MethodDebugInfo;
 import com.ibm.j9ddr.vm29.types.U32;
@@ -135,12 +137,12 @@ public class OptInfo {
 		return ROMHelp.getMethodDebugInfoFromROMMethod(ROMHelp.getOriginalROMMethod(method));
 	}
 	
-	private static SelfRelativePointer getSRPPtr(U32Pointer ptr, U32 flags, long option) {
+	private static SelfRelativePointer getSRPPtr(U32Pointer ptr, UDATA flags, long option) {
 		if ((!(flags.anyBitsIn(option))) || (ptr.isNull())) {
 			return SelfRelativePointer.NULL;
 		}
 
-		return SelfRelativePointer.cast(ptr.add(countBits(COUNT_MASK(flags, option)) - 1));
+		return SelfRelativePointer.cast(ptr.add(countBits(COUNT_MASK(new U32(flags), option)) - 1));
 	}
 
 	public static int countBits(U32 word) {
@@ -177,7 +179,7 @@ public class OptInfo {
 	}
 
 	public static U32 COUNT_MASK(U32 value, long mask) {
-		return (value.bitAnd(((mask) << 1) - 1));
+		return value.bitAnd((mask << 1) - 1);
 	}
 
 	public static String getSourceFileNameForROMClass(J9ROMClassPointer romClass) throws CorruptDataException {
@@ -220,7 +222,7 @@ public class OptInfo {
 	}
 
 	private static VoidPointer getStructure(J9ROMClassPointer romClass, long option) throws CorruptDataException {
-		SelfRelativePointer ptr = getSRPPtr(romClass.optionalInfo(), romClass.optionalFlags(), option);
+		SelfRelativePointer ptr = getSRPPtr(J9ROMClassHelper.optionalInfo(romClass), romClass.optionalFlags(), option);
 		if (!ptr.isNull()) {
 			return VoidPointer.cast(ptr.get());
 		} 
@@ -228,11 +230,40 @@ public class OptInfo {
 	}
 
 	public static J9SourceDebugExtensionPointer getSourceDebugExtensionForROMClass(J9ROMClassPointer romClass) throws CorruptDataException {
-		SelfRelativePointer srpPtr = getSRPPtr(romClass.optionalInfo(), romClass.optionalFlags(), J9_ROMCLASS_OPTINFO_SOURCE_DEBUG_EXTENSION);
+		SelfRelativePointer srpPtr = getSRPPtr(J9ROMClassHelper.optionalInfo(romClass), romClass.optionalFlags(), J9_ROMCLASS_OPTINFO_SOURCE_DEBUG_EXTENSION);
 		if (!srpPtr.isNull()) {
 			return J9SourceDebugExtensionPointer.cast(srpPtr.get());
 		}
 		return J9SourceDebugExtensionPointer.NULL;
+	}
+
+	private static U32Pointer getPermittedSubclassPointer(J9ROMClassPointer romClass) throws CorruptDataException {
+		SelfRelativePointer srpPtr = getSRPPtr(J9ROMClassHelper.optionalInfo(romClass), romClass.optionalFlags(),
+			J9_ROMCLASS_OPTINFO_PERMITTEDSUBCLASSES_ATTRIBUTE);
+		if (srpPtr.notNull()) {
+			return U32Pointer.cast(srpPtr.get());
+		}
+		return U32Pointer.NULL;
+	}
+
+	public static int getPermittedSubclassCount(J9ROMClassPointer romClass) throws CorruptDataException {
+		U32Pointer permittedSubclassPointer = getPermittedSubclassPointer(romClass);
+		if (permittedSubclassPointer.notNull()) {
+			return permittedSubclassPointer.at(0).intValue();
+		}
+		return 0;
+	}
+
+	public static J9UTF8Pointer getPermittedSubclassNameAtIndex(J9ROMClassPointer romClass, int index) throws CorruptDataException {
+		U32Pointer permittedSubclassPointer = getPermittedSubclassPointer(romClass);
+		if (permittedSubclassPointer.notNull()) {
+			/* extra 1 is to move past permitted subclass count. */
+			permittedSubclassPointer = permittedSubclassPointer.add(index + 1);
+
+			SelfRelativePointer nameSrp = SelfRelativePointer.cast(permittedSubclassPointer);
+			return J9UTF8Pointer.cast(nameSrp.get());
+		}
+		return J9UTF8Pointer.NULL;
 	}
 
 }

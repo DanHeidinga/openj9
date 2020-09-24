@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2002, 2018 IBM Corp. and others
+ * Copyright (c) 2002, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -245,8 +245,7 @@ JVM_ArrayCopy(JNIEnv *env, jclass ignored, jobject src, jint src_pos, jobject ds
 			vmFuncs->setCurrentException(currentThread, J9VMCONSTANTPOOL_JAVALANGARRAYSTOREEXCEPTION, NULL);
 		}
 	}
-
-	return;
+	vmFuncs->internalExitVMToJNI(currentThread);
 }
 
 
@@ -415,30 +414,26 @@ JVM_EnableCompiler(jint arg0, jint arg1)
 	return NULL;
 }
 
-
-
 void JNICALL
 JVM_FillInStackTrace(JNIEnv* env, jobject throwable)
 {
 	J9VMThread* currentThread = (J9VMThread*) env;
 	J9JavaVM* javaVM = currentThread->javaVM;
 	J9InternalVMFunctions* vmfns = javaVM->internalVMFunctions;
-	j9object_t unwrappedThrowable;
+	j9object_t unwrappedThrowable = NULL;
 
 	vmfns->internalEnterVMFromJNI(currentThread);
 	unwrappedThrowable = J9_JNI_UNWRAP_REFERENCE(throwable);
 	if ((0 == (javaVM->runtimeFlags & J9_RUNTIME_OMIT_STACK_TRACES)) &&
-		/* If the enableWritableStackTrace field is resolved, check it. If it's false, do not create the stack trace. */
-		/* TODO should be: (0 == J9VMCONSTANTPOOL_FIELDREF_AT(javaVM, J9VMCONSTANTPOOL_JAVALANGTHROWABLE_ENABLEWRITABLESTACKTRACE)->flags) */
-		((J9_CP_TYPE(J9ROMCLASS_CPSHAPEDESCRIPTION(J9_CLASS_FROM_CP((javaVM)->jclConstantPool)->romClass), J9VMCONSTANTPOOL_JAVALANGTHROWABLE_ENABLEWRITABLESTACKTRACE) == J9CPTYPE_UNUSED) ||
-			J9VMJAVALANGTHROWABLE_ENABLEWRITABLESTACKTRACE(currentThread, unwrappedThrowable)))
+		/* If the disableWritableStackTrace field is true, do not create the stack trace. */
+		!J9VMJAVALANGTHROWABLE_DISABLEWRITABLESTACKTRACE(currentThread, unwrappedThrowable))
 	{
 		UDATA flags = J9_STACKWALK_CACHE_PCS | J9_STACKWALK_WALK_TRANSLATE_PC | J9_STACKWALK_VISIBLE_ONLY | J9_STACKWALK_INCLUDE_NATIVES | J9_STACKWALK_SKIP_INLINES;
 		J9StackWalkState* walkState = currentThread->stackWalkState;
 		j9object_t result = (j9object_t) J9VMJAVALANGTHROWABLE_WALKBACK(currentThread, unwrappedThrowable);
-		UDATA rc;
-		UDATA i;
-		UDATA framesWalked;
+		UDATA rc = 0;
+		UDATA i = 0;
+		UDATA framesWalked = 0;
 
 		/* Do not hide exception frames if fillInStackTrace is called on an exception which already has a stack trace.  In the out of memory case,
 		 * there is a bit indicating that we should explicitly override this behaviour, since we've precached the stack trace array. */
@@ -447,6 +442,14 @@ JVM_FillInStackTrace(JNIEnv* env, jobject throwable)
 			walkState->restartException = unwrappedThrowable;
 		}
 		walkState->skipCount = 1; /* skip the INL frame -- TODO revisit this */
+#if JAVA_SPEC_VERSION >= 15
+		{
+			J9Class *receiverClass = J9OBJECT_CLAZZ(currentThread, unwrappedThrowable);
+			if (J9VMJAVALANGNULLPOINTEREXCEPTION_OR_NULL(javaVM) == receiverClass) {
+				walkState->skipCount = 2;	/* skip the INL & NullPointerException.fillInStackTrace() frames */
+			}
+		}
+#endif /* JAVA_SPEC_VERSION >= 15 */
 		walkState->walkThread = currentThread;
 		walkState->flags = flags;
 
@@ -494,9 +497,8 @@ setThrowableSlots:
 		J9VMJAVALANGTHROWABLE_SET_STACKTRACE(currentThread, unwrappedThrowable, NULL);
 	}
 done:
-	vmfns->internalReleaseVMAccess(currentThread);
+	vmfns->internalExitVMToJNI(currentThread);
 }
-
 
 /**
  * Find the specified class in given class loader 
@@ -559,9 +561,10 @@ JVM_FindLoadedClass(JNIEnv* env, jobject classLoader, jobject className)
 			NULL,
 			J9_JNI_UNWRAP_REFERENCE(className),
 			vmClassLoader,
-			J9_FINDCLASS_FLAG_EXISTING_ONLY);
+			J9_FINDCLASS_FLAG_EXISTING_ONLY,
+			CLASSNAME_INVALID);
 done:
-	vm->internalVMFunctions->internalReleaseVMAccess(currentThread);
+	vm->internalVMFunctions->internalExitVMToJNI(currentThread);
 
 	if (NULL == loadedClass) {
 		return NULL;
@@ -731,7 +734,7 @@ JVM_GetArrayElement(JNIEnv *env, jobject array, jint index)
 			vmFuncs->setCurrentException(currentThread, J9VMCONSTANTPOOL_JAVALANGILLEGALARGUMENTEXCEPTION, NULL);
 		}
 	}
-	vmFuncs->internalReleaseVMAccess(currentThread);
+	vmFuncs->internalExitVMToJNI(currentThread);
 
 	return elementJNIRef;
 }
@@ -775,7 +778,7 @@ JVM_GetArrayLength(JNIEnv *env, jobject array)
 		}
 	}
 
-	vmFuncs->internalReleaseVMAccess(currentThread);
+	vmFuncs->internalExitVMToJNI(currentThread);
 
 	return arrayLength;
 }
@@ -789,7 +792,7 @@ java_lang_Class_vmRef(JNIEnv* env, jobject clazz)
 
 	vm->internalVMFunctions->internalEnterVMFromJNI(currentThread);
 	ramClass = J9VMJAVALANGCLASS_VMREF(currentThread, J9_JNI_UNWRAP_REFERENCE(clazz) );
-	vm->internalVMFunctions->internalReleaseVMAccess(currentThread);
+	vm->internalVMFunctions->internalExitVMToJNI(currentThread);
 
 	return ramClass;
 }
@@ -849,7 +852,7 @@ JVM_GetClassDeclaredConstructors(JNIEnv* env, jclass clazz, jboolean unknown)
 
 		while (romMethodCount-- != 0) {
 			J9ROMMethod * romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(method++);
-			J9UTF8 * nameUTF = J9ROMMETHOD_GET_NAME(romClass, romMethod);
+			J9UTF8 * nameUTF = J9ROMMETHOD_NAME(romMethod);
 
 			if (J9UTF8_DATA_EQUALS(J9UTF8_DATA(nameUTF), J9UTF8_LENGTH(nameUTF), eyecatcher, 6)) {
 				size++;
@@ -877,10 +880,10 @@ JVM_GetClassDeclaredConstructors(JNIEnv* env, jclass clazz, jboolean unknown)
 
 		while (romMethodCount-- != 0) {
 			J9ROMMethod * romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(method++);
-			J9UTF8 * nameUTF = J9ROMMETHOD_GET_NAME(romClass, romMethod);
+			J9UTF8 * nameUTF = J9ROMMETHOD_NAME(romMethod);
 
 			if (J9UTF8_DATA_EQUALS(J9UTF8_DATA(nameUTF), J9UTF8_LENGTH(nameUTF), eyecatcher, 6)) {
-				J9UTF8 * signatureUTF = J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod);
+				J9UTF8 * signatureUTF = J9ROMMETHOD_SIGNATURE(romMethod);
 				char* name = utf8_to_cstring(env, nameUTF);
 				char* signature = utf8_to_cstring(env, signatureUTF);
 				jmethodID methodID = (*env)->GetMethodID(env, clazz, name, signature);
@@ -1004,7 +1007,7 @@ JVM_GetClassDeclaredMethods(JNIEnv* env, jobject clazz, jboolean unknown)
 
 		while (romMethodCount-- != 0) {
 			J9ROMMethod * romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(method++);
-			J9UTF8 * nameUTF = J9ROMMETHOD_GET_NAME(romClass, romMethod);
+			J9UTF8 * nameUTF = J9ROMMETHOD_NAME(romMethod);
 
 			if (!J9UTF8_DATA_EQUALS(J9UTF8_DATA(nameUTF), J9UTF8_LENGTH(nameUTF), eyecatcher, 6)) {
 				size++;
@@ -1032,10 +1035,10 @@ JVM_GetClassDeclaredMethods(JNIEnv* env, jobject clazz, jboolean unknown)
 
 		while (romMethodCount-- != 0) {
 			J9ROMMethod * romMethod = J9_ROM_METHOD_FROM_RAM_METHOD(method++);
-			J9UTF8 * nameUTF = J9ROMMETHOD_GET_NAME(romClass, romMethod);
+			J9UTF8 * nameUTF = J9ROMMETHOD_NAME(romMethod);
 
 			if (!J9UTF8_DATA_EQUALS(J9UTF8_DATA(nameUTF), J9UTF8_LENGTH(nameUTF), eyecatcher, 6)) {
-				J9UTF8 * signatureUTF = J9ROMMETHOD_GET_SIGNATURE(romClass, romMethod);
+				J9UTF8 * signatureUTF = J9ROMMETHOD_SIGNATURE(romMethod);
 				char* name = utf8_to_cstring(env, nameUTF);
 				char* signature = utf8_to_cstring(env, signatureUTF);
 				U_32 modifiers = romMethod->modifiers;
@@ -1335,7 +1338,7 @@ JVM_GetPrimitiveArrayElement(JNIEnv *env, jobject array, jint index, jint wCode)
 			vmFuncs->setCurrentException(currentThread, J9VMCONSTANTPOOL_JAVALANGILLEGALARGUMENTEXCEPTION, NULL);
 		}
 	}
-	vmFuncs->internalReleaseVMAccess(currentThread);
+	vmFuncs->internalExitVMToJNI(currentThread);
 
 	return value;
 }
@@ -1366,7 +1369,7 @@ JVM_GetStackTraceDepth(JNIEnv* env, jobject throwable)
 
 	vmfns->internalEnterVMFromJNI(currentThread);
 	numberOfFrames = (jint)vmfns->iterateStackTrace(currentThread, (j9object_t*)throwable, NULL, NULL, pruneConstructors);
-	vmfns->internalReleaseVMAccess(currentThread);
+	vmfns->internalExitVMToJNI(currentThread);
 
 	return numberOfFrames;
 }
@@ -1422,7 +1425,7 @@ typedef struct GetStackTraceElementUserData {
 
 /* Return TRUE to keep iterating, FALSE to halt the walk. */
 static UDATA
-getStackTraceElementIterator(J9VMThread * vmThread, void * voidUserData, J9ROMClass * romClass, J9ROMMethod * romMethod, J9UTF8 * fileName, UDATA lineNumber, J9ClassLoader* classLoader)
+getStackTraceElementIterator(J9VMThread * vmThread, void * voidUserData, UDATA bytecodeOffset, J9ROMClass * romClass, J9ROMMethod * romMethod, J9UTF8 * fileName, UDATA lineNumber, J9ClassLoader* classLoader, J9Class* ramClass)
 {
 	GetStackTraceElementUserData * userData = voidUserData;
 
@@ -1460,7 +1463,7 @@ JVM_GetStackTraceElement(JNIEnv* env, jobject throwable, jint index)
 
 	vmfns->internalEnterVMFromJNI(currentThread);
 	vmfns->iterateStackTrace(currentThread, (j9object_t*)throwable, getStackTraceElementIterator, &userData, pruneConstructors);
-	vmfns->internalReleaseVMAccess(currentThread);
+	vmfns->internalExitVMToJNI(currentThread);
 
 	/* Bail if we couldn't find the frame */
 	if (TRUE != userData.found) {
@@ -1469,7 +1472,7 @@ JVM_GetStackTraceElement(JNIEnv* env, jobject throwable, jint index)
 
 	/* Convert to Java format */
 	declaringClass = utf8_to_java_lang_String(env, J9ROMCLASS_CLASSNAME(userData.romClass));
-	methodName = utf8_to_java_lang_String(env, J9ROMMETHOD_GET_NAME(userData.romClass, userData.romMethod));
+	methodName = utf8_to_java_lang_String(env, J9ROMMETHOD_NAME(userData.romMethod));
 	fileName = utf8_to_java_lang_String(env, userData.fileName);
 	lineNumber = (jint)userData.lineNumber;
 
@@ -1514,7 +1517,7 @@ JVM_IHashCode(JNIEnv *env, jobject obj)
 
 		vmFuncs->internalEnterVMFromJNI(currentThread);
 		result = vm->memoryManagerFunctions->j9gc_objaccess_getObjectHashCode(vm, J9_JNI_UNWRAP_REFERENCE(obj));
-		vmFuncs->internalReleaseVMAccess(currentThread);
+		vmFuncs->internalExitVMToJNI(currentThread);
 	}
 
 	return result;
@@ -1530,24 +1533,9 @@ JVM_InitProperties(JNIEnv* env, jobject properties)
 	 * This is only required by Java 11 raw builds.
 	 * This method is not invoked by other Java levels.
 	 */
-#if !defined(J9VM_JCL_SE11)
-	J9JavaVM* vm = ((J9VMThread*)env)->javaVM;
-	jobject syspropsList = (jobject)vm->syspropsListRef;
-	jclass propertiesClass = (*env)->GetObjectClass(env, properties);
-	jmethodID setPropertyMID = (*env)->GetMethodID(env, propertiesClass, "setProperty", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;");
-	jsize pairCount;
-	jsize index;
-
-	assert(syspropsList != NULL);
-	assert(propertiesClass != NULL);
-	assert(setPropertyMID != NULL);
-	pairCount = (*env)->GetArrayLength(env, syspropsList);
-	for (index = 0; index < pairCount; ) {
-		jobject key = (*env)->GetObjectArrayElement(env, syspropsList, index++);
-		jobject value = (*env)->GetObjectArrayElement(env, syspropsList, index++);
-		(*env)->CallObjectMethod(env, properties, setPropertyMID, key, value);
-	}
-#endif /* J9VM_JCL_SE11 */
+#if JAVA_SPEC_VERSION < 11
+	assert(!"JVM_InitProperties should not be called!");
+#endif /* JAVA_SPEC_VERSION < 11 */
 	return properties;
 }
 
@@ -1574,7 +1562,7 @@ JVM_InternString(JNIEnv *env, jstring str)
 		stringObject = J9_JNI_UNWRAP_REFERENCE(str);
 		stringObject = javaVM->memoryManagerFunctions->j9gc_internString(currentThread, stringObject);
 		str = vmfns->j9jni_createLocalRef(env, stringObject);
-		vmfns->internalReleaseVMAccess(currentThread);
+		vmfns->internalExitVMToJNI(currentThread);
 	}
 
 	return str;
@@ -1628,7 +1616,7 @@ JVM_IsInterrupted(JNIEnv* env, jobject thread, jboolean unknown)
 
 	vm->internalVMFunctions->internalEnterVMFromJNI(currentThread);
 	targetThread = J9VMJAVALANGTHREAD_THREADREF(currentThread, J9_JNI_UNWRAP_REFERENCE(thread) );
-	vm->internalVMFunctions->internalReleaseVMAccess(currentThread);
+	vm->internalVMFunctions->internalExitVMToJNI(currentThread);
 
 	assert(targetThread == currentThread);
 
@@ -1663,7 +1651,7 @@ JVM_IsPrimitiveClass(JNIEnv* env, jclass clazz)
  * This function may not lock, gc or throw exception.
  * @param version
  * @return true if version is JNI_VERSION_1_1, JNI_VERSION_1_2, JNI_VERSION_1_4, JNI_VERSION_1_6, or
- * 		   JNI_VERSION_1_8, JNI_VERSION_9; false if not.
+ * 		   JNI_VERSION_1_8, JNI_VERSION_9, JNI_VERSION_10; false if not.
  * @careful
  */
 jboolean JNICALL
@@ -1675,7 +1663,12 @@ JVM_IsSupportedJNIVersion(jint version)
 	case JNI_VERSION_1_4:
 	case JNI_VERSION_1_6:
 	case JNI_VERSION_1_8:
+#if JAVA_SPEC_VERSION >= 9
 	case JNI_VERSION_9:
+#endif /* JAVA_SPEC_VERSION >= 9 */
+#if JAVA_SPEC_VERSION >= 10
+	case JNI_VERSION_10:
+#endif /* JAVA_SPEC_VERSION >= 10 */
 		return JNI_TRUE;
 
 	default:
@@ -1694,7 +1687,7 @@ JVM_IsThreadAlive(JNIEnv* jniEnv, jobject targetThread)
 
 	vm->internalVMFunctions->internalEnterVMFromJNI(currentThread);
 	vmThread = J9VMJAVALANGTHREAD_THREADREF(currentThread, J9_JNI_UNWRAP_REFERENCE(targetThread) );
-	vm->internalVMFunctions->internalReleaseVMAccess(currentThread);
+	vm->internalVMFunctions->internalExitVMToJNI(currentThread);
 
 	/* Assume that a non-null threadRef indicates the thread is alive */
 	return (NULL == vmThread) ? JNI_FALSE : JNI_TRUE;
@@ -1728,7 +1721,7 @@ JVM_NewArray(JNIEnv* jniEnv, jclass componentType, jint dimension)
 	}
 
 	arrayRef = vm->internalVMFunctions->j9jni_createLocalRef(jniEnv, newArray);
-	vm->internalVMFunctions->internalReleaseVMAccess(currentThread);
+	vm->internalVMFunctions->internalExitVMToJNI(currentThread);
 	return arrayRef;
 }
 
@@ -1781,9 +1774,9 @@ JVM_NewMultiArray(JNIEnv *env, jclass eltClass, jintArray dim)
 	
 			if (NULL != componentTypeClassObject) {
 				J9Class *componentTypeClass = J9VM_J9CLASS_FROM_HEAPCLASS(currentThread, componentTypeClassObject);
-				
-				/* create an array class with one greater arity than desired */
-				UDATA count = dimensions + 1;
+
+				/* create an array class with the desired arity */
+				UDATA count = dimensions;
 				J9Class *componentArrayClass = componentTypeClass;
 				BOOLEAN exceptionIsPending = FALSE;
 	
@@ -1814,7 +1807,7 @@ JVM_NewMultiArray(JNIEnv *env, jclass eltClass, jintArray dim)
 		}
 	}
 
-	vmFuncs->internalReleaseVMAccess(currentThread);
+	vmFuncs->internalExitVMToJNI(currentThread);
 	return result;
 }
 
@@ -1962,11 +1955,11 @@ JVM_SetArrayElement(JNIEnv *env, jobject array, jint index, jobject value)
 							} else if (intWrapperClass == valueClass) {
 								val = (jfloat) ((I_32) J9VMJAVALANGINTEGER_VALUE(currentThread, j9value));
 							} else if (shortWrapperClass == valueClass) {
-								val = (jfloat) ((I_32) J9VMJAVALANGINTEGER_VALUE(currentThread, j9value));
+								val = (jfloat) ((I_32) J9VMJAVALANGSHORT_VALUE(currentThread, j9value));
 							} else if (charWrapperClass == valueClass) {
 								val = (jfloat) J9VMJAVALANGCHARACTER_VALUE(currentThread, j9value);
 							} else if (byteWrapperClass == valueClass) {
-								val = (jfloat) ((I_32) J9VMJAVALANGCHARACTER_VALUE(currentThread, j9value));
+								val = (jfloat) ((I_32) J9VMJAVALANGBYTE_VALUE(currentThread, j9value));
 							} else {
 								invalidArgument = TRUE;
 							}
@@ -2023,7 +2016,7 @@ JVM_SetArrayElement(JNIEnv *env, jobject array, jint index, jobject value)
 			vmFuncs->setCurrentException(currentThread, J9VMCONSTANTPOOL_JAVALANGILLEGALARGUMENTEXCEPTION, NULL);
 		}
 	}
-	vmFuncs->internalReleaseVMAccess(currentThread);
+	vmFuncs->internalExitVMToJNI(currentThread);
 
 	return;
 }
@@ -2210,7 +2203,7 @@ JVM_SetPrimitiveArrayElement(JNIEnv *env, jobject array, jint index, jvalue valu
 			vmFuncs->setCurrentException(currentThread, J9VMCONSTANTPOOL_JAVALANGILLEGALARGUMENTEXCEPTION, NULL);
 		}
 	}
-	vmFuncs->internalReleaseVMAccess(currentThread);
+	vmFuncs->internalExitVMToJNI(currentThread);
 
 	return;
 }
@@ -2245,7 +2238,7 @@ JVM_SetThreadPriority(JNIEnv* env, jobject thread, jint priority)
 	vm = currentThread->javaVM;
 	vm->internalVMFunctions->internalEnterVMFromJNI(currentThread);
 	vmThread = J9VMJAVALANGTHREAD_THREADREF(currentThread, J9_JNI_UNWRAP_REFERENCE(thread) );
-	vm->internalVMFunctions->internalReleaseVMAccess(currentThread);
+	vm->internalVMFunctions->internalExitVMToJNI(currentThread);
 
 	if ( (NULL != vmThread) && (NULL != vmThread->osThread)) {
 		J9ThreadEnv* threadEnv = getJ9ThreadEnv(env);
@@ -2291,7 +2284,7 @@ JVM_StartThread(JNIEnv* jniEnv, jobject newThread)
 			javaVM,
 			NULL);
 
-	javaVM->internalVMFunctions->internalReleaseVMAccess(currentThread);
+	javaVM->internalVMFunctions->internalExitVMToJNI(currentThread);
 
 	if (result != J9_THREAD_START_NO_ERROR) {
 		assert(!"JVM_StartThread() failed!");
@@ -2319,12 +2312,27 @@ JVM_SuspendThread(jint arg0, jint arg1)
 }
 
 
-
-jobject JNICALL
-JVM_UnloadLibrary(jint arg0)
+/* NOTE this is required by JDK15+ jdk.internal.loader.NativeLibraries.unload().
+ */
+#if JAVA_SPEC_VERSION >= 15
+void JNICALL JVM_UnloadLibrary(void *handle)
+#else /* JAVA_SPEC_VERSION >= 15 */
+jobject JNICALL JVM_UnloadLibrary(jint arg0)
+#endif /* JAVA_SPEC_VERSION >= 15 */
 {
+#if JAVA_SPEC_VERSION >= 15
+	Trc_SC_UnloadLibrary_Entry(handle);
+#if defined(WIN32)
+	FreeLibrary((HMODULE)handle);
+#elif defined(J9UNIX) || defined(J9ZOS390) /* defined(WIN32) */
+	dlclose(handle);
+#else /* defined(WIN32) */
+#error "Please implement J7vmi.c:JVM_UnloadLibrary(void *handle)"
+#endif /* defined(WIN32) */
+#else /* JAVA_SPEC_VERSION >= 15 */
 	assert(!"JVM_UnloadLibrary() stubbed!");
 	return NULL;
+#endif /* JAVA_SPEC_VERSION >= 15 */
 }
 
 
@@ -2383,11 +2391,11 @@ JVM_SocketShutdown(jint fd, jint howto)
 
 #if defined(J9UNIX)
 	retVal = shutdown(fd, howto);
-#elif defined(WIN32)
+#elif defined(WIN32) /* defined(J9UNIX) */
 	retVal = closesocket(fd);
-#else
+#else /* defined(J9UNIX) */
 	assert(!"JVM_SocketShutdown() stubbed!");
-#endif
+#endif /* defined(J9UNIX) */
 	
 	return retVal;
 }
@@ -2478,7 +2486,7 @@ throwNativeOOMError(JNIEnv *env, U_32 moduleName, U_32 messageNumber)
 	J9InternalVMFunctions *vmFuncs = vm->internalVMFunctions;
 	vmFuncs->internalEnterVMFromJNI(currentThread);
 	vmFuncs->setNativeOutOfMemoryError(currentThread, moduleName, messageNumber);
-	vmFuncs->internalReleaseVMAccess(currentThread);
+	vmFuncs->internalExitVMToJNI(currentThread);
 }
 
 
@@ -2542,6 +2550,7 @@ jvmDefineClassHelper(JNIEnv *env, jobject classLoaderObject,
 	J9ClassLoader *classLoader = NULL;
 	UDATA retried = FALSE;
 	UDATA utf8Length = 0;
+	char utf8NameStackBuffer[J9VM_PACKAGE_NAME_BUFFER_LENGTH];
 	U_8 *utf8Name = NULL;
 	J9Class *clazz = NULL;
 	jclass result = NULL;
@@ -2565,22 +2574,16 @@ jvmDefineClassHelper(JNIEnv *env, jobject classLoaderObject,
 
 	vmFuncs->internalEnterVMFromJNI(currentThread);
 
-	/* Allocate and initialize a UTF8 copy of the Unicode class-name */
-	if (className == NULL) {
-		utf8Length = 0;
-		utf8Name = NULL;
-	} else {
-		utf8Length = vmFuncs->getStringUTF8Length(currentThread, J9_JNI_UNWRAP_REFERENCE(className));
-		/* For now, use malloc, but this should use stack allocation for short class-names */
-		utf8Name = j9mem_allocate_memory(utf8Length+1, J9MEM_CATEGORY_CLASSES);
-		if (utf8Name == NULL) {
+	if (NULL != className) {
+		j9object_t classNameObject = J9_JNI_UNWRAP_REFERENCE(className);
+		utf8Name = (U_8*)vmFuncs->copyStringToUTF8WithMemAlloc(currentThread, classNameObject, J9_STR_NULL_TERMINATE_RESULT, "", 0, utf8NameStackBuffer, J9VM_PACKAGE_NAME_BUFFER_LENGTH, &utf8Length);
+		if (NULL == utf8Name) {
 			vmFuncs->setNativeOutOfMemoryError(currentThread, 0, 0);
 			goto done;
 		}
-		if (UDATA_MAX == vmFuncs->copyStringToUTF8Helper(
-			currentThread, J9_JNI_UNWRAP_REFERENCE(className), TRUE, J9_STR_XLAT, utf8Name, utf8Length + 1)
-		) {
-			vmFuncs->setCurrentException(currentThread, J9VMCONSTANTPOOL_JAVALANGINTERNALERROR, NULL);
+
+		if (CLASSNAME_INVALID == vmFuncs->verifyQualifiedName(currentThread, utf8Name, utf8Length, CLASSNAME_VALID_NON_ARRARY)) {
+			vmFuncs->setCurrentException(currentThread, J9VMCONSTANTPOOL_JAVALANGNOCLASSDEFFOUNDERROR, (UDATA *)*(j9object_t*)className);
 			goto done;
 		}
 	}
@@ -2666,9 +2669,12 @@ done:
 
 	result = vmFuncs->j9jni_createLocalRef(env, J9VM_J9CLASS_TO_HEAPCLASS(clazz));
 
-	vmFuncs->internalReleaseVMAccess(currentThread);
+	vmFuncs->internalExitVMToJNI(currentThread);
 
-	j9mem_free_memory(utf8Name);
+	if ((U_8*)utf8NameStackBuffer != utf8Name) {
+		j9mem_free_memory(utf8Name);
+	}
+
 	return result;
 }
 
@@ -2732,7 +2738,7 @@ JVM_DefineClassWithSourceCond(jint arg0, jint arg1, jint arg2, jint arg3, jint a
 jobject JNICALL
 JVM_EnqueueOperation(jint arg0, jint arg1, jint arg2, jint arg3, jint arg4)
 {
-	assert(!"JVM_EnqueueOperation() stubbed!");
+	assert(!"A HotSpot VM Attach API is attempting to connect to an OpenJ9 VM. This is not supported.");
 	return NULL;
 }
 

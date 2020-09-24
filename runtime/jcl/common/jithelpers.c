@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1998, 2016 IBM Corp. and others
+ * Copyright (c) 1998, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -38,7 +38,7 @@ Java_com_ibm_jit_JITHelpers_javaLangClassJ9ClassOffset(JNIEnv *env, jclass ignor
 
 	vmThread->javaVM->internalVMFunctions->internalEnterVMFromJNI(vmThread);
 	offset = (jint) J9VMJAVALANGCLASS_VMREF_OFFSET(vmThread);
-	vmThread->javaVM->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	vmThread->javaVM->internalVMFunctions->internalExitVMToJNI(vmThread);
 
 	return offset;
 }
@@ -165,37 +165,41 @@ Java_com_ibm_jit_JITHelpers_identityHashSaltPolicy(JNIEnv *env, jclass ignored)
 jint JNICALL
 Java_com_ibm_jit_JITHelpers_j9ContiguousArrayHeaderSize(JNIEnv *env, jclass ignored)
 {
-	return (jint) sizeof(J9IndexableObjectContiguous);
+	return (jint) J9VMTHREAD_CONTIGUOUS_HEADER_SIZE((J9VMThread*)env);
 }
 
 jint JNICALL
 Java_com_ibm_jit_JITHelpers_j9DiscontiguousArrayHeaderSize(JNIEnv *env, jclass ignored)
 {
-	return (jint) sizeof(J9IndexableObjectDiscontiguous);
+	return (jint) J9VMTHREAD_DISCONTIGUOUS_HEADER_SIZE((J9VMThread*)env);
 }
 
 jint JNICALL
 Java_com_ibm_jit_JITHelpers_j9ObjectContiguousLengthOffset(JNIEnv *env, jclass ignored)
 {
-	return (jint) offsetof(J9IndexableObjectContiguous, size);
+	if (J9VMTHREAD_COMPRESS_OBJECT_REFERENCES((J9VMThread*)env)) {
+		return (jint) offsetof(J9IndexableObjectContiguousCompressed, size);		
+	}
+	return (jint) offsetof(J9IndexableObjectContiguousFull, size);
 }
 
 jint JNICALL
 Java_com_ibm_jit_JITHelpers_j9ObjectDiscontiguousLengthOffset(JNIEnv *env, jclass ignored)
 {
-	return (jint) offsetof(J9IndexableObjectDiscontiguous, size);
+	if (J9VMTHREAD_COMPRESS_OBJECT_REFERENCES((J9VMThread*)env)) {
+		return (jint) offsetof(J9IndexableObjectDiscontiguousCompressed, size);		
+	}
+	return (jint) offsetof(J9IndexableObjectDiscontiguousFull, size);
 }
 
-jboolean JNICALL
-Java_com_ibm_jit_JITHelpers_isPlatformLittleEndian(JNIEnv *env, jclass ignored)
-{
-	unsigned int temp = 1;
-
-	if (*((char*)&temp)) {
-		return JNI_TRUE;
-	} else {
-		return JNI_FALSE;
-	}
+jboolean JNICALL		
+Java_com_ibm_jit_JITHelpers_isBigEndian(JNIEnv *env, jclass ignored)		
+{		
+#if defined(J9VM_ENV_LITTLE_ENDIAN)
+return JNI_FALSE;
+#else
+return JNI_TRUE;
+#endif
 }
 
 /*
@@ -215,13 +219,13 @@ Java_com_ibm_jit_JITHelpers_is32Bit(JNIEnv *env, jobject rcv)
 jint JNICALL
 Java_com_ibm_jit_JITHelpers_getNumBitsInReferenceField(JNIEnv *env, jobject rcv)
 {
-	return (jint) (sizeof(fj9object_t) * 8);
+	return (jint) (J9VMTHREAD_REFERENCE_SIZE((J9VMThread*)env) * 8);
 }
 
 jint JNICALL
 Java_com_ibm_jit_JITHelpers_getNumBytesInReferenceField(JNIEnv *env, jobject rcv)
 {
-	return (jint) sizeof(fj9object_t);
+	return (jint) J9VMTHREAD_REFERENCE_SIZE((J9VMThread*)env);
 }
 
 jint JNICALL
@@ -239,7 +243,7 @@ Java_com_ibm_jit_JITHelpers_getNumBytesInDescriptionWord(JNIEnv *env, jobject rc
 jint JNICALL
 Java_com_ibm_jit_JITHelpers_getNumBytesInJ9ObjectHeader(JNIEnv *env, jobject rcv)
 {
-	return (jint) sizeof(J9Object);
+	return (jint) J9VMTHREAD_OBJECT_HEADER_SIZE((J9VMThread*)env);
 }
 
 #if defined(J9VM_ENV_DATA64)
@@ -252,7 +256,7 @@ Java_com_ibm_jit_JITHelpers_getJ9ClassFromClass64(JNIEnv *env, jobject rcv, jcla
 
 	vmThread->javaVM->internalVMFunctions->internalEnterVMFromJNI(vmThread);
 	clazz = J9VM_J9CLASS_FROM_HEAPCLASS(vmThread, J9_JNI_UNWRAP_REFERENCE(c));
-	vmThread->javaVM->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	vmThread->javaVM->internalVMFunctions->internalExitVMToJNI(vmThread);
 	return (jlong)(UDATA)clazz;
 }
 
@@ -268,7 +272,7 @@ Java_com_ibm_jit_JITHelpers_getClassFromJ9Class64(JNIEnv *env, jobject rcv, jlon
 	if (NULL == classRef) {
 		vmfns->setNativeOutOfMemoryError(vmThread, 0, 0);
 	}
-	vmfns->internalReleaseVMAccess(vmThread);
+	vmfns->internalExitVMToJNI(vmThread);
 	return classRef;
 }
 
@@ -358,7 +362,7 @@ Java_com_ibm_jit_JITHelpers_getJ9ClassFromClass32(JNIEnv *env, jobject rcv, jcla
 
 	vmThread->javaVM->internalVMFunctions->internalEnterVMFromJNI(vmThread);
 	clazz = J9VM_J9CLASS_FROM_HEAPCLASS(vmThread, J9_JNI_UNWRAP_REFERENCE(c));
-	vmThread->javaVM->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	vmThread->javaVM->internalVMFunctions->internalExitVMToJNI(vmThread);
 	return (jint)(UDATA)clazz;
 }
 
@@ -374,7 +378,7 @@ Java_com_ibm_jit_JITHelpers_getClassFromJ9Class32(JNIEnv *env, jobject rcv, jint
 	if (NULL == classRef) {
 		vmfns->setNativeOutOfMemoryError(vmThread, 0, 0);
 	}
-	vmfns->internalReleaseVMAccess(vmThread);
+	vmfns->internalExitVMToJNI(vmThread);
 	return classRef;
 }
 

@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2018 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -101,11 +100,9 @@ gcParseXXgcArguments(J9JavaVM *vm, char *optArg)
 		}
 		if (try_scan(&scan_start, "stw")) {
 			MM_Scheduler::initializeForVirtualSTW(extensions);
-#if defined(J9VM_GC_STACCATO)
 			/* Stop the world collects should not do any concurrent work */
 			extensions->concurrentSweepingEnabled = false;
 			extensions->concurrentTracingEnabled = false;
-#endif /* J9VM_GC_STACCATO */
 			continue;
 		}
 		if (try_scan(&scan_start, "headroom=")) {
@@ -198,7 +195,6 @@ gcParseXXgcArguments(J9JavaVM *vm, char *optArg)
 			}
 			continue;
 		}
-#if defined(J9VM_GC_STACCATO)
 		if(try_scan(&scan_start, "noConcurrentSweep")) {
 			extensions->concurrentSweepingEnabled = false;
 			continue;
@@ -215,7 +211,6 @@ gcParseXXgcArguments(J9JavaVM *vm, char *optArg)
 			extensions->concurrentTracingEnabled = true;
 			continue;
 		}
-#endif /* J9VM_GC_STACCATO */
 
 		if (try_scan(&scan_start, "allocationContextCount=")) {
 			if(!scan_udata_helper(vm, &scan_start, &(extensions->managedAllocationContextCount), "allocationContextCount=")) {
@@ -247,29 +242,31 @@ gcParseXXgcArguments(J9JavaVM *vm, char *optArg)
 		}
 #endif /* J9VM_INTERP_NATIVE_SUPPORT */
 
-#if defined (J9VM_GC_COMPRESSED_POINTERS)
-		/* see if we are to force disable shifting in compressed refs */
-		if (try_scan(&scan_start, "noShiftingCompression")) {
-			extensions->shouldAllowShiftingCompression = false;
-			continue;
-		}
-
-		/* see if we are forcing shifting to a specific value */
-		if (try_scan(&scan_start, "forcedShiftingCompressionAmount=")) {
-			extensions->shouldForceSpecifiedShiftingCompression = true;
-			if(!scan_udata_helper(vm, &scan_start, &(extensions->forcedShiftingCompressionAmount), "forcedShiftingCompressionAmount=")) {
-				returnValue = JNI_EINVAL;
-				break;
+#if defined (OMR_GC_COMPRESSED_POINTERS)
+		if (extensions->compressObjectReferences()) {
+			/* see if we are to force disable shifting in compressed refs */
+			if (try_scan(&scan_start, "noShiftingCompression")) {
+				extensions->shouldAllowShiftingCompression = false;
+				continue;
 			}
 
-			if (extensions->forcedShiftingCompressionAmount > LOW_MEMORY_HEAP_CEILING_SHIFT) {
-				returnValue = JNI_EINVAL;
-				break;
+			/* see if we are forcing shifting to a specific value */
+			if (try_scan(&scan_start, "forcedShiftingCompressionAmount=")) {
+				extensions->shouldForceSpecifiedShiftingCompression = true;
+				if(!scan_udata_helper(vm, &scan_start, &(extensions->forcedShiftingCompressionAmount), "forcedShiftingCompressionAmount=")) {
+					returnValue = JNI_EINVAL;
+					break;
+				}
+	
+				if (extensions->forcedShiftingCompressionAmount > LOW_MEMORY_HEAP_CEILING_SHIFT) {
+					returnValue = JNI_EINVAL;
+					break;
+				}
+	
+				continue;
 			}
-
-			continue;
 		}
-#endif /* defined (J9VM_GC_COMPRESSED_POINTERS) */
+#endif /* defined (OMR_GC_COMPRESSED_POINTERS) */
 
 #if defined (J9VM_GC_VLHGC)
 		/* parse the maximum age a region can have to be included in the nursery set, if specified */
@@ -310,11 +307,25 @@ gcParseXXgcArguments(J9JavaVM *vm, char *optArg)
 			continue;
 		}
 
-		if (try_scan(&scan_start, "tarokKickoffHeadroomRegionCount=")) {
-			if(!scan_udata_memory_size_helper(vm, &scan_start, &(extensions->tarokKickoffHeadroomRegionCount), "tarokKickoffHeadroomRegionCount=")) {
+		if (try_scan(&scan_start, "tarokKickoffHeadroomRegionRate=")) {
+			if(!scan_u32_helper(vm, &scan_start, &(extensions->tarokKickoffHeadroomRegionRate), "tarokKickoffHeadroomRegionRate=")) {
 				returnValue = JNI_EINVAL;
 				break;
 			}
+			if (50 < extensions->tarokKickoffHeadroomRegionRate) {
+				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_INTEGER_OUT_OF_RANGE, "tarokKickoffHeadroomRegionRate=", (UDATA)0, (UDATA)50);
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			continue;
+		}
+
+		if (try_scan(&scan_start, "tarokKickoffHeadroomInBytes=")) {
+			if(!scan_udata_memory_size_helper(vm, &scan_start, &(extensions->tarokKickoffHeadroomInBytes), "tarokKickoffHeadroomInBytes=")) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			extensions->tarokForceKickoffHeadroomInBytes = true;
 			continue;
 		}
 
@@ -633,6 +644,7 @@ gcParseXXgcArguments(J9JavaVM *vm, char *optArg)
 			continue;
 		}
 		
+#if defined(J9VM_GC_MODRON_SCAVENGER)
 		if(try_scan(&scan_start, "cacheListLockSplit=")) {
 			if(!scan_udata_helper(vm, &scan_start, &extensions->cacheListSplit, "cacheListLockSplit=")) {
 				returnValue = JNI_EINVAL;
@@ -645,6 +657,7 @@ gcParseXXgcArguments(J9JavaVM *vm, char *optArg)
 			}
 			continue;
 		}
+#endif /* J9VM_GC_MODRON_SCAVENGER */
 
 		if (try_scan(&scan_start, "markingArraySplitMinimumAmount=")) {
 			UDATA arraySplitAmount = 0;
@@ -703,6 +716,143 @@ gcParseXXgcArguments(J9JavaVM *vm, char *optArg)
 		}
 
 #if defined(J9VM_GC_MODRON_SCAVENGER)
+		/* Start of options relating to dynamicBreadthFirstScanOrdering */
+		if(try_scan(&scan_start, "dbfGcCountBetweenHotFieldSort=")) {
+			UDATA value;
+			if(!scan_udata_helper(vm, &scan_start, &value, "dbfGcCountBetweenHotFieldSort=")) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			if(value > 10) {
+				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_INTEGER_OUT_OF_RANGE, "dbfGcCountBetweenHotFieldSort=", (UDATA)0, (UDATA)10);
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			extensions->gcCountBetweenHotFieldSort = value;
+			continue;
+		}
+
+		if(try_scan(&scan_start, "dbfGcCountBetweenHotFieldSortMax=")) {
+			UDATA value;
+			if(!scan_udata_helper(vm, &scan_start, &value, "dbfGcCountBetweenHotFieldSortMax=")) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			if(value > 50) {
+				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_INTEGER_OUT_OF_RANGE, "dbfGcCountBetweenHotFieldSortMax=", (UDATA)0, (UDATA)50);
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			extensions->gcCountBetweenHotFieldSortMax = value;
+			continue;
+		}
+
+		if(try_scan(&scan_start, "dbfDisableAdaptiveGcCountBetweenHotFieldSort")) {
+			extensions->adaptiveGcCountBetweenHotFieldSort = false;
+			continue;
+		}
+
+		if(try_scan(&scan_start, "dbfDisableDepthCopyTwoPaths")) {
+			extensions->depthCopyTwoPaths = false;
+			continue;
+		}
+		
+		if(try_scan(&scan_start, "dbfDepthCopyThreePaths")) {
+			extensions->depthCopyThreePaths = true;
+			continue;
+		}
+		
+		if(try_scan(&scan_start, "dbfEnableAlwaysDepthCopyFirstOffset")) {
+			extensions->alwaysDepthCopyFirstOffset = true;
+			continue;
+		} 
+
+		if(try_scan(&scan_start, "dbfEnablePermanantHotFields")) {
+			extensions->allowPermanantHotFields = true;
+			continue;
+		}
+		
+		if(try_scan(&scan_start, "dbfMaxConsecutiveHotFieldSelections=")) {
+			UDATA value;
+			if(!scan_udata_helper(vm, &scan_start, &value, "dbfMaxConsecutiveHotFieldSelections=")) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			if(value > 50) {
+				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_INTEGER_OUT_OF_RANGE, "dbfMaxConsecutiveHotFieldSelections=", (UDATA)0, (UDATA)50);
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			extensions->maxConsecutiveHotFieldSelections = value;
+			continue;
+		}
+
+		if(try_scan(&scan_start, "dbfEnableHotFieldResetting")) {
+			extensions->hotFieldResettingEnabled = true;
+			continue;
+		}
+
+		if(try_scan(&scan_start, "dbfGcCountBetweenHotFieldReset=")) {
+			UDATA value;
+			if(!scan_udata_helper(vm, &scan_start, &value, "dbfGcCountBetweenHotFieldReset=")) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			if(value > 5000) {
+				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_INTEGER_OUT_OF_RANGE, "dbfGcCountBetweenHotFieldReset=", (UDATA)0, (UDATA)5000);
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			extensions->gcCountBetweenHotFieldReset = value;
+			continue;
+		}
+
+		if(try_scan(&scan_start, "dbfDepthCopyMax=")) {
+			UDATA value;
+			if(!scan_udata_helper(vm, &scan_start, &value, "dbfDepthCopyMax=")) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			if(value > 10) {
+				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_INTEGER_OUT_OF_RANGE, "dbfDepthCopyMax=", (UDATA)0, (UDATA)10);
+				returnValue = JNI_EINVAL;
+				break;
+			}	
+			extensions->depthCopyMax = value;
+			continue;
+		}
+
+		if(try_scan(&scan_start, "dbfMaxHotFieldListLength=")) {
+			UDATA value;
+			if(!scan_udata_helper(vm, &scan_start, &value, "dbfMaxHotFieldListLength=")) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			if(value > 20) {
+				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_INTEGER_OUT_OF_RANGE, "dbfMaxHotFieldListLength=", (UDATA)0, (UDATA)20);
+				returnValue = JNI_EINVAL;
+				break;
+			}	
+			extensions->maxHotFieldListLength = ((uint32_t)value);
+			continue;
+		}
+
+		if(try_scan(&scan_start, "dbfMinCpuUtil=")) {
+			UDATA value;
+			if(!scan_udata_helper(vm, &scan_start, &value, "dbfMinCpuUtil=")) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			if(value > 15) {
+				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_INTEGER_OUT_OF_RANGE, "dbfMinCpuUtil=", (UDATA)0, (UDATA)15);
+				returnValue = JNI_EINVAL;
+				break;
+			}	
+			extensions->minCpuUtil = value;
+			continue;
+		}
+		/* End of options relating to dynamicBreadthFirstScanOrdering */
+		
 		if (try_scan(&scan_start, "scanCacheMinimumSize=")) {
 			/* Read in restricted scan cache size */
 			if(!scan_udata_helper(vm, &scan_start, &extensions->scavengerScanCacheMinimumSize, "scanCacheMinimumSize=")) {
@@ -766,17 +916,38 @@ gcParseXXgcArguments(J9JavaVM *vm, char *optArg)
 
 			continue;
 		}
+		if (try_scan(&scan_start, "aliasInhibitingThresholdPercentage=")) {
+			UDATA percentage = 0;
+			if(!scan_udata_helper(vm, &scan_start, &percentage, "aliasInhibitingThresholdPercentage=")) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			if(percentage > 100) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			extensions->aliasInhibitingThresholdPercentage = ((double)percentage) / 100.0;
+
+			continue ;
+		}
 
 #if defined(OMR_GC_CONCURRENT_SCAVENGER)
 		if (try_scan(&scan_start, "debugConcurrentScavengerPageAlignment")) {
 			extensions->setDebugConcurrentScavengerPageAlignment(true);
 			continue;
 		}
-		if(try_scan(&scan_start, "softwareEvacuateReadBarrier")) {
-			/* Software read barriers are only implemented on s390 for now */
-#if defined(S390) || defined(J9ZOS390)
-			extensions->softwareEvacuateReadBarrier = true;
-#endif /* defined(S390) || defined(J9ZOS390) */
+		if(try_scan(&scan_start, "softwareRangeCheckReadBarrier")) {
+			extensions->softwareRangeCheckReadBarrier = true;
+			continue;
+		}
+
+		if (try_scan(&scan_start, "enableConcurrentScavengeExhaustiveTermination")) {
+			extensions->concurrentScavengeExhaustiveTermination = true;
+			continue;
+		}
+
+		if (try_scan(&scan_start, "disableConcurrentScavengeExhaustiveTermination")) {
+			extensions->concurrentScavengeExhaustiveTermination = false;
 			continue;
 		}
 #endif /* defined(OMR_GC_CONCURRENT_SCAVENGER) */
@@ -907,14 +1078,63 @@ gcParseXXgcArguments(J9JavaVM *vm, char *optArg)
 			continue;
 		}
 
-		/* Temporary option. See Jazz 31620: Reserve unused space at end of heap for JIT */
-		if (try_scan(&scan_start, "heapTailPadding=")) {
-			if(!scan_udata_memory_size_helper(vm, &scan_start, &extensions->heapTailPadding, "heapTailPadding=")) {
+		if (try_scan(&scan_start, "heapSizeStartupHintConservativeFactor=")) {
+			UDATA percentage = 0;
+			if(!scan_udata_helper(vm, &scan_start, &percentage, "heapSizeStartupHintConservativeFactor=")) {
 				returnValue = JNI_EINVAL;
 				break;
 			}
+			if(percentage > 100) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			extensions->heapSizeStartupHintConservativeFactor = ((float)percentage) / 100.0f;
+			continue ;
+		}
+
+		if (try_scan(&scan_start, "heapSizeStartupHintWeightNewValue=")) {
+			UDATA percentage = 0;
+			if(!scan_udata_helper(vm, &scan_start, &percentage, "heapSizeStartupHintWeightNewValue=")) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			if(percentage > 100) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			extensions->heapSizeStartupHintWeightNewValue = ((float)percentage) / 100.0f;
+			continue ;
+		}
+
+		if (try_scan(&scan_start, "darkMatterCompactThreshold=")) {
+			UDATA percentage = 0;
+			if(!scan_udata_helper(vm, &scan_start, &percentage, "darkMatterCompactThreshold=")) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			if(percentage > 100) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			extensions->darkMatterCompactThreshold = ((float)percentage) / 100.0f;
 			continue;
 		}
+		
+#if defined(OMR_GC_IDLE_HEAP_MANAGER)
+		if (try_scan(&scan_start, "gcOnIdleCompactThreshold=")) {
+			UDATA percentage = 0;
+			if(!scan_udata_helper(vm, &scan_start, &percentage, "gcOnIdleCompactThreshold=")) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			if(percentage > 100) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			extensions->gcOnIdleCompactThreshold = ((float)percentage) / 100.0f;
+			continue;
+		}
+#endif /* defined(OMR_GC_IDLE_HEAP_MANAGER) */
 
 #if defined (J9VM_GC_VLHGC)
 		if (try_scan(&scan_start, "fvtest_tarokSimulateNUMA=")) {
@@ -933,8 +1153,8 @@ gcParseXXgcArguments(J9JavaVM *vm, char *optArg)
 		}
 #endif /* defined (J9VM_GC_VLHGC) */
 
-		if (try_scan(&scan_start, "fvtest_disableExplictMasterThread")) {
-			extensions->fvtest_disableExplictMasterThread = true;
+		if (try_scan(&scan_start, "fvtest_disableExplictMainThread")) {
+			extensions->fvtest_disableExplictMainThread = true;
 			continue;
 		}
 		
@@ -1102,6 +1322,32 @@ gcParseXXgcArguments(J9JavaVM *vm, char *optArg)
 			continue;
 		}
 
+#if defined(OMR_ENV_DATA64) && defined(OMR_GC_FULL_POINTERS)
+		if (try_scan(&scan_start, "fvtest_enableReadBarrierVerification=")) {
+			extensions->fvtest_enableReadBarrierVerification = 0;
+
+			char * pattern = scan_to_delim(PORTLIB, &scan_start, ',');
+
+			if (true == ('0' != pattern[4])) {
+				extensions->fvtest_enableHeapReadBarrierVerification = 1;
+				extensions->fvtest_enableReadBarrierVerification = 1;
+			}
+			if (true == ('0' !=  pattern[3])) {
+				extensions->fvtest_enableClassStaticsReadBarrierVerification = 1;
+				extensions->fvtest_enableReadBarrierVerification = 1;
+			}
+			if (true == ('0' != pattern[2])){
+				extensions->fvtest_enableMonitorObjectsReadBarrierVerification = 1;
+				extensions->fvtest_enableReadBarrierVerification = 1;
+			}
+			if (true == ('0' != pattern[1])) {
+				extensions->fvtest_enableJNIGlobalWeakReadBarrierVerification = 1;
+				extensions->fvtest_enableReadBarrierVerification = 1;
+			}
+			continue;
+		}
+#endif /* defined(OMR_ENV_DATA64) && defined(OMR_GC_FULL_POINTERS) */
+
 		if (try_scan(&scan_start, "fvtest_forceReferenceChainWalkerMarkMapCommitFailure=")) {
 			if(!scan_udata_helper(vm, &scan_start, &(extensions->fvtest_forceReferenceChainWalkerMarkMapCommitFailure), "fvtest_forceReferenceChainWalkerMarkMapCommitFailure=")) {
 				returnValue = JNI_EINVAL;
@@ -1116,6 +1362,20 @@ gcParseXXgcArguments(J9JavaVM *vm, char *optArg)
 		if (try_scan(&scan_start, "fvtest_forceReferenceChainWalkerMarkMapCommitFailure")) {
 			extensions->fvtest_forceReferenceChainWalkerMarkMapCommitFailure = 1;
 			extensions->fvtest_forceReferenceChainWalkerMarkMapCommitFailureCounter = 0;
+			continue;
+		}
+
+		if (try_scan(&scan_start, "fvtest_forceCopyForwardHybridMarkCompactRatio=")) {
+			/* the percentage of the collectionSet regions would like to markCompact instead of copyForward */
+			if(!scan_udata_helper(vm, &scan_start, &(extensions->fvtest_forceCopyForwardHybridRatio), "fvtest_forceCopyForwardHybridMarkCompactRatio=")) {
+				returnValue = JNI_EINVAL;
+				break;
+			}
+			if ((extensions->fvtest_forceCopyForwardHybridRatio < 1) || (100 < extensions->fvtest_forceCopyForwardHybridRatio)) {
+				j9nls_printf(PORTLIB, J9NLS_ERROR, J9NLS_GC_OPTIONS_INTEGER_OUT_OF_RANGE, "fvtest_forceCopyForwardHybridMarkCompactRatio=", (UDATA)1, (UDATA)100);
+				returnValue = JNI_EINVAL;
+				break;
+			}
 			continue;
 		}
 

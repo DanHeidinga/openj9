@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -318,14 +318,12 @@ MM_MemorySubSpaceTarok::allocateObject(MM_EnvironmentBase *env, MM_AllocateDescr
 /**
  * Allocate the arraylet spine in immortal or scoped memory.
  */
-#if defined(J9VM_GC_ARRAYLETS)
 void *
 MM_MemorySubSpaceTarok::allocateArrayletLeaf(MM_EnvironmentBase *env, MM_AllocateDescription *allocDescription, MM_MemorySubSpace *baseSubSpace, MM_MemorySubSpace *previousSubSpace, bool shouldCollectOnFailure)
 {
 	Assert_MM_unreachable();
 	return NULL;
 }
-#endif /* J9VM_GC_ARRAYLETS */
 
 void *
 MM_MemorySubSpaceTarok::allocationRequestFailed(MM_EnvironmentBase *env, MM_AllocateDescription *allocateDescription, AllocationType allocationType, MM_ObjectAllocationInterface *objectAllocationInterface, MM_MemorySubSpace *baseSubSpace, MM_MemorySubSpace *previousSubSpace)
@@ -464,9 +462,7 @@ MM_MemorySubSpaceTarok::recycleRegion(MM_EnvironmentBase *env, MM_HeapRegionDesc
 			 * leaving _nextMarkMapCleared unchanged
 			 */
 			regionStandard->_previousMarkMapCleared = true;
-#if defined(J9VM_GC_ARRAYLETS)
 		case MM_HeapRegionDescriptor::ARRAYLET_LEAF:
-#endif /* defined(J9VM_GC_ARRAYLETS) */
 			context->recycleRegion(envVLHGC, regionStandard);
 			break;
 		default:
@@ -777,12 +773,10 @@ MM_MemorySubSpaceTarok::lockedAllocate(MM_EnvironmentBase *env, MM_AllocationCon
 	void* result = NULL;
 	
 	/* arraylet leaves need to be allocated directly after a new region has been found so fall through to the replenish path in that case */
-#if defined(J9VM_GC_ARRAYLETS)
-	if (MM_MemorySubSpace::ALLOCATION_TYPE_LEAF != allocationType)
-#endif /* defined(J9VM_GC_ARRAYLETS) */
-	{
+	if (MM_MemorySubSpace::ALLOCATION_TYPE_LEAF != allocationType) {
 		result = ((MM_AllocationContextTarok *)context)->lockedAllocate(env, objectAllocationInterface, allocateDescription, allocationType);
 	}
+
 	if (NULL == result) {
 		/* we failed so do the locked replenish */
 		result = lockedReplenishAndAllocate(env, context, objectAllocationInterface, allocateDescription, allocationType);
@@ -899,14 +893,14 @@ MM_MemorySubSpaceTarok::collectorExpand(MM_EnvironmentBase *env)
 
 /**
  * Perform the contraction/expansion based on decisions made by checkResize.
- * Adjustements in contraction size is possible (because compaction might have yielded less then optimal results),
- * therefore allocDesriptor is still passed.
+ * Adjustments in contraction size is possible (because compaction might have yielded less then optimal results),
+ * therefore allocDescriptor is still passed.
  * @return the actual amount of resize (having IDATA return result will contain valid value only if contract/expand size is half of maxOfUDATA)
  */
 IDATA
 MM_MemorySubSpaceTarok::performResize(MM_EnvironmentBase *env, MM_AllocateDescription *allocDescription)
 {
-	UDATA oldVMState = env->pushVMstate(J9VMSTATE_GC_PERFORM_RESIZE);
+	UDATA oldVMState = env->pushVMstate(OMRVMSTATE_GC_PERFORM_RESIZE);
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(env);
 	/* If -Xgc:fvtest=forceTenureResize is specified, then repeat a sequence of 5 expands followed by 5 contracts */	
 	if (extensions->fvtest_forceOldResize) {
@@ -957,7 +951,7 @@ MM_MemorySubSpaceTarok::performResize(MM_EnvironmentBase *env, MM_AllocateDescri
 void
 MM_MemorySubSpaceTarok::checkResize(MM_EnvironmentBase *env, MM_AllocateDescription *allocDescription, bool _systemGC)
 {
-	UDATA oldVMState = env->pushVMstate(J9VMSTATE_GC_CHECK_RESIZE);
+	UDATA oldVMState = env->pushVMstate(OMRVMSTATE_GC_CHECK_RESIZE);
 	if (!timeForHeapContract(env, allocDescription, _systemGC)) {
 		timeForHeapExpand(env, allocDescription);
 	}
@@ -1029,7 +1023,7 @@ MM_MemorySubSpaceTarok::performContract(MM_EnvironmentBase *env, MM_AllocateDesc
 	 */
 	maximumContractSize = getAvailableContractionSize(env, allocDescription);  
 	
-	/* round down to muliple of heap alignment */
+	/* round down to multiple of heap alignment */
 	maximumContractSize= MM_Math::roundToFloor(_extensions->heapAlignment, maximumContractSize);
 	
 	/* Decide by how much to contract */
@@ -1300,7 +1294,7 @@ MM_MemorySubSpaceTarok::calculateExpandSize(MM_EnvironmentBase *env, UDATA bytes
 	/* and how much do we need free after this GC to meet -Xminf ? */
 	minimumFree = (getActiveMemorySize() / _extensions->heapFreeMinimumRatioDivisor) * _extensions->heapFreeMinimumRatioMultiplier;
 	
-	/* The derired free is the sum of these 2 rounded to heapAlignment */
+	/* The desired free is the sum of these 2 rounded to heapAlignment */
 	desiredFree= MM_Math::roundToCeiling(_extensions->heapAlignment, minimumFree + bytesRequired);
 
 	if(desiredFree <= currentFree) {
@@ -1402,7 +1396,7 @@ MM_MemorySubSpaceTarok::checkForRatioExpand(MM_EnvironmentBase *env, UDATA bytes
 	maxFree = (UDATA)(((U_64)getActiveMemorySize()  * _extensions->heapFreeMaximumRatioMultiplier)
 														 / ((U_64)_extensions->heapFreeMaximumRatioDivisor));
 														 
-	/* If we have hit -Xmaxf limit already ...return immiediatley */													 
+	/* If we have hit -Xmaxf limit already ...return immediately */													 
 	if (currentFree >= maxFree) { 
 		Trc_MM_MemorySubSpaceTarok_checkForRatioExpand_Exit1(env->getLanguageVMThread());
 		return 0;

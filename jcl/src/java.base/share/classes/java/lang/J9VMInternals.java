@@ -1,36 +1,6 @@
 /*[INCLUDE-IF Sidecar16]*/
-
-package java.lang;
-
-import java.lang.ref.SoftReference;
-import java.lang.reflect.*;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Properties;
-import java.util.WeakHashMap;
-import java.security.AccessControlContext;
-import java.security.ProtectionDomain;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.PrintStream;
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
-import java.lang.reflect.Proxy;
-/*[IF Sidecar19-SE]*/
-import jdk.internal.ref.CleanerShutdown;
-import jdk.internal.ref.CleanerImpl;
-import jdk.internal.misc.Unsafe;
-/*[ELSE]*/
-import sun.misc.Unsafe;
-/*[ENDIF]*/
-import com.ibm.oti.util.Msg;
-
-
 /*******************************************************************************
- * Copyright (c) 1998, 2018 IBM Corp. and others
+ * Copyright (c) 1998, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -51,6 +21,35 @@ import com.ibm.oti.util.Msg;
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
 
+package java.lang;
+
+import com.ibm.oti.vm.J9UnmodifiableClass;
+import java.lang.ref.SoftReference;
+import java.lang.reflect.*;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Properties;
+import java.util.WeakHashMap;
+import java.security.AccessControlContext;
+import java.security.CodeSource;
+import java.security.ProtectionDomain;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.PrintStream;
+import java.net.URL;
+/*[IF Sidecar19-SE]*/
+import jdk.internal.ref.CleanerShutdown;
+import jdk.internal.ref.CleanerImpl;
+import jdk.internal.misc.Unsafe;
+/*[ELSE]*/
+import sun.misc.Unsafe;
+/*[ENDIF]*/
+import com.ibm.oti.util.Msg;
+
+@J9UnmodifiableClass
 final class J9VMInternals {
 	/*[PR VMDESIGN 1891] Move j9Version and j9Config from Class to J9VMInternals */
 	/*[IF]*/
@@ -96,17 +95,10 @@ final class J9VMInternals {
 		
 		/*[IF Sidecar19-SE]*/
 		if (Boolean.getBoolean("ibm.java9.forceCommonCleanerShutdown")) {//$NON-NLS-1$
-			Runtime.getRuntime().addShutdownHook(new Thread(()->{
+			Runnable runnable = () -> {
 
 				CleanerShutdown.shutdownCleaner();
-				ThreadGroup threadGroup = Thread.currentThread().group;
-				ThreadGroup parent = threadGroup.getParent();
-				 
-				while (null != parent) {
-					threadGroup = parent;
-					parent = threadGroup.getParent();
-				}
-				
+				ThreadGroup threadGroup = Thread.currentThread().group; // the system ThreadGroup				 
 				ThreadGroup threadGroups[] = new ThreadGroup[threadGroup.numGroups];
 				threadGroup.enumerate(threadGroups, false); /* non-recursive enumeration */
 				for (ThreadGroup tg : threadGroups) {
@@ -136,7 +128,8 @@ final class J9VMInternals {
 						}
 					}
 				}			
-			}));
+			};
+			Runtime.getRuntime().addShutdownHook(new Thread(runnable, "CommonCleanerShutdown", true, false, false, null)); //$NON-NLS-1$
 		}
 		/*[ENDIF]*/
 	}
@@ -498,31 +491,45 @@ final class J9VMInternals {
 	
 	
 	private static String[] getClassInfoStrings(final Class<?> clazz, String classPath){
-		String classLoader;
+		String classLoaderStr = "<Bootstrap Loader>"; //$NON-NLS-1$
+		String cpResult = "<Unknown>"; //$NON-NLS-1$
 		
-		if (classPath != null) {
-			classLoader = "<Bootstrap Loader>";
-		} else {
-			classLoader = clazz.getClassLoader().toString();
-			classPath = (String)AccessController.doPrivileged(new PrivilegedAction() {
-				public Object run() {
-					String path = null;
-					try {
-						path = clazz.getProtectionDomain().getCodeSource().getLocation().toString();
-					} catch (Exception e) {
-						path = "<Unknown>";
+		if (classPath == null) {
+			ClassLoader classLoader = clazz.getClassLoader();
+			if (classLoader != null) {
+				classLoaderStr = classLoader.toString();
+				classPath = AccessController.doPrivileged(new PrivilegedAction<String>() {
+					@Override
+					public String run() {
+						String path = null;
+						try {
+							ProtectionDomain pd = clazz.getProtectionDomain();
+							if (pd != null) {
+								CodeSource cs = pd.getCodeSource();
+								if (cs != null) {
+									URL loc = cs.getLocation();
+									if (loc != null) {
+										path = loc.toString();
+									}
+								}
+							}
+						} catch (Exception e) {
+						}
+						return path;
 					}
-					return path;
-				}
-			});
+				});
+			}
 		}
-		String [] strings = {classPath, classLoader};
+		if (classPath != null) {
+			cpResult = classPath;
+		}
+		String [] strings = {cpResult, classLoaderStr};
 		return strings;
 	}
 	
 	/**
 	 * Format a message to be used when creating a NoSuchMethodException from the VM.
-	 * On failure returns methodSig ie the old style of NoSuchMethoException message
+	 * On failure returns methodSig ie the old style of NoSuchMethodException message
 	 * @param methodSig String representation of the signature of the called method
 	 * @param clazz1 The calling class, 
 	 * @param classPath1 Classpath used to load calling class. Only set when class is loaded by bootstrap loader

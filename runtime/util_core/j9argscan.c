@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2015 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -20,9 +20,14 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
 
+#include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <math.h>
+#include "j9.h"
 #include "j9argscan.h"
 #include "j9port.h"
+#include "jvminit.h"
 #include "omrutil.h"
 
 /* Returns the trimmed input string, removing leading and trailing whitespace.
@@ -103,6 +108,29 @@ void scan_failed(J9PortLibrary * portLibrary, const char* module, const char *sc
 	j9tty_printf(PORTLIB, "<%s: unrecognized option --> '%s'>\n", module, scan_start);
 }
 
+uintptr_t scan_double(char **scan_start, double *result)
+{
+	char *endPtr = NULL;
+
+	*result = strtod(*scan_start, &endPtr);
+	if (ERANGE == errno) {
+		if ((HUGE_VAL == *result) || (-HUGE_VAL == *result)) {
+			/* overflow */
+			return OPTION_OVERFLOW;
+		} else {
+			/* underflow - value is so small that it cannot be represented as double.
+			 * treat it as zero.
+			*/
+			*result = 0.0;
+			return OPTION_OK;
+		}
+	} else if ((0.0 == *result) && (endPtr == *scan_start)) {
+		/* no conversion */
+		return OPTION_MALFORMED;
+	}
+	*scan_start = endPtr;
+	return OPTION_OK;
+}
 
 /* Scan the next unsigned number off of the argument string.
  * Store the result in *result
@@ -299,6 +327,154 @@ uintptr_t scan_hex_caseflag(char **scan_start, BOOLEAN uppercaseAllowed, uintptr
 	return rc;
 }
 
+/**
+ * @Scan the hexadecimal uint64_t number and store the result in *result
+ * @param[in] scan_start The string to be scanned
+ * @param[in] uppercaseFalg Whether upper case letter is allowed
+ * @param[out] result The result
+ * @return the number of bits used to store the hexadecimal number or 0 on failure.
+ */
+uintptr_t
+scan_hex_u64(char **scan_start, uint64_t* result)
+{
+	return	scan_hex_caseflag_u64(scan_start, TRUE, result);
+}
+
+/**
+ * Scan the hexadecimal uint64_t number and store the result in *result 
+ * @param[in] scan_start The string to be scanned
+ * @param[in] uppercaseFalg Whether uppercase letter is allowed
+ * @param[out] result The result
+ * @return the number of bits used to store the hexadecimal number or 0 on failure.
+ */
+uintptr_t
+scan_hex_caseflag_u64(char **scan_start, BOOLEAN uppercaseAllowed, uint64_t* result)
+{
+	uint64_t total = 0;
+	uint64_t delta = 0;
+	char *hex = *scan_start;
+	uintptr_t bits = 0;
+
+	try_scan(&hex, "0x");
+
+	while (('\0' != *hex)
+			&& (bits <= 60)
+	) {
+		/*
+		 * Decode hex digit
+		 */
+		char x = *hex;
+		if (x >= '0' && x <= '9') {
+			delta = (x - '0');
+		} else if (x >= 'a' && x <= 'f') {
+			delta = 10 + (x - 'a');
+		} else if (x >= 'A' && x <= 'F' && uppercaseAllowed) {
+			delta = 10 + (x - 'A');
+		} else {
+			break;
+		}
+
+		total = (total << 4) + delta;
+		bits += 4;
+		hex++;
+	}
+
+	*scan_start = hex;
+	*result = total;
+
+	return bits;
+}
+
+/**
+ * Scan the next unsigned number off of the argument string, and parses for memory sizes.
+ * Specify the size in TiBs, GiBs, MiBs, or KiBs (with T,t,G,g,M,m,K,k suffixes) or in bytes (no suffix).
+ * @param[in] scan_start The string to be scanned
+ * @param[out] result The result
+ * @return returns 0 on success, 1 if the argument string is not a number, or 2 if overflow occurs.
+ */
+uintptr_t
+scan_u64_memory_size(char **scan_start, uint64_t* result)
+{
+	uintptr_t rc = scan_u64(scan_start, result);
+
+	if (0 == rc) {
+		if (try_scan(scan_start, "T") || try_scan(scan_start, "t")) {
+			if (*result <= (((U_64)-1) >> 40)) {
+				*result <<= 40;
+			} else {
+				rc = 2;
+			}
+		} else if (try_scan(scan_start, "G") || try_scan(scan_start, "g")) {
+			if (*result <= (((U_64)-1) >> 30)) {
+				*result <<= 30;
+			} else {
+				rc = 2;
+			}
+		} else if (try_scan(scan_start, "M") || try_scan(scan_start, "m")) {
+			if (*result <= (((U_64)-1) >> 20)) {
+				*result <<= 20;
+			} else {
+				rc = 2;
+			}
+		} else if (try_scan(scan_start, "K") || try_scan(scan_start, "k")) {
+			if (*result <= (((U_64)-1) >> 10)) {
+				*result <<= 10;
+			} else {
+				rc = 2;
+			}
+		}
+	}
+	return rc;
+}
+
+/**
+ * Scan the next unsigned number off of the argument string, and parses for memory sizes.
+ * Specify the size in TiBs, GiBs, MiBs, or KiBs (with T,t,G,g,M,m,K,k suffixes) or in bytes (no suffix).
+ * @param[in] scan_start The string to be scanned
+ * @param[out] result The result
+ * @return returns 0 on success, 1 if the argument string is not a number, or 2 if overflow occurs.
+ */
+uintptr_t
+scan_udata_memory_size(char **scan_start, uintptr_t* result)
+{
+	uintptr_t rc = scan_udata(scan_start, result);
+
+	if (0 == rc) {
+		/* Scan Memory String, and check for overflow */
+		if (try_scan(scan_start, "T") || try_scan(scan_start, "t")) {
+			if (0 != *result) {
+	#if defined(J9VM_ENV_DATA64)
+				if (*result <= (((UDATA)-1) >> 40)) {
+					*result <<= 40;
+				} else
+	#endif /* defined(J9VM_ENV_DATA64) */
+				{
+					rc = 2;
+				}
+			}
+		} else if (try_scan(scan_start, "G") || try_scan(scan_start, "g")) {
+			if (*result <= (((UDATA)-1) >> 30)) {
+				*result <<= 30;
+			} else {
+				rc = 2;
+			}
+		} else if (try_scan(scan_start, "M") || try_scan(scan_start, "m")) {
+			if (*result <= (((UDATA)-1) >> 20)) {
+				*result <<= 20;
+			} else {
+				rc = 2;
+			}
+		} else if (try_scan(scan_start, "K") || try_scan(scan_start, "k")) {
+			if (*result <= (((UDATA)-1) >> 10)) {
+				*result <<= 10;
+			} else {
+				rc = 2;
+			}
+		}
+	}
+
+	return rc;
+}
 
 /*
  * Print an error message indicating that an option was not recognized

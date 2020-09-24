@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2008, 2017 IBM Corp. and others
+ * Copyright (c) 2008, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -564,10 +564,6 @@ signalProtectedMain(struct J9PortLibrary *portLibrary, void *arg)
 	const char * directorySep = J9JAVA_DIR_SEPARATOR;
 	void *vmOptionsTable = NULL;
 
-#ifdef J9VM_OPT_REMOTE_CONSOLE_SUPPORT
-	remoteConsole_parseCmdLine(PORTLIB, argc-1, argv);
-#endif
-
 #ifdef J9VM_OPT_MEMORY_CHECK_SUPPORT
 	/* This should happen before anybody allocates memory.
 	 * Otherwise, shutdown will not work properly.
@@ -586,7 +582,7 @@ signalProtectedMain(struct J9PortLibrary *portLibrary, void *arg)
 		/*Soft realtime options*/
 		|| (vmOptionsTableAddOption(&vmOptionsTable, "-Xgcpolicy:metronome", NULL) != J9CMDLINE_OK)
 #endif /* defined (J9VM_GC_REALTIME) */
-#if defined(J9VM_GC_COMPRESSED_POINTERS)
+#if defined(OMR_GC_COMPRESSED_POINTERS)
 		|| (vmOptionsTableAddOption(&vmOptionsTable, "-Xcompressedrefs", NULL) != J9CMDLINE_OK)
 #else
 		|| (vmOptionsTableAddOption(&vmOptionsTable, "-Xnocompressedrefs", NULL) != J9CMDLINE_OK)
@@ -611,11 +607,10 @@ signalProtectedMain(struct J9PortLibrary *portLibrary, void *arg)
 	strcat(libjvmPath, jvmLibName);
 
 	if (j9sl_open_shared_library(libjvmPath, &handle, J9PORT_SLOPEN_DECORATE)) {
-		j9tty_printf(PORTLIB, "Failed to open JVM DLL: %s (%s)\n", J9_VM_DLL_NAME,
+		j9tty_printf(PORTLIB, "Failed to open JVM DLL: %s (%s)\n", libjvmPath,
 				j9error_last_error_message());
 		return 1;
 	}
-
 
 	if (createVMArgs(PORTLIB, argc, argv, handle, JNI_VERSION_1_6, JNI_FALSE, &vm_args,
 				&CreateJavaVM)) {

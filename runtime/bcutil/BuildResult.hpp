@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2017 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -33,6 +33,7 @@
 enum BuildResult {
 	OK = BCT_ERR_NO_ERROR,
 	GenericError = BCT_ERR_GENERIC_ERROR,
+	GenericErrorCustomMsg = BCT_ERR_GENERIC_ERROR_CUSTOM_MSG,
 	OutOfROM = BCT_ERR_OUT_OF_ROM,
 	ClassRead = BCT_ERR_CLASS_READ,
 	BytecodeTranslationFailed = BCT_ERR_BYTECODE_TRANSLATION_FAILED,
@@ -47,6 +48,7 @@ enum BuildResult {
 	InvalidAnnotation = BCT_ERR_INVALID_ANNOTATION,
 	LineNumberTableDecompressFailed = BCT_ERR_LINE_NUMBER_TABLE_DECOMPRESS_FAILED,
 	InvalidBytecodeSize = BCT_ERR_INVALID_BYTECODE_SIZE,
+	InvalidClassType = BCT_ERR_INVALID_CLASS_TYPE,
 };
 
 #endif /* BUILDRESULT_HPP_ */

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -39,9 +39,12 @@
  *  @return -1 if invalid.  0 or class arity if valid.
  */
 static VMINLINE I_32
-checkNameImpl (J9CfrConstantPoolInfo * info, BOOLEAN isClass, BOOLEAN isMethod)
+checkNameImpl (J9CfrConstantPoolInfo * info, BOOLEAN isClass, BOOLEAN isMethod, BOOLEAN isLoading)
 {
-	BOOLEAN slash = FALSE;
+	/* The separator is '.' in loading classes.
+	 * The separator is '/' in verifying classes.
+	 */
+	BOOLEAN separator = FALSE;
 	I_32 arity = 0;
 	U_32 length = info->slot1;
 	U_8 *c = info->bytes;
@@ -49,7 +52,7 @@ checkNameImpl (J9CfrConstantPoolInfo * info, BOOLEAN isClass, BOOLEAN isMethod)
 	
 	if (isClass) {
 		/* strip leading ['s for array classes */
-		for (; (*c == '[') && (c < end); c++) {
+		for (; ('[' == *c) && (c < end); c++) {
 			arity++;
 		}
 		length -= arity;
@@ -62,14 +65,19 @@ checkNameImpl (J9CfrConstantPoolInfo * info, BOOLEAN isClass, BOOLEAN isMethod)
 	while (c < end) {
 		/* check for illegal characters:  46(.) 47(/) 59(;) 60(<) 70(>) 91([) */
 		switch(*c) {
-		case '.': return -1;
+		case '.':
+			/* Only valid for the loading classes */
+			if (!isClass || !isLoading) {
+				return -1;
+			}
+			/* FALLTHRU */
 		case '/':
 			if (isClass) {
-				/* Only valid between identifiers and not at end */
-				if (slash) {
+				/* Only valid between identifiers and not at end if not in loading classes */
+				if ((isLoading && ('/' == *c)) || separator) {
 					return -1;
 				}
-				slash = TRUE;
+				separator = TRUE;
 				break;
 			}
 			return -1;
@@ -86,17 +94,23 @@ checkNameImpl (J9CfrConstantPoolInfo * info, BOOLEAN isClass, BOOLEAN isMethod)
 			if (isMethod){
 				return -1;
 			}
-			slash = FALSE; /* allow /<>/ as a pattern, per JCK vm.classfmt.cpl.cplcls002.cplcls00203m1.cplcls00203m1 */
+			separator = FALSE; /* allow /<>/ as a pattern, per test suites */
 			break;
 		case '[': return -1;
 		default:
 			/* Do Nothing */
-			slash = FALSE;
+			separator = FALSE;
 		}
 		if (length < 1) return -1;
 		length--;
 		c++;
 	}
+	
+	/* the separator shouldn't exist at the end of name, regardless of class and method */
+	if (separator) {
+		return -1;
+	}
+
 	return arity;
 }
 
@@ -104,14 +118,14 @@ checkNameImpl (J9CfrConstantPoolInfo * info, BOOLEAN isClass, BOOLEAN isMethod)
 static VMINLINE I_32
 isInitOrClinitImpl (J9CfrConstantPoolInfo * info)
 {
-	U_8 *c = info->bytes;
+	U_8 *name = info->bytes;
 
 	/* Handle <init>/<clinit> cases */
-	if (*c == '<') {
-		if ((info->slot1 == 6) && (!strncmp((char *) info->bytes, "<init>", 6))) {
+	if (*name == '<') {
+		if (J9UTF8_DATA_EQUALS("<init>", 6, name, info->slot1)) {
 			return CFR_METHOD_NAME_INIT;
 		}
-		if ((info->slot1 == 8) && (!strncmp((char *) info->bytes, "<clinit>", 8))) {
+		if (J9UTF8_DATA_EQUALS("<clinit>", 8, name, info->slot1)) {
 			return CFR_METHOD_NAME_CLINIT;
 		}
 		return CFR_METHOD_NAME_INVALID;
@@ -142,7 +156,7 @@ bcvCheckMethodName (J9CfrConstantPoolInfo * info)
 	U_8 *c = info->bytes;
 	I_32 nameStatus = isInitOrClinitImpl(info);
 	if (0 == nameStatus) {
-		nameStatus = checkNameImpl(info, FALSE, TRUE);
+		nameStatus = checkNameImpl(info, FALSE, TRUE, FALSE);
 	}
 	return nameStatus;
 }
@@ -156,7 +170,7 @@ I_32
 bcvCheckClassName (J9CfrConstantPoolInfo * info)
 {
 	/* Class checks, not method checks */
-	return checkNameImpl(info, TRUE, FALSE);
+	return checkNameImpl(info, TRUE, FALSE, FALSE);
 }
 
 /**
@@ -167,6 +181,5 @@ bcvCheckClassName (J9CfrConstantPoolInfo * info)
  */
 I_32
 bcvCheckName (J9CfrConstantPoolInfo * info) {
-	return checkNameImpl(info, FALSE, FALSE);
+	return checkNameImpl(info, FALSE, FALSE, FALSE);
 }
-

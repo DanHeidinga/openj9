@@ -2,7 +2,7 @@
 package com.ibm.oti.shared;
 
 /*******************************************************************************
- * Copyright (c) 2010, 2018 IBM Corp. and others
+ * Copyright (c) 2010, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -87,6 +87,7 @@ public class SharedClassCacheInfo {
 	private long freeBytes;
 	private int cacheType;
 	private long softMaxBytes;
+	private int layer;
 	
 	/**
 	 * Gets the cache name for the shared class cache.
@@ -161,7 +162,10 @@ public class SharedClassCacheInfo {
 	}
 	
 	/**
-	 * Gets the JVM level for the shared class cache. 
+	 * Gets the JVM level for the shared class cache.  
+	/*[IF Java10] 
+	 * Starting from Java 10, the JVM LEVEL equals to the java version number on which the share class cache is created.
+	/*[ENDIF]
 	 *
 	 * @return		A JVMLEVEL constant.
 	 */					
@@ -217,7 +221,7 @@ public class SharedClassCacheInfo {
 	}
 	
 	/**
-	 * Get the compresssedRefs mode for the shared class cache. 
+	 * Get the compressedRefs mode for the shared class cache. 
 	 *
 	 * @return		Either {@link SharedClassCacheInfo#COMPRESSED_REFS} or
 	 * 				{@link SharedClassCacheInfo#NON_COMPRESSED_REFS} or
@@ -237,6 +241,15 @@ public class SharedClassCacheInfo {
 		}
 		return ret;
 	}
+	
+	/**
+	 * Get the layer number for the shared class cache. 
+	 *
+	 * @return		The shared cache layer number or -1 if the shared cache does not have a layer number 
+	 */		
+	public int getCacheLayer() {
+		return layer;
+	}
 
 	/**
 	 * Constructor to create an object of SharedClassCacheInfo using the parameter specified.
@@ -254,6 +267,7 @@ public class SharedClassCacheInfo {
 	 * @param		freeBytes		Free bytes in cache
 	 * @param		cacheType		Cache type
 	 * @param		softMaxBytes	Soft limit for the available space in bytes
+	 * @param		layer			The layer number
 	 */		
 	SharedClassCacheInfo(String name,
 						boolean isCompatible, 
@@ -267,7 +281,8 @@ public class SharedClassCacheInfo {
 						long cacheSize, 
 						long freeBytes,
 						int cacheType,
-						long softMaxBytes)
+						long softMaxBytes,
+						int layer)
 	{
 		this.name = name;
 		this.isCompatible = isCompatible;
@@ -282,5 +297,6 @@ public class SharedClassCacheInfo {
 		this.freeBytes = freeBytes;
 		this.cacheType = cacheType;
 		this.softMaxBytes = softMaxBytes;
+		this.layer = layer;
 	}
 }

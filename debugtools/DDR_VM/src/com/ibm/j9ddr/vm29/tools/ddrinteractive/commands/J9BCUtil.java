@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2018 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -43,7 +43,6 @@ import static com.ibm.j9ddr.vm29.structure.J9ROMMethodHandleRef.MH_REF_PUTFIELD;
 import static com.ibm.j9ddr.vm29.structure.J9ROMMethodHandleRef.MH_REF_PUTSTATIC;
 
 import java.io.PrintStream;
-
 
 import com.ibm.j9ddr.CorruptDataException;
 import com.ibm.j9ddr.vm29.j9.ConstantPoolHelpers;
@@ -93,7 +92,8 @@ import com.ibm.j9ddr.vm29.structure.J9JavaAccessFlags;
 import com.ibm.j9ddr.vm29.types.U16;
 import com.ibm.j9ddr.vm29.types.U32;
 import com.ibm.j9ddr.vm29.types.U8;
-
+import com.ibm.j9ddr.vm29.types.UDATA;
+import com.ibm.j9ddr.vm29.j9.J9ConstantHelper;
 
 public class J9BCUtil {
 	private static final String nl = System.getProperty("line.separator");
@@ -159,7 +159,9 @@ public class J9BCUtil {
 				SelfRelativePointer currentThrowName = ROMHelp.J9EXCEPTIONINFO_THROWNAMES(exceptionData);
 				for (long i = 0; i < throwCount; i++) {
 					J9UTF8Pointer currentName = J9UTF8Pointer.cast(currentThrowName.get());
+					out.append("    ");
 					out.append(J9UTF8Helper.stringValue(currentName));
+					out.append(nl);
 				}
 			}
 		}
@@ -230,7 +232,7 @@ public class J9BCUtil {
 	 *			-ACC_SYNTHETIC
 	 *			-ACC_ENUM
 	 *
-	 *		:: METHODPARAMATERS ::
+	 *		:: METHODPARAMETERS ::
 	 *			-ACC_FINAL
 	 *			-ACC_SYNTHETIC
 	 *			-ACC_MANDATED
@@ -555,10 +557,10 @@ public class J9BCUtil {
 		/* dump the enclosing method */
 		dumpEnclosingMethod(out, romClass, flags);
 
-		out.append(String.format("Sun Access Flags (0x%s): ", Long.toHexString(romClass.modifiers().longValue())));
+		out.append(String.format("Basic Access Flags (0x%s): ", Long.toHexString(romClass.modifiers().longValue())));
 		dumpModifiers(out, romClass.modifiers().longValue(), MODIFIERSOURCE_CLASS, ONLY_SPEC_MODIFIERS);
-		
-		out.append(String.format("J9  Access Flags (0x%s): ", Long.toHexString(romClass.extraModifiers().longValue())));
+		out.append(nl);
+		out.append(String.format("J9 Access Flags (0x%s): ", Long.toHexString(romClass.extraModifiers().longValue())));
 		dumpClassJ9ExtraModifiers(out, romClass.extraModifiers().longValue());
 		out.append(nl);
 
@@ -608,7 +610,18 @@ public class J9BCUtil {
 			}
 		}
 
-		U32 romFieldCount = romClass.romFieldCount();
+		/* Permitted subclasses for a sealed class */
+		if (J9ROMClassHelper.isSealed(romClass)) {
+			int permittedSubclassCount = OptInfo.getPermittedSubclassCount(romClass);
+			out.format("Permitted subclasses (%d):%n", permittedSubclassCount);
+
+			for (int i = 0; i < permittedSubclassCount; i++) {
+				J9UTF8Pointer permittedSubclassName = OptInfo.getPermittedSubclassNameAtIndex(romClass, i);
+				out.format("   %s%n", J9UTF8Helper.stringValue(permittedSubclassName));
+			}
+		}
+
+		UDATA romFieldCount = romClass.romFieldCount();
 		out.append(String.format("Fields (%d):" + nl, romFieldCount.longValue()));
 
 		J9ROMFieldShapeIterator iterator = new J9ROMFieldShapeIterator(romClass.romFields(), romFieldCount);
@@ -649,10 +662,10 @@ public class J9BCUtil {
 	}
 
 	private static void dumpCPShapeDescription(PrintStream out, J9ROMClassPointer romClass, long flags) throws CorruptDataException {
-		U32Pointer cpDescription = romClass.cpShapeDescription();
+		U32Pointer cpDescription = J9ROMClassHelper.cpShapeDescription(romClass);
 		long descriptionLong;
 		long i, j, k, numberOfLongs;
-		char symbols[] = new char[] { '.', 'C', 'S', 'I', 'F', 'J', 'D', 'i', 's', 'v', 'x', 'y', 'z', 'T', 'H', 'A' };
+		char symbols[] = new char[] { '.', 'C', 'S', 'I', 'F', 'J', 'D', 'i', 's', 'v', 'x', 'y', 'z', 'T', 'H', 'A', '.', 'c', 'x', 'v' };
 		
 		symbols[(int)J9CPTYPE_UNUSED8] = '.';
 
@@ -692,10 +705,12 @@ public class J9BCUtil {
 	}
 
 
+	private static final long J9AccClassIsUnmodifiableBit = J9ConstantHelper.getLong(J9JavaAccessFlags.class, "J9AccClassIsUnmodifiable", 0);
+
 	/*
-	 * Dump a printed representation of the specified @accessFlags to stdout.
-	 * Answer zero on success
+	 * Dump a printed representation of the specified @accessFlags to @out.
 	 */
+
 	private static void dumpClassJ9ExtraModifiers(PrintStream out, long accessFlags) {
 		if ((accessFlags & J9CfrClassFile.CFR_ACC_REFERENCE_WEAK) != 0)
 			out.append("(weak) ");
@@ -709,6 +724,12 @@ public class J9BCUtil {
 			out.append("(preverified) ");
 		if ((accessFlags & J9JavaAccessFlags.J9AccClassAnonClass) != 0)
 			out.append("(anonClass) ");
+		if ((accessFlags & J9AccClassIsUnmodifiableBit) != 0)
+			out.append("(unmodifiable) ");
+		if ((accessFlags & J9JavaAccessFlags.J9AccRecord) != 0)
+			out.append("(record) ");
+		if ((accessFlags & J9JavaAccessFlags.J9AccSealed) != 0)
+			out.append("(sealed) ");
 	}
 
 	private static void dumpEnclosingMethod(PrintStream out, J9ROMClassPointer romClass, long flags) throws CorruptDataException {
@@ -759,7 +780,7 @@ public class J9BCUtil {
 	private static void dumpSourceDebugExtension(PrintStream out, J9ROMClassPointer romClass, long flags) throws CorruptDataException {
 		if (J9BuildFlags.opt_debugInfoServer) {
 			U8Pointer current;
-			U32 temp;
+			UDATA temp;
 
 			if ((flags & J9BCTranslationData.BCT_StripDebugAttributes) == 0) {
 				J9SourceDebugExtensionPointer sde = OptInfo.getSourceDebugExtensionForROMClass(romClass);
@@ -918,7 +939,7 @@ public class J9BCUtil {
 	
 		if (0 != bsmCount) {
 			J9ROMConstantPoolItemPointer constantPool = ConstantPoolHelpers.J9_ROM_CP_FROM_ROM_CLASS(romClass);
-			U32Pointer cpShapeDescription = romClass.cpShapeDescription();
+			U32Pointer cpShapeDescription = J9ROMClassHelper.cpShapeDescription(romClass);
 			U16Pointer bsmDataCursor = bsmIndices.add(callSiteCount);
 			
 			out.println(String.format("  Bootstrap Methods (%d):", bsmCount));

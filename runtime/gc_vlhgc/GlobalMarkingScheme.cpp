@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -33,19 +32,16 @@
 
 #include "ArrayObjectModel.hpp"
 #include "AtomicOperations.hpp"
-#include "CallSitesIterator.hpp"
 #include "CardTable.hpp"
 #include "ClassHeapIterator.hpp"
+#include "ClassIterator.hpp"
 #include "ClassLoaderIterator.hpp"
 #include "ClassLoaderClassesIterator.hpp"
 #include "ClassLoaderRememberedSet.hpp"
 #include "ClassLoaderSegmentIterator.hpp"
-#include "ClassStaticsIterator.hpp"
 #include "ClassModel.hpp"
-#include "ConstantPoolObjectSlotIterator.hpp"
 #include "CycleState.hpp"
 #include "Debug.hpp"
-#include "Dispatcher.hpp"
 #include "EnvironmentVLHGC.hpp"
 #if defined(J9VM_GC_FINALIZATION)
 #include "FinalizableObjectBuffer.hpp"
@@ -68,11 +64,11 @@
 #include "MarkMap.hpp"
 #include "MarkMapManager.hpp"
 #include "MemorySubSpaceRegionIterator.hpp"
-#include "MethodTypesIterator.hpp"
 #include "ModronTypes.hpp"
 #include "ObjectAccessBarrier.hpp"
 #include "ObjectModel.hpp"
 #include "PacketSlotIterator.hpp"
+#include "ParallelDispatcher.hpp"
 #include "ParallelTask.hpp"
 #include "PointerArrayIterator.hpp"
 #include "ReferenceObjectList.hpp"
@@ -91,7 +87,7 @@
 #include "WorkStack.hpp"
 
 void
-MM_ParallelGlobalMarkTask::masterSetup(MM_EnvironmentBase *env)
+MM_ParallelGlobalMarkTask::mainSetup(MM_EnvironmentBase *env)
 {
 	bool dynamicClassUnloadingEnabled = false;
 #if defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING)
@@ -101,7 +97,7 @@ MM_ParallelGlobalMarkTask::masterSetup(MM_EnvironmentBase *env)
 }
 
 void
-MM_ParallelGlobalMarkTask::masterCleanup(MM_EnvironmentBase *envBase)
+MM_ParallelGlobalMarkTask::mainCleanup(MM_EnvironmentBase *envBase)
 {
 	MM_EnvironmentVLHGC *env = MM_EnvironmentVLHGC::getEnvironment(envBase);
 
@@ -153,7 +149,7 @@ void
 MM_ParallelGlobalMarkTask::setup(MM_EnvironmentBase *envBase)
 {
 	MM_EnvironmentVLHGC *env = MM_EnvironmentVLHGC::getEnvironment(envBase);
-	if (!env->isMasterThread()) {
+	if (!env->isMainThread()) {
 		Assert_MM_true(NULL == env->_cycleState);
 		env->_cycleState = _cycleState;
 	} else {
@@ -175,16 +171,16 @@ MM_ParallelGlobalMarkTask::cleanup(MM_EnvironmentBase *envBase)
 	
 	static_cast<MM_CycleStateVLHGC*>(env->_cycleState)->_vlhgcIncrementStats._markStats.merge(&env->_markVLHGCStats);
 	static_cast<MM_CycleStateVLHGC*>(env->_cycleState)->_vlhgcIncrementStats._workPacketStats.merge(&env->_workPacketStats);
-	if(!env->isMasterThread()) {
+	if(!env->isMainThread()) {
 		env->_cycleState = NULL;
 	}
 
 	env->_lastOverflowedRsclWithReleasedBuffers = NULL;
 	
-	/* record the thread-specific paralellism stats in the trace buffer. This partially duplicates info in -Xtgc:parallel */ 
+	/* record the thread-specific parallelism stats in the trace buffer. This partially duplicates info in -Xtgc:parallel */ 
 	Trc_MM_ParallelGlobalMarkTask_parallelStats(
 			env->getLanguageVMThread(),
-			(U_32)env->getSlaveID(),
+			(U_32)env->getWorkerID(),
 			(U_32)j9time_hires_delta(0, env->_workPacketStats._workStallTime, J9PORT_TIME_DELTA_IN_MILLISECONDS),
 			(U_32)j9time_hires_delta(0, env->_workPacketStats._completeStallTime, J9PORT_TIME_DELTA_IN_MILLISECONDS),
 			(U_32)j9time_hires_delta(0, env->_markVLHGCStats._syncStallTime, J9PORT_TIME_DELTA_IN_MILLISECONDS),
@@ -224,12 +220,12 @@ MM_ParallelGlobalMarkTask::synchronizeGCThreads(MM_EnvironmentBase *envBase, con
 }
 
 bool
-MM_ParallelGlobalMarkTask::synchronizeGCThreadsAndReleaseMaster(MM_EnvironmentBase *envBase, const char *id)
+MM_ParallelGlobalMarkTask::synchronizeGCThreadsAndReleaseMain(MM_EnvironmentBase *envBase, const char *id)
 {
 	MM_EnvironmentVLHGC *env = MM_EnvironmentVLHGC::getEnvironment(envBase);
 	PORT_ACCESS_FROM_ENVIRONMENT(env);
 	U_64 startTime = j9time_hires_clock();
-	bool result = MM_ParallelTask::synchronizeGCThreadsAndReleaseMaster(env, id);
+	bool result = MM_ParallelTask::synchronizeGCThreadsAndReleaseMain(env, id);
 	U_64 endTime = j9time_hires_clock();
 	env->_markVLHGCStats.addToSyncStallTime(startTime, endTime);
 	
@@ -351,7 +347,7 @@ MM_GlobalMarkingScheme::heapRemoveRange(MM_EnvironmentVLHGC *env, MM_MemorySubSp
  ****************************************
  */
 void
-MM_GlobalMarkingScheme::masterSetupForGC(MM_EnvironmentVLHGC *env)
+MM_GlobalMarkingScheme::mainSetupForGC(MM_EnvironmentVLHGC *env)
 {
 	/* Initialize the marking stack */
 	env->_cycleState->_workPackets->reset(env);
@@ -361,7 +357,7 @@ MM_GlobalMarkingScheme::masterSetupForGC(MM_EnvironmentVLHGC *env)
 }
 
 void
-MM_GlobalMarkingScheme::masterCleanupAfterGC(MM_EnvironmentVLHGC *env)
+MM_GlobalMarkingScheme::mainCleanupAfterGC(MM_EnvironmentVLHGC *env)
 {
 	_interRegionRememberedSet->setRegionsAsRebuildingComplete(env);
 }
@@ -461,7 +457,7 @@ MM_GlobalMarkingScheme::markObjectClass(MM_EnvironmentVLHGC *env, J9Object *obje
 #if defined(J9VM_GC_DYNAMIC_CLASS_UNLOADING)
 	_extensions->classLoaderRememberedSet->rememberInstance(env, objectPtr);
 	if(isDynamicClassUnloadingEnabled()) {
-		j9object_t classObject = (j9object_t)J9GC_J9OBJECT_CLAZZ(objectPtr)->classObject;
+		j9object_t classObject = (j9object_t)J9GC_J9OBJECT_CLAZZ(objectPtr, env)->classObject;
 		Assert_MM_true(J9_INVALID_OBJECT != classObject);
 		markObjectNoCheck(env, classObject, false);
 	}
@@ -498,22 +494,23 @@ MM_GlobalMarkingScheme::scanMixedObject(MM_EnvironmentVLHGC *env, J9Object *obje
 	UDATA *leafPtr;
 	UDATA leafBits;
 #endif /* J9VM_GC_LEAF_BITS */
+	bool const compressed = env->compressObjectReferences();
 
 	markObjectClass(env, objectPtr);
 
 	/* Object slots */
-	volatile fj9object_t *scanPtr = (fj9object_t*)( objectPtr + 1 );
+	volatile fj9object_t *scanPtr = _extensions->mixedObjectModel.getHeadlessObject(objectPtr);
 	UDATA objectSize = _extensions->mixedObjectModel.getSizeInBytesWithHeader(objectPtr);
 
 	updateScanStats(env, objectSize, reason);
 
 	endScanPtr = (fj9object_t*)(((U_8 *)objectPtr) + objectSize);
-	descriptionPtr = (UDATA *)J9GC_J9OBJECT_CLAZZ(objectPtr)->instanceDescription;
+	descriptionPtr = (UDATA *)J9GC_J9OBJECT_CLAZZ(objectPtr, env)->instanceDescription;
 #if defined(J9VM_GC_LEAF_BITS)
-	leafPtr = (UDATA *)J9GC_J9OBJECT_CLAZZ(objectPtr)->instanceLeafDescription;
+	leafPtr = (UDATA *)J9GC_J9OBJECT_CLAZZ(objectPtr, env)->instanceLeafDescription;
 #endif /* J9VM_GC_LEAF_BITS */
 
-	if(((UDATA)descriptionPtr) & 1) {
+	if (((UDATA)descriptionPtr) & 1) {
 		descriptionBits = ((UDATA)descriptionPtr) >> 1;
 #if defined(J9VM_GC_LEAF_BITS)
 		leafBits = ((UDATA)leafPtr) >> 1;
@@ -526,10 +523,10 @@ MM_GlobalMarkingScheme::scanMixedObject(MM_EnvironmentVLHGC *env, J9Object *obje
 	}
 	descriptionIndex = J9_OBJECT_DESCRIPTION_SIZE - 1;
 
-	while(scanPtr < endScanPtr) {
+	while (scanPtr < endScanPtr) {
 		/* Determine if the slot should be processed */
 		if(descriptionBits & 1) {
-			/* As this function can be invoked during concurent mark the slot is
+			/* As this function can be invoked during concurrent mark the slot is
 			 * volatile so we must ensure that the compiler generates the correct
 			 * code if markObject() is inlined.
 			 */
@@ -549,14 +546,14 @@ MM_GlobalMarkingScheme::scanMixedObject(MM_EnvironmentVLHGC *env, J9Object *obje
 #if defined(J9VM_GC_LEAF_BITS)
 		leafBits >>= 1;
 #endif /* J9VM_GC_LEAF_BITS */
-		if(descriptionIndex-- == 0) {
+		if (descriptionIndex-- == 0) {
 			descriptionBits = *descriptionPtr++;
 #if defined(J9VM_GC_LEAF_BITS)
 			leafBits = *leafPtr++;
 #endif /* J9VM_GC_LEAF_BITS */
 			descriptionIndex = J9_OBJECT_DESCRIPTION_SIZE - 1;
 		}
-		scanPtr += 1;
+		scanPtr = GC_SlotObject::addToSlotAddress((fomrobject_t*)scanPtr, 1, compressed);
 	}
 }
 
@@ -580,25 +577,25 @@ MM_GlobalMarkingScheme::scanReferenceMixedObject(MM_EnvironmentVLHGC *env, J9Obj
 	bool referentMustBeMarked = isReferenceCleared;
 	bool referentMustBeCleared = false;
 	UDATA referenceObjectOptions = env->_cycleState->_referenceObjectOptions;
-	UDATA referenceObjectType = J9CLASS_FLAGS(J9GC_J9OBJECT_CLAZZ(objectPtr)) & J9_JAVA_CLASS_REFERENCE_MASK;
+	UDATA referenceObjectType = J9CLASS_FLAGS(J9GC_J9OBJECT_CLAZZ(objectPtr, env)) & J9AccClassReferenceMask;
 	switch (referenceObjectType) {
-	case J9_JAVA_CLASS_REFERENCE_WEAK:
+	case J9AccClassReferenceWeak:
 		referentMustBeCleared = (0 != (referenceObjectOptions & MM_CycleState::references_clear_weak));
 		break;
-	case J9_JAVA_CLASS_REFERENCE_SOFT:
+	case J9AccClassReferenceSoft:
 		referentMustBeCleared = (0 != (referenceObjectOptions & MM_CycleState::references_clear_soft));
 		referentMustBeMarked = referentMustBeMarked || (
 			((0 == (referenceObjectOptions & MM_CycleState::references_soft_as_weak))
 			&& ((UDATA)J9GC_J9VMJAVALANGSOFTREFERENCE_AGE(env, objectPtr) < _extensions->getDynamicMaxSoftReferenceAge())));
 		break;
-	case J9_JAVA_CLASS_REFERENCE_PHANTOM:
+	case J9AccClassReferencePhantom:
 		referentMustBeCleared = (0 != (referenceObjectOptions & MM_CycleState::references_clear_phantom));
 		break;
 	default:
 		Assert_MM_unreachable();
 	}
 	
-	GC_SlotObject referentPtr(_javaVM->omrVM, &J9GC_J9VMJAVALANGREFERENCE_REFERENT(env, objectPtr));
+	GC_SlotObject referentPtr(_javaVM->omrVM, J9GC_J9VMJAVALANGREFERENCE_REFERENT_ADDRESS(env, objectPtr));
 
 	if (SCAN_REASON_OVERFLOWED_REGION == reason) {
 		/* handled when we empty packet to overflow */
@@ -618,15 +615,15 @@ MM_GlobalMarkingScheme::scanReferenceMixedObject(MM_EnvironmentVLHGC *env, J9Obj
 		}
 	}
 
-	volatile fj9object_t * scanPtr = (fj9object_t*)( objectPtr + 1 );
+	volatile fj9object_t * scanPtr = _extensions->mixedObjectModel.getHeadlessObject(objectPtr);
 	UDATA objectSize = _extensions->mixedObjectModel.getSizeInBytesWithHeader(objectPtr);
 	endScanPtr = (fj9object_t*)(((U_8 *)objectPtr) + objectSize);
 
 	updateScanStats(env, objectSize, reason);
 
-	descriptionPtr = (UDATA *)J9GC_J9OBJECT_CLAZZ(objectPtr)->instanceDescription;
+	descriptionPtr = (UDATA *)J9GC_J9OBJECT_CLAZZ(objectPtr, env)->instanceDescription;
 #if defined(J9VM_GC_LEAF_BITS)
-	leafPtr = (UDATA *)J9GC_J9OBJECT_CLAZZ(objectPtr)->instanceLeafDescription;
+	leafPtr = (UDATA *)J9GC_J9OBJECT_CLAZZ(objectPtr, env)->instanceLeafDescription;
 #endif /* J9VM_GC_LEAF_BITS */
 
 	if(((UDATA)descriptionPtr) & 1) {
@@ -642,6 +639,7 @@ MM_GlobalMarkingScheme::scanReferenceMixedObject(MM_EnvironmentVLHGC *env, J9Obj
 	}
 	descriptionIndex = J9_OBJECT_DESCRIPTION_SIZE - 1;
 
+	bool const compressed = env->compressObjectReferences();
 	while(scanPtr < endScanPtr) {
 		/* Determine if the slot should be processed */
 		if ((descriptionBits & 1) && ((scanPtr != referentPtr.readAddressFromSlot()) || referentMustBeMarked)) {
@@ -672,7 +670,7 @@ MM_GlobalMarkingScheme::scanReferenceMixedObject(MM_EnvironmentVLHGC *env, J9Obj
 #endif /* J9VM_GC_LEAF_BITS */
 			descriptionIndex = J9_OBJECT_DESCRIPTION_SIZE - 1;
 		}
-		scanPtr += 1;
+		scanPtr = GC_SlotObject::addToSlotAddress((fomrobject_t*)scanPtr, 1, compressed);
 	}
 }
 
@@ -717,7 +715,8 @@ MM_GlobalMarkingScheme::scanPointerArrayObjectSplit(MM_EnvironmentVLHGC *env, J9
 	}
 
 	/* Return number of bytes scanned */
-	return (slotsToScan * sizeof(fj9object_t));
+	uintptr_t const referenceSize = env->compressObjectReferences() ? sizeof(uint32_t) : sizeof(uintptr_t);
+	return (slotsToScan * referenceSize);
 }
 
 void
@@ -756,40 +755,15 @@ MM_GlobalMarkingScheme::scanClassObject(MM_EnvironmentVLHGC *env, J9Object *clas
 
 		do {
 			/*
-			 * scan static fields
+			 * Scan J9Class internals using general iterator
+			 * - scan statics fields
+			 * - scan call sites
+			 * - scan MethodTypes
+			 * - scan VarHandle MethodTypes
+			 * - scan constants pool objects
 			 */
-			GC_ClassStaticsIterator classStaticsIterator(env, classPtr);
-			while(NULL != (slotPtr = classStaticsIterator.nextSlot())) {
-				J9Object *value = *slotPtr;
-				markObject(env, value);
-				rememberReferenceIfRequired(env, classObject, value);
-			}
-
-			/*
-			 * scan call sites
-			 */
-			GC_CallSitesIterator callSitesIterator(classPtr);
-			while(NULL != (slotPtr = callSitesIterator.nextSlot())) {
-				J9Object *value = *slotPtr;
-				markObject(env, value);
-				rememberReferenceIfRequired(env, classObject, value);
-			}
-
-			/*
-			 * scan MethodTypes
-			 */
-			GC_MethodTypesIterator methodTypesIterator(classPtr->romClass->methodTypeCount, classPtr->methodTypes);
-			while(NULL != (slotPtr = methodTypesIterator.nextSlot())) {
-				J9Object *value = *slotPtr;
-				markObject(env, value);
-				rememberReferenceIfRequired(env, classObject, value);
-			}
-
-			/*
-			 * scan VarHandle MethodTypes
-			 */
-			GC_MethodTypesIterator varHandleMethodTypesIterator(classPtr->romClass->varHandleMethodTypeCount, classPtr->varHandleMethodTypes);
-			while(NULL != (slotPtr = varHandleMethodTypesIterator.nextSlot())) {
+			GC_ClassIterator classIterator(env, classPtr, false);
+			while (NULL != (slotPtr = classIterator.nextSlot())) {
 				J9Object *value = *slotPtr;
 				markObject(env, value);
 				rememberReferenceIfRequired(env, classObject, value);
@@ -810,19 +784,6 @@ MM_GlobalMarkingScheme::scanClassObject(MM_EnvironmentVLHGC *env, J9Object *clas
 						rememberReferenceIfRequired(env, classObject, value);
 					}
 				}
-			}
-
-			/*
-			 * scan constant pool objects
-			 */
-			/* we can safely ignore any classes referenced by the constant pool, since
-			 * these are guaranteed to be referenced by our class loader
-			 */
-			GC_ConstantPoolObjectSlotIterator constantPoolIterator(classPtr);
-			while(NULL != (slotPtr = constantPoolIterator.nextSlot())) {
-				J9Object *value = *slotPtr;
-				markObject(env, value);
-				rememberReferenceIfRequired(env, classObject, value);
 			}
 			classPtr = classPtr->replacedClass;
 		} while (NULL != classPtr);
@@ -849,23 +810,24 @@ MM_GlobalMarkingScheme::scanClassLoaderObject(MM_EnvironmentVLHGC *env, J9Object
 		}
 		GC_VMInterface::unlockClasses(_extensions);
 
-		Assert_MM_true(NULL != classLoader->moduleHashTable);
-		J9HashTableState walkState;
-		J9Module **modulePtr = (J9Module **)hashTableStartDo(classLoader->moduleHashTable, &walkState);
-		while (NULL != modulePtr) {
-			J9Module * const module = *modulePtr;
-			Assert_MM_true(NULL != module->moduleObject);
-			markObject(env, module->moduleObject);
-			rememberReferenceIfRequired(env, classLoaderObject, module->moduleObject);
-			if (NULL != module->moduleName) {
-				markObject(env, module->moduleName);
-				rememberReferenceIfRequired(env, classLoaderObject, module->moduleName);
+		if (NULL != classLoader->moduleHashTable) {
+			J9HashTableState walkState;
+			J9Module **modulePtr = (J9Module **)hashTableStartDo(classLoader->moduleHashTable, &walkState);
+			while (NULL != modulePtr) {
+				J9Module * const module = *modulePtr;
+				Assert_MM_true(NULL != module->moduleObject);
+				markObject(env, module->moduleObject);
+				rememberReferenceIfRequired(env, classLoaderObject, module->moduleObject);
+				if (NULL != module->moduleName) {
+					markObject(env, module->moduleName);
+					rememberReferenceIfRequired(env, classLoaderObject, module->moduleName);
+				}
+				if (NULL != module->version) {
+					markObject(env, module->version);
+					rememberReferenceIfRequired(env, classLoaderObject, module->version);
+				}
+				modulePtr = (J9Module**)hashTableNextDo(&walkState);
 			}
-			if (NULL != module->version) {			
-				markObject(env, module->version);
-				rememberReferenceIfRequired(env, classLoaderObject, module->version);
-			}
-			modulePtr = (J9Module**)hashTableNextDo(&walkState);
 		}
 	}
 }
@@ -904,9 +866,10 @@ MM_GlobalMarkingScheme::scanObject(MM_EnvironmentVLHGC *env, J9Object *objectPtr
 		/* This means that the object was pushed during a GMP cycle but collected by an intervening PGC cycle and invalidated */
 		Assert_MM_true(SCAN_REASON_PACKET == reason);
 	} else {
-		J9Class* clazz = J9GC_J9OBJECT_CLAZZ(objectPtr);
+		J9Class* clazz = J9GC_J9OBJECT_CLAZZ(objectPtr, env);
 		Assert_MM_mustBeClass(clazz);
 		switch(_extensions->objectModel.getScanType(clazz)) {
+			case GC_ObjectModel::SCAN_MIXED_OBJECT_LINKED:
 			case GC_ObjectModel::SCAN_ATOMIC_MARKABLE_REFERENCE_OBJECT:
 			case GC_ObjectModel::SCAN_MIXED_OBJECT:
 			case GC_ObjectModel::SCAN_OWNABLESYNCHRONIZER_OBJECT:
@@ -1229,8 +1192,10 @@ private:
 
 	virtual void doMonitorReference(J9ObjectMonitor *objectMonitor, GC_HashTableIterator *monitorReferenceIterator) {
 		J9ThreadAbstractMonitor * monitor = (J9ThreadAbstractMonitor*)objectMonitor->monitor;
+		MM_EnvironmentVLHGC::getEnvironment(_env)->_markVLHGCStats._monitorReferenceCandidates += 1;
 		if(!_markingScheme->isMarked((J9Object *)monitor->userData)) {
 			monitorReferenceIterator->removeSlot();
+			MM_EnvironmentVLHGC::getEnvironment(_env)->_markVLHGCStats._monitorReferenceCleared += 1;
 			/* We must call objectMonitorDestroy (as opposed to omrthread_monitor_destroy) when the
 			 * monitor is not internal to the GC */
 			static_cast<J9JavaVM*>(_omrVM->_language_vm)->internalVMFunctions->objectMonitorDestroy(static_cast<J9JavaVM*>(_omrVM->_language_vm), (J9VMThread *)_env->getLanguageVMThread(), (omrthread_monitor_t)monitor);
@@ -1268,6 +1233,17 @@ private:
 			stringTableIterator->removeSlot();
 		}
 	}
+
+#if defined(J9VM_GC_ENABLE_DOUBLE_MAP)
+	virtual void doDoubleMappedObjectSlot(J9Object *objectPtr, struct J9PortVmemIdentifier *identifier) {
+		MM_EnvironmentVLHGC::getEnvironment(_env)->_markVLHGCStats._doubleMappedArrayletsCandidates += 1;
+		if (!_markingScheme->isMarked(objectPtr)) {
+			MM_EnvironmentVLHGC::getEnvironment(_env)->_markVLHGCStats._doubleMappedArrayletsCleared += 1;
+			PORT_ACCESS_FROM_ENVIRONMENT(_env);
+			j9vmem_free_memory(identifier->address, identifier->size, identifier);
+		}
+    }
+#endif /* J9VM_GC_ENABLE_DOUBLE_MAP */
 
 	/**
 	 * @Clear the string table cache slot if the object is not marked
@@ -1412,7 +1388,7 @@ MM_GlobalMarkingScheme::markLiveObjectsRoots(MM_EnvironmentVLHGC *env)
 		/* Setting the permanent class loaders to scanned without a locked operation is safe
 		 * Class loaders will not be rescanned until a thread synchronize is executed
 		 */
-		if(env->isMasterThread()) {
+		if(env->isMainThread()) {
 			scanClassLoaderSlots(env, _javaVM->systemClassLoader);
 			scanClassLoaderSlots(env, _javaVM->applicationClassLoader);
 		}
@@ -1481,7 +1457,7 @@ MM_GlobalMarkingScheme::handleOverflow(MM_EnvironmentVLHGC *env)
 	
 	if (packets->getOverflowFlag()) {
 		result = true;
-		if (env->_currentTask->synchronizeGCThreadsAndReleaseMaster(env, UNIQUE_ID)) {
+		if (env->_currentTask->synchronizeGCThreadsAndReleaseMain(env, UNIQUE_ID)) {
 			packets->clearOverflowFlag();
 			env->_currentTask->releaseSynchronizedGCThreads(env);
 		}
@@ -1651,12 +1627,12 @@ MM_GlobalMarkingScheme::processReferenceList(MM_EnvironmentVLHGC *env, J9Object*
 	
 		J9Object* nextReferenceObj = _extensions->accessBarrier->getReferenceLink(referenceObj);
 
-		GC_SlotObject referentSlotObject(_extensions->getOmrVM(), &J9GC_J9VMJAVALANGREFERENCE_REFERENT(env, referenceObj));
+		GC_SlotObject referentSlotObject(_extensions->getOmrVM(), J9GC_J9VMJAVALANGREFERENCE_REFERENT_ADDRESS(env, referenceObj));
 		J9Object *referent = referentSlotObject.readReferenceFromSlot();
 		if (NULL != referent) {
-			UDATA referenceObjectType = J9CLASS_FLAGS(J9GC_J9OBJECT_CLAZZ(referenceObj)) & J9_JAVA_CLASS_REFERENCE_MASK;
+			UDATA referenceObjectType = J9CLASS_FLAGS(J9GC_J9OBJECT_CLAZZ(referenceObj, env)) & J9AccClassReferenceMask;
 			if (isMarked(referent)) {
-				if (J9_JAVA_CLASS_REFERENCE_SOFT == referenceObjectType) {
+				if (J9AccClassReferenceSoft == referenceObjectType) {
 					U_32 age = J9GC_J9VMJAVALANGSOFTREFERENCE_AGE(env, referenceObj);
 					if (age < _extensions->getMaxSoftReferenceAge()) {
 						/* Soft reference hasn't aged sufficiently yet - increment the age */
@@ -1672,7 +1648,7 @@ MM_GlobalMarkingScheme::processReferenceList(MM_EnvironmentVLHGC *env, J9Object*
 				J9GC_J9VMJAVALANGREFERENCE_STATE(env, referenceObj) = GC_ObjectModel::REF_STATE_CLEARED;
 
 				/* Phantom references keep it's referent alive in Java 8 and doesn't in Java 9 and later */
-				if ((J9_JAVA_CLASS_REFERENCE_PHANTOM == referenceObjectType) && ((J2SE_VERSION(_javaVM) & J2SE_VERSION_MASK) <= J2SE_18)) {
+				if ((J9AccClassReferencePhantom == referenceObjectType) && ((J2SE_VERSION(_javaVM) & J2SE_VERSION_MASK) <= J2SE_18)) {
 					/* Scanning will be done after the enqueuing */
 					markObject(env, referent);
 					_interRegionRememberedSet->rememberReferenceForMark(env, referenceObj, referent);

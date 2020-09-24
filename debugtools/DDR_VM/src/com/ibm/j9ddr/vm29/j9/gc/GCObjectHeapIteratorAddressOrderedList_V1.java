@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2014 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -23,24 +23,31 @@ package com.ibm.j9ddr.vm29.j9.gc;
 
 import static com.ibm.j9ddr.vm29.events.EventManager.raiseCorruptDataEvent;
 
+import java.lang.reflect.Method;
+import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.NoSuchElementException;
 
 import com.ibm.j9ddr.CorruptDataException;
+import com.ibm.j9ddr.vm29.j9.J9ConstantHelper;
 import com.ibm.j9ddr.vm29.j9.ObjectModel;
+import com.ibm.j9ddr.vm29.pointer.PointerPointer;
 import com.ibm.j9ddr.vm29.pointer.U8Pointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9BuildFlags;
+import com.ibm.j9ddr.vm29.pointer.generated.J9ModronThreadLocalHeapPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9ObjectPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.J9VMThreadPointer;
 import com.ibm.j9ddr.vm29.pointer.generated.MM_CopyScanCachePointer;
 import com.ibm.j9ddr.vm29.pointer.generated.MM_EnvironmentStandardPointer;
+import com.ibm.j9ddr.vm29.structure.J9ModronThreadLocalHeap;
 import com.ibm.j9ddr.vm29.types.UDATA;
-
 
 class GCObjectHeapIteratorAddressOrderedList_V1 extends GCObjectHeapIterator
 {
+	private static final int realHeapAllocOffset = J9ConstantHelper.getInt(J9ModronThreadLocalHeap.class, "_realHeapAllocOffset_", -1);
+
 	protected J9ObjectPointer currentObject;
 	protected U8Pointer  scanPtr;
 	protected U8Pointer scanPtrTop;
@@ -75,9 +82,12 @@ class GCObjectHeapIteratorAddressOrderedList_V1 extends GCObjectHeapIterator
 						excludedRangeList.add(new U8Pointer[] {heapAlloc, heapTop});
 					} else {
 						/* Might be an instrumented VM */
-						U8Pointer realHeapAlloc = adjustedToRange(vmThread.allocateThreadLocalHeap().realHeapAlloc(), base, top);
-						if(realHeapAlloc.notNull() && isSomethingToAdd(realHeapAlloc, heapTop)) {
-							excludedRangeList.add(new U8Pointer[] {realHeapAlloc, heapTop});
+						/* realHeapAlloc = allocateThreadLocalHeap.realHeapAlloc in V1, = heapAlloc in V2 */
+						U8Pointer realHeapAlloc = adjustedToRange(getRealHeapAlloc(vmThread.allocateThreadLocalHeap(), heapAlloc), base, top);
+						/* realHeapTop = heapTop in V1, = allocateThreadLocalHeap.realHeapTop in V2 */
+						U8Pointer realHeapTop = adjustedToRange(getRealHeapTop(vmThread.allocateThreadLocalHeap(), heapTop), base, top);
+						if(realHeapAlloc.notNull() && realHeapTop.notNull() && isSomethingToAdd(realHeapAlloc, realHeapTop)) {
+							excludedRangeList.add(new U8Pointer[] {realHeapAlloc, realHeapTop});
 						}
 					}
 				}
@@ -91,9 +101,10 @@ class GCObjectHeapIteratorAddressOrderedList_V1 extends GCObjectHeapIterator
 							excludedRangeList.add(new U8Pointer[] {heapAlloc, heapTop});
 						} else {
 							/* Might be an instrumented VM */
-							U8Pointer realHeapAlloc = adjustedToRange(vmThread.nonZeroAllocateThreadLocalHeap().realHeapAlloc(), base, top);
-							if(realHeapAlloc.notNull() && isSomethingToAdd(realHeapAlloc, heapTop)) {
-								excludedRangeList.add(new U8Pointer[] {realHeapAlloc, heapTop});
+							U8Pointer realHeapAlloc = adjustedToRange(getRealHeapAlloc(vmThread.nonZeroAllocateThreadLocalHeap(), heapAlloc), base, top);
+							U8Pointer realHeapTop = adjustedToRange(getRealHeapTop(vmThread.nonZeroAllocateThreadLocalHeap(), heapTop), base, top);
+							if(realHeapAlloc.notNull() && realHeapTop.notNull() && isSomethingToAdd(realHeapAlloc, realHeapTop)) {
+								excludedRangeList.add(new U8Pointer[] {realHeapAlloc, realHeapTop});
 							}
 						}
 					}
@@ -133,11 +144,27 @@ class GCObjectHeapIteratorAddressOrderedList_V1 extends GCObjectHeapIterator
 					return o1[0].compare(o2[0]);
 				}
 			});
-		excludedRanges = new U8Pointer[excludedRangeList.size()][2];
+		excludedRanges = new U8Pointer[excludedRangeList.size()][];
 		excludedRangeList.toArray(excludedRanges);
 		currentExcludedRange = 0;
 	}
-	
+
+	protected U8Pointer getRealHeapTop(J9ModronThreadLocalHeapPointer threadLocalHeap, U8Pointer heapTop) throws CorruptDataException
+	{
+		return heapTop;
+	}
+
+	protected U8Pointer getRealHeapAlloc(J9ModronThreadLocalHeapPointer threadLocalHeap, U8Pointer heapAlloc) throws CorruptDataException
+	{
+		if (realHeapAllocOffset < 0) {
+			throw new CorruptDataException("No such field: realHeapAlloc");
+		}
+
+		PointerPointer realHeapAllocEA = PointerPointer.cast(threadLocalHeap).addOffset(realHeapAllocOffset);
+
+		return U8Pointer.cast(realHeapAllocEA.at(0));
+	}
+
 	private U8Pointer adjustedToRange(U8Pointer ptr, U8Pointer base, U8Pointer top)
 	{
 		U8Pointer result = ptr;
@@ -240,7 +267,7 @@ class GCObjectHeapIteratorAddressOrderedList_V1 extends GCObjectHeapIterator
 	public void advance(UDATA size)
 	{
 		U8Pointer newAddress = scanPtr.addOffset(size);
-		if (newAddress.gte(scanPtr) && newAddress.lt(scanPtrTop)) {
+		if (newAddress.gte(scanPtr) && newAddress.lte(scanPtrTop)) {
 			scanPtr = newAddress;
 			currentObject = null;
 		} else {
@@ -270,4 +297,3 @@ class GCObjectHeapIteratorAddressOrderedList_V1 extends GCObjectHeapIterator
 		}		
 	}
 }
-

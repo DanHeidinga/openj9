@@ -1,6 +1,6 @@
 
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -68,7 +68,6 @@
 #include "VerboseEventMetronomeOutOfMemory.hpp"
 #include "VerboseEventMetronomeUtilizationTrackerOverflow.hpp"
 #include "VerboseEventPercolateCollect.hpp"
-#include "VerboseEventReportMemoryUsage.hpp"
 #include "VerboseEventSweepEnd.hpp"
 #include "VerboseEventSweepStart.hpp"
 #include "VerboseEventSystemGCEnd.hpp"
@@ -175,7 +174,7 @@ MM_VerboseManagerOld::initialize(MM_EnvironmentBase *env)
 
 /**
  * Tear down the structures managed by the MM_VerboseManagerOld.
- * Tears down the event stream and outut agents.
+ * Tears down the event stream and output agents.
  */
 void
 MM_VerboseManagerOld::tearDown(MM_EnvironmentBase *env)
@@ -209,7 +208,7 @@ MM_VerboseManagerOld::getEventStreamForEvent(MM_VerboseEvent *event)
 		/* Use a thread-local event-stream */
 		eventStream = MM_VerboseEventStream::newInstance(MM_EnvironmentBase::getEnvironment(event->getThread()), this);
 		if(NULL == eventStream) {
-			/* Error - use the master event stream and hope for the best */
+			/* Error - use the main event stream and hope for the best */
 			eventStream = _eventStream;
 		} else {
 			/* This is a one time event stream for an atomic event - when the event
@@ -218,7 +217,7 @@ MM_VerboseManagerOld::getEventStreamForEvent(MM_VerboseEvent *event)
 			eventStream->setDisposable(true);
 		}
 	} else {
-		/* Use the master event-stream */
+		/* Use the main event-stream */
 		eventStream = _eventStream;
 	}
 	
@@ -252,10 +251,6 @@ MM_VerboseManagerOld::enableVerboseGC()
 	MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(_omrVM);
 	
 	if (!_hooksAttached){
-		if (extensions->verboseExtensions) {
-			(*_mmPrivateHooks)->J9HookRegisterWithCallSite(_mmPrivateHooks, J9HOOK_MM_PRIVATE_REPORT_MEMORY_USAGE, generateVerbosegcEvent, OMR_GET_CALLSITE(), (void *)MM_VerboseEventReportMemoryUsage::newInstance);
-		}
-		
 		(*_omrHooks)->J9HookRegisterWithCallSite(_omrHooks, J9HOOK_MM_OMR_INITIALIZED, generateVerbosegcEvent, OMR_GET_CALLSITE(), (void *)MM_VerboseEventGCInitialized::newInstance);
 		
 		if (extensions->isMetronomeGC()) {
@@ -278,10 +273,6 @@ MM_VerboseManagerOld::disableVerboseGC()
 {
 	if (_hooksAttached){
 		MM_GCExtensions *extensions = MM_GCExtensions::getExtensions(_omrVM);
-		if (extensions->verboseExtensions) {
-			(*_mmPrivateHooks)->J9HookUnregister(_mmPrivateHooks, J9HOOK_MM_PRIVATE_REPORT_MEMORY_USAGE, generateVerbosegcEvent, NULL);
-		}
-		
 		(*_omrHooks)->J9HookUnregister(_omrHooks, J9HOOK_MM_OMR_INITIALIZED, generateVerbosegcEvent, NULL);
 		
 		if (extensions->isMetronomeGC()) {

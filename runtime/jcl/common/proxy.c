@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1998, 2017 IBM Corp. and others
+ * Copyright (c) 1998, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -23,6 +23,23 @@
 #include "jclglob.h"
 #include "jclprots.h"
 
+#if JAVA_SPEC_VERSION == 8
+static BOOLEAN isProxyExemptFromVerification(JNIEnv * env, jstring className) {
+	BOOLEAN result = FALSE;
+	if (NULL != className) {
+		const char * utf8Name = (const char *) (*env)->GetStringUTFChars(env, className, NULL);
+		if (NULL != utf8Name) {
+			/* check if class name matches the generated implementation class name excluding the generated characters */
+			if ((0 == strncmp(utf8Name, "com.sun.proxy.$Proxy", 20))) {
+				result = TRUE;
+			}
+			(*env)->ReleaseStringUTFChars(env, className, utf8Name);
+		}
+	}
+	return result;
+}
+#endif /* JAVA_SPEC_VERSION == 8 */
+
 static jclass proxyDefineClass(
 		JNIEnv * env,
 		jobject classLoader,
@@ -36,10 +53,8 @@ static jclass proxyDefineClass(
 	J9JavaVM *vm = currentThread->javaVM;
 	J9InternalVMFunctions *vmFuncs = vm->internalVMFunctions;
 	J9StackWalkState walkState;
-	J9Class * clazz;
-	j9object_t heapClass = NULL;
-	j9object_t protectionDomainDirectReference = NULL;
-	j9object_t classLoaderObject;
+	J9Class * clazz = NULL;
+	UDATA defineClassOptions = 0;
 
 	/* Walk the stack to find the caller class loader and protection domain */
 	vmFuncs->internalEnterVMFromJNI(currentThread);
@@ -50,25 +65,30 @@ static jclass proxyDefineClass(
 	walkState.flags = J9_STACKWALK_VISIBLE_ONLY | J9_STACKWALK_INCLUDE_NATIVES | J9_STACKWALK_COUNT_SPECIFIED;
 	vm->walkStackFrames(currentThread, &walkState);
 	if (walkState.framesWalked == 0) {
-		vmFuncs->internalReleaseVMAccess(currentThread);
+		vmFuncs->internalExitVMToJNI(currentThread);
 		throwNewInternalError(env, NULL);
 		return NULL;
 	}
 
 	clazz = J9_CLASS_FROM_CP(walkState.constantPool);
 	if (classLoader == NULL) {
-		classLoaderObject = J9CLASSLOADER_CLASSLOADEROBJECT(currentThread, clazz->classLoader);
+		j9object_t classLoaderObject = J9CLASSLOADER_CLASSLOADEROBJECT(currentThread, clazz->classLoader);
 		classLoader = vmFuncs->j9jni_createLocalRef(env, classLoaderObject);
 	}
 	if (pd == NULL) {
-		heapClass = J9VM_J9CLASS_TO_HEAPCLASS(clazz);
-		protectionDomainDirectReference = J9VMJAVALANGCLASS_PROTECTIONDOMAIN(currentThread, heapClass);
+		j9object_t heapClass = J9VM_J9CLASS_TO_HEAPCLASS(clazz);
+		j9object_t protectionDomainDirectReference = J9VMJAVALANGCLASS_PROTECTIONDOMAIN(currentThread, heapClass);
 		pd = vmFuncs->j9jni_createLocalRef(env, protectionDomainDirectReference);
 	}
 
-	vmFuncs->internalReleaseVMAccess(currentThread);
+	vmFuncs->internalExitVMToJNI(currentThread);
 
-	return defineClassCommon(env, classLoader, className, classBytes, offset, length, pd, 0, NULL);
+#if JAVA_SPEC_VERSION == 8
+	if (isProxyExemptFromVerification(env, className)) {
+		defineClassOptions |= J9_FINDCLASS_FLAG_UNSAFE;
+	}
+#endif /* JAVA_SPEC_VERSION == 8 */
+	return defineClassCommon(env, classLoader, className, classBytes, offset, length, pd, &defineClassOptions, NULL, NULL, FALSE);
 }
 
 jclass JNICALL Java_java_lang_reflect_Proxy_defineClassImpl(JNIEnv * env, jclass recvClass, jobject classLoader, jstring className, jbyteArray classBytes)
@@ -93,7 +113,13 @@ Java_java_lang_reflect_Proxy_defineClass0__Ljava_lang_ClassLoader_2Ljava_lang_St
 	if (classLoader == NULL || pd == NULL) {
 		return proxyDefineClass(env, classLoader, className, classBytes, offset, length, pd);
 	} else {
-		return defineClassCommon(env, classLoader, className, classBytes, offset, length, pd, 0, NULL);
+		UDATA defineClassOptions = 0;
+#if JAVA_SPEC_VERSION == 8
+		if (isProxyExemptFromVerification(env, className)) {
+			defineClassOptions |= J9_FINDCLASS_FLAG_UNSAFE;
+		}
+#endif /* JAVA_SPEC_VERSION == 8 */
+		return defineClassCommon(env, classLoader, className, classBytes, offset, length, pd, &defineClassOptions, NULL, NULL, FALSE);
 	}
 }
 

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2008, 2014 IBM Corp. and others
+ * Copyright (c) 2008, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -31,11 +31,9 @@
 #include "vmi.h"
 #include "ibmjvmti.h"
 #include "jlm.h"
-
-#ifdef J9VM_THR_LOCK_NURSERY
-#include "lockNurseryUtil.h"
-#endif
-
+#include "j9.h"
+#include "j9protos.h"
+#include "j9consts.h"
 #include "thrdsup.h"
 
 #define INTERNAL_ERROR						-1
@@ -231,12 +229,12 @@ Java_j9vm_test_thread_TestNatives_getSchedulingPolicy(JNIEnv* env, jclass clazz,
 	J9VMThread *targetVMThread = NULL;
 	jint schedulingPolicy = -1;
 
-	javaVM->internalVMFunctions->internalAcquireVMAccess(vmThread);
+	javaVM->internalVMFunctions->internalEnterVMFromJNI(vmThread);
 
 	javaThreadObject = J9_JNI_UNWRAP_REFERENCE(javaThread);
 	targetVMThread = (J9VMThread *)J9VMJAVALANGTHREAD_THREADREF(vmThread, javaThreadObject);
 	
-	javaVM->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	javaVM->internalVMFunctions->internalExitVMToJNI(vmThread);
 
 	if (NULL != targetVMThread) {
 		schedulingPolicy = getSchedulingPolicy(targetVMThread);
@@ -264,12 +262,12 @@ Java_j9vm_test_thread_TestNatives_getSchedulingPriority(JNIEnv* env, jclass claz
 	J9VMThread *targetVMThread = NULL;
 	jint schedulingPriority = -1;
 
-	javaVM->internalVMFunctions->internalAcquireVMAccess(vmThread);
+	javaVM->internalVMFunctions->internalEnterVMFromJNI(vmThread);
 
 	javaThreadObject = J9_JNI_UNWRAP_REFERENCE(javaThread);
 	targetVMThread = (J9VMThread *)J9VMJAVALANGTHREAD_THREADREF(vmThread, javaThreadObject);
 
-	javaVM->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	javaVM->internalVMFunctions->internalExitVMToJNI(vmThread);
 
 	if (NULL != targetVMThread) {
 		schedulingPriority = getSchedulingPriority(targetVMThread);
@@ -535,27 +533,23 @@ jlong JNICALL
 Java_com_ibm_j9_monitor_tests_TestNatives_getLockWordValue(JNIEnv* env, jobject testNativesObject, jobject lockwordObj)
 {
 	j9object_t obj;
-	j9objectmonitor_t *lockEA;
 	j9objectmonitor_t lock;
-	J9JavaVM *vm = ((J9VMThread *) env)->javaVM;
+	J9VMThread *currentThread = (J9VMThread *) env;
+	J9JavaVM *vm = currentThread->javaVM;
 
-	vm->internalVMFunctions->internalAcquireVMAccess((J9VMThread *)env);
+	vm->internalVMFunctions->internalEnterVMFromJNI((J9VMThread *)env);
 
 	obj = J9_JNI_UNWRAP_REFERENCE(lockwordObj);
-#if defined( J9VM_THR_LOCK_NURSERY )
-	if (!LN_HAS_LOCKWORD((J9VMThread *)env,obj)) {
-		lock = 0 | OBJECT_HEADER_LOCK_INFLATED;
-		lockEA = &lock;
-	} else
-#endif
-	{
-		lockEA = J9OBJECT_MONITOR_EA((J9VMThread *) env, obj);
-		lock = *lockEA;
+	if (!LN_HAS_LOCKWORD(currentThread, obj)) {
+		lock = (j9objectmonitor_t)((UDATA)0 | OBJECT_HEADER_LOCK_INFLATED);
+	} else {
+		j9objectmonitor_t *lockEA = J9OBJECT_MONITOR_EA(currentThread, obj);
+		lock = J9_LOAD_LOCKWORD(currentThread, lockEA);
 	}
 
-	vm->internalVMFunctions->internalReleaseVMAccess((J9VMThread *)env);
+	vm->internalVMFunctions->internalExitVMToJNI((J9VMThread *)env);
 
-	return (jlong) lock;
+	return (jlong)(UDATA)lock;
 }
 
 jlong JNICALL
@@ -565,12 +559,12 @@ Java_com_ibm_j9_monitor_tests_TestNatives_getLockWordOffset(JNIEnv* env, jobject
 	J9JavaVM *vm = ((J9VMThread *) env)->javaVM;
 	jlong result = -1;
 
-	vm->internalVMFunctions->internalAcquireVMAccess((J9VMThread *)env);
+	vm->internalVMFunctions->internalEnterVMFromJNI((J9VMThread *)env);
 
 	obj = J9_JNI_UNWRAP_REFERENCE(lockwordObj);
 	result = (jlong) J9OBJECT_MONITOR_OFFSET((J9VMThread *) env,obj);
 
-	vm->internalVMFunctions->internalReleaseVMAccess((J9VMThread *)env);
+	vm->internalVMFunctions->internalExitVMToJNI((J9VMThread *)env);
 
 	return result;
 }
@@ -578,13 +572,13 @@ Java_com_ibm_j9_monitor_tests_TestNatives_getLockWordOffset(JNIEnv* env, jobject
 jlong JNICALL
 Java_com_ibm_j9_monitor_tests_TestNatives_getHeaderSize(JNIEnv* env, jclass clazz)
 {
-	return sizeof(J9Object);
+	return J9VMTHREAD_OBJECT_HEADER_SIZE((J9VMThread*)env);
 }
 
 jlong JNICALL
 Java_com_ibm_j9_monitor_tests_TestNatives_getLockwordSize(JNIEnv* env, jclass clazz)
 {
-	return sizeof(j9objectmonitor_t);
+	return J9VMTHREAD_REFERENCE_SIZE((J9VMThread*)env);
 }
 
 /**
@@ -600,65 +594,10 @@ Java_j9vm_test_softmx_TestNatives_setAggressiveGCPolicy(JNIEnv* env, jclass claz
 	J9VMThread *vmThread = (J9VMThread *) env;
 	J9JavaVM *javaVM = vmThread->javaVM;
 
-	javaVM->internalVMFunctions->internalAcquireVMAccess(vmThread);
+	javaVM->internalVMFunctions->internalEnterVMFromJNI(vmThread);
 
 	javaVM->memoryManagerFunctions->j9gc_modron_global_collect_with_overrides(vmThread, J9MMCONSTANT_IMPLICIT_GC_AGGRESSIVE);
 
-	javaVM->internalVMFunctions->internalReleaseVMAccess(vmThread);
+	javaVM->internalVMFunctions->internalExitVMToJNI(vmThread);
 
-}
-
-
-/**
- * static native use to test static initialization for multi-tenancy.  It does not need to do anything we simply
- * need to call it and verify that by having called it the appropriate per tenant static initialization has
- * taken place
- *
- * @param env[in]  The JNIEnv that can be used by the method
- *
- */
-void JNICALL
-Java_com_ibm_tests_tenant_helpers_StaticInitializationTestTargetStaticNativeMethod_runAStaticNativeMethod(JNIEnv* env)
-{
-}
-
-/**
- * static native use to test static initialization for multi-tenancy.  It does not need to do anything we simply
- * need to call it and verify that by having called it the appropriate per tenant static initialization has
- * taken place
- *
- * @param env[in]  The JNIEnv that can be used by the method
- *
- */
-void JNICALL
-Java_com_ibm_tests_tenant_helpers_StaticInitializationTestTargetStaticNativeMethod2_runAStaticNativeMethod(JNIEnv* env)
-{
-}
-
-
-
-/**
- * static native use to test static initialization for multi-tenancy.  It does not need to do anything we simply
- * need to call it and verify that by having called it the appropriate per tenant static initialization has
- * taken place
- *
- * @param env[in]  The JNIEnv that can be used by the method
- *
- */
-void JNICALL
-Java_com_ibm_tests_tenant_helpers_StaticInitializationTestTargetMethodInvokeNative1_trigger(JNIEnv* env)
-{
-}
-
-/**
- * static native use to test static initialization for multi-tenancy.  It does not need to do anything we simply
- * need to call it and verify that by having called it the appropriate per tenant static initialization has
- * taken place
- *
- * @param env[in]  The JNIEnv that can be used by the method
- *
- */
-void JNICALL
-Java_com_ibm_tests_tenant_helpers_StaticInitializationTestTargetMethodInvokeNative2_trigger(JNIEnv* env)
-{
 }

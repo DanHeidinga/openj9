@@ -1,15 +1,6 @@
-/*[INCLUDE-IF Sidecar16]*/
-package java.lang;
-
-import java.io.*;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-
-import com.ibm.oti.util.Msg;
-
+/*[INCLUDE-IF Sidecar18-SE]*/
 /*******************************************************************************
- * Copyright (c) 1998, 2010 IBM Corp. and others
+ * Copyright (c) 1998, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -29,6 +20,19 @@ import com.ibm.oti.util.Msg;
  *
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
+package java.lang;
+
+import java.io.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.IdentityHashMap;
+import java.util.Set;
+
+import com.ibm.oti.util.Msg;
+import com.ibm.oti.util.Util;
+import static com.ibm.oti.util.Util.appendTo;
+import static com.ibm.oti.util.Util.appendLnTo;
  
 /**
  * This class is the superclass of all classes which
@@ -76,7 +80,7 @@ public class Throwable implements java.io.Serializable {
 	 * The list containing the exceptions suppressed 
 	 */
 	private List<Throwable> suppressedExceptions = Collections.EMPTY_LIST;
-	private transient boolean enableWritableStackTrace = true;
+	private transient boolean disableWritableStackTrace;
 	
 /**
  * Constructs a new instance of this class with its 
@@ -161,7 +165,7 @@ protected Throwable(String detailMessage, Throwable throwable,
 	}
 	
 	if (enableWritableStackTrace == false)	{
-		this.enableWritableStackTrace = false;
+		this.disableWritableStackTrace = true;
 	} else {
 		fillInStackTrace();
 	}
@@ -227,17 +231,18 @@ public void setStackTrace(StackTraceElement[] trace) {
 	if (trace == null) {
 		throw new NullPointerException();
 	}
-	for (int i=0; i<trace.length; i++)	{
-		if (trace[i] == null) {
+	StackTraceElement[] localCopy = trace.clone();
+	for (int i=0; i<localCopy.length; i++)	{
+		if (localCopy[i] == null) {
 			throw new NullPointerException();
 		}
 	}
 	
-	if (enableWritableStackTrace == false) {
+	if (disableWritableStackTrace) {
 		return;
 	}
 	
-	stackTrace = (StackTraceElement[])trace.clone();
+	stackTrace = localCopy;
 }
 
 /**
@@ -279,16 +284,19 @@ private static int countDuplicates(StackTraceElement[] currentStack, StackTraceE
  * @return an array of StackTraceElement representing the stack
  */
 StackTraceElement[] getInternalStackTrace() {
-
-	if (!enableWritableStackTrace) {
+	if (disableWritableStackTrace) {
 		return	ZeroStackTraceElementArray;
 	}
 
-	if (stackTrace == null) {
-		stackTrace = J9VMInternals.getStackTrace(this, true);
+	StackTraceElement[] localStackTrace = stackTrace;
+	if (localStackTrace == null) {
+		// Assign the result to a local variable to avoid refetching
+		// the instance variable and any memory ordering issues
+		localStackTrace = J9VMInternals.getStackTrace(this, true);
+		stackTrace = localStackTrace;
 	} 
 	
-	return stackTrace;
+	return localStackTrace;
 }
 
 /**
@@ -299,14 +307,7 @@ StackTraceElement[] getInternalStackTrace() {
  *				The stream to write the walkback on.
  */
 public void printStackTrace (PrintStream err) {
-    StackTraceElement[] stack;
-    stack = printStackTrace(err, null, 0, false);
-
-	Throwable throwable = getCause();
-	while (throwable != null && stack != null) {
-        stack = throwable.printStackTrace(err, stack, 0, false);
-		throwable = throwable.getCause();
-	}
+	printStackTraceHelper(err);
 }
 
 /**
@@ -317,14 +318,33 @@ public void printStackTrace (PrintStream err) {
  *				The writer to write the walkback on.
  */
 public void printStackTrace(PrintWriter err) {
-    StackTraceElement[] stack;
-    stack = printStackTrace(err, null, 0, false);
+	printStackTraceHelper(err);
+}
 
-    Throwable throwable = getCause();
-    while (throwable != null && stack != null) {
-        stack = throwable.printStackTrace(err, stack, 0, false);
-        throwable = throwable.getCause();
-    }
+/**
+ * Outputs representation of the receiver's
+ * walkback on the Appendable specified by the argument.
+ *
+ * @param	appendable Appendable 
+ *		The Appendable object to the walkback will be written.
+ */
+private void printStackTraceHelper(Appendable appendable) {
+	StackTraceElement[] stack;
+	Set<Throwable> exceptionChainSet = null;
+	try {
+		exceptionChainSet = Collections.newSetFromMap(new IdentityHashMap<Throwable, Boolean>());
+	} catch(OutOfMemoryError e) {
+		/* If OOM is thrown when creating exception set, then we won't be able to check for circular exception chain,
+		 * which can cause OOM to be thrown again. This should be ok as we are already running out of heap memory.
+		 */
+	}
+	stack = printStackTrace(appendable, null, 0, false, exceptionChainSet);
+
+	Throwable throwable = getCause();
+	while (throwable != null && stack != null) {
+		stack = throwable.printStackTrace(appendable, stack, 0, false, exceptionChainSet);
+		throwable = throwable.getCause();
+	}
 }
 
 /**
@@ -334,9 +354,7 @@ public void printStackTrace(PrintWriter err) {
  * @return		String
  *				a printable representation for the receiver.
  */
-/*[IF AnnotateOverride]*/
 @Override
-/*[ENDIF]*/
 public String toString () {
 	/*[PR 102230] Should call getLocalizedMessage() */
 	String msg = getLocalizedMessage();
@@ -362,7 +380,15 @@ public String toString () {
  * @return		the receiver.
  */
 public synchronized Throwable initCause(Throwable throwable) {
-	return	setCause(throwable);
+	if (cause != this) {
+		/*[MSG "K05c9", "Cause already initialized"]*/
+		throw new IllegalStateException(Msg.getString("K05c9")); //$NON-NLS-1$
+	}
+	if (throwable == this) {
+		/*[MSG "K05c8", "Cause cannot be the receiver"]*/
+		throw new IllegalArgumentException(Msg.getString("K05c8")); //$NON-NLS-1$
+	}
+	return setCause(throwable);
 }
 
 /**
@@ -379,15 +405,8 @@ public synchronized Throwable initCause(Throwable throwable) {
  * @return		the receiver.
  */
 Throwable setCause(Throwable throwable) {
-	/*[PR CMVC 199629] Exception During Class Initialization Not Handled Correctly */	
-	if (cause == this) {
-		if (throwable != this) {
-			cause = throwable;
-			return this;
-		/*[MSG "K05c8", "Cause cannot be the receiver"]*/
-		} else throw new IllegalArgumentException(Msg.getString("K05c8")); //$NON-NLS-1$
-	/*[MSG "K05c9", "Cause already initialized"]*/
-	} else throw new IllegalStateException(Msg.getString("K05c9")); //$NON-NLS-1$
+	cause = throwable;
+	return this;
 }
 
 /**
@@ -412,7 +431,7 @@ private void readObject(ObjectInputStream s)
 	throws IOException, ClassNotFoundException	{
 	s.defaultReadObject();
 	
-	enableWritableStackTrace = (stackTrace != null);
+	disableWritableStackTrace = (stackTrace == null);
 	
 	if (stackTrace != null) {
 		if (stackTrace.length == 1) {
@@ -435,18 +454,37 @@ private void readObject(ObjectInputStream s)
 	
 	
 	if (suppressedExceptions != null) {
-		if (suppressedExceptions.size() == 0) {
-			suppressedExceptions = Collections.EMPTY_LIST;
-		} else {
-			for (Throwable t : suppressedExceptions) {
-				if (t == null) {
-					/*[MSG "K0561", "Null entries not permitted in suppressedExceptions serial stream"]*/
-					throw new NullPointerException(com.ibm.oti.util.Msg.getString("K0561")); //$NON-NLS-1$
-				} else if (t == this) {
-					/*[MSG "K0562", "Self-pointers not permitted in suppressedExceptions serial stream"]*/
-					throw new IllegalArgumentException(com.ibm.oti.util.Msg.getString("K0562")); //$NON-NLS-1$
+		List<Throwable> newList = Collections.EMPTY_LIST;
+		try {
+/*[IF Sidecar19-SE]*/
+			Module classModule = suppressedExceptions.getClass().getModule();
+			if (Object.class.getModule().equals(classModule)) {
+/*[ELSE]*/
+			ClassLoader listClassLoader = suppressedExceptions.getClass().getClassLoader();
+			/* null ClassLoader from getClassLoader() call represents the bootstrap ClassLoader */
+			if (listClassLoader == null) {
+/*[ENDIF]*/
+				int listSize = suppressedExceptions.size();
+				if (listSize != 0) {
+					newList = new ArrayList<Throwable>(listSize);
+					for (Throwable t : suppressedExceptions) {
+						if (t == null) {
+							/*[MSG "K0561", "Null entries not permitted in suppressedExceptions serial stream"]*/
+							throw new NullPointerException(com.ibm.oti.util.Msg.getString("K0561")); //$NON-NLS-1$
+						} else if (t == this) {
+							/*[MSG "K0562", "Self-pointers not permitted in suppressedExceptions serial stream"]*/
+							throw new IllegalArgumentException(com.ibm.oti.util.Msg.getString("K0562")); //$NON-NLS-1$
+						} else {
+							newList.add(t);
+						}
+					}
 				}
+			} else {
+				/*[MSG "K0C00", "Non-standard List class not permitted in suppressedExceptions serial stream"]*/
+				throw new java.io.StreamCorruptedException(com.ibm.oti.util.Msg.getString("K0C00")); //$NON-NLS-1$
 			}
+		} finally {
+			suppressedExceptions = newList;
 		}
 	}
 }
@@ -455,39 +493,6 @@ private void readObject(ObjectInputStream s)
  * CMVC 97756 try to continue printing as much as possible of the stack trace even
  *            in the presence of OutOfMemoryErrors.
  */
-
-/**
- * Helper method for output with PrintStream and PrintWriter
- */
-static void appendTo(Appendable buf, CharSequence s) {
-	StackTraceElement.appendTo(buf, s);
-}
-
-/**
- * Helper method for output with PrintStream and PrintWriter
- */
-static void appendTo(Appendable buf, CharSequence s, int indents) {
-	for (int i=0; i<indents; i++) {
-		StackTraceElement.appendTo(buf, "\t"); //$NON-NLS-1$
-	}
-	StackTraceElement.appendTo(buf, s);
-}
-
-/**
- * Helper method for output with PrintStream and PrintWriter
- */
-static void appendTo(Appendable buf, int i) {
-	StackTraceElement.appendTo(buf, i);
-}
-
-/**
- * Helper method for output with PrintStream and PrintWriter
- */
-static void appendLnTo(Appendable buf) {		
-	if (buf instanceof PrintStream) ((PrintStream)buf).println();
-	else if (buf instanceof PrintWriter) ((PrintWriter)buf).println();
-	else appendTo(buf, "\n"); //$NON-NLS-1$
-}
 
 /**
  * Print stack trace
@@ -500,47 +505,78 @@ static void appendLnTo(Appendable buf) {
  * 			number of indents (\t) to be printed
  * @param	suppressed	
  * 			if this is an exception suppressed
+ * @param	exceptionChainSet
+ * 			set of exceptions in the exception chain
  * 
  * @return	an array of stack trace elements printed 
  * 
  */
 private StackTraceElement[] printStackTrace(
-		Appendable err, StackTraceElement[] parentStack, int indents, boolean suppressed) {
+		Appendable err, StackTraceElement[] parentStack, int indents, boolean suppressed, Set<Throwable> exceptionChainSet) {
 	/*[PR 120593] CDC 1.0 and CDC 1.1 TCK fails in java.lang.. Exception tests */
 	if (err == null) throw new NullPointerException();
-    StackTraceElement[] stack;
-    boolean outOfMemory = this instanceof OutOfMemoryError;
-    if (parentStack != null) {
-	    if (suppressed) {
-	    	appendTo(err, "Suppressed: ", indents); //$NON-NLS-1$
-	    } else {
-	    	appendTo(err, "Caused by: ", indents); //$NON-NLS-1$
-	    }
+	StackTraceElement[] stack;
+	boolean outOfMemory = this instanceof OutOfMemoryError;
+	if ((exceptionChainSet != null) && (exceptionChainSet.contains(this))) {
+		if (!outOfMemory) {
+			try {
+				appendTo(err, "\t[CIRCULAR REFERENCE:" + toString() + "]", 0); //$NON-NLS-1$
+			} catch(OutOfMemoryError e) {
+				outOfMemory = true;
+			}
+		}
+		if (outOfMemory) {
+			appendTo(err, "\t[CIRCULAR REFERENCE:"); //$NON-NLS-1$
+			try {
+				appendTo(err, getClass().getName());
+			} catch(OutOfMemoryError e) {
+				appendTo(err, "java.lang.OutOfMemoryError(?)");
+			}
+			appendTo(err, "]");
+		}
+		appendLnTo(err);
+		return null;
 	}
-    if (!outOfMemory) try {
-    	appendTo(err, toString());
-    } catch(OutOfMemoryError e) {
-        outOfMemory = true;
-    }
-    if (outOfMemory) {
-        try {
-            appendTo(err, getClass().getName());		
-        } catch(OutOfMemoryError e) {
+	try {
+		exceptionChainSet.add(this);
+	} catch(OutOfMemoryError e) {
+		/* If OOM is thrown when adding Throwable to exception set, then we may not be able to identify circular exception chain,
+		 * which can cause OOM to be thrown again. This should be ok as we are already running out of heap memory.
+		 */
+	}
+	if (parentStack != null) {
+		if (suppressed) {
+			appendTo(err, "Suppressed: ", indents); //$NON-NLS-1$
+		} else {
+			appendTo(err, "Caused by: ", indents); //$NON-NLS-1$
+		}
+	}
+	if (!outOfMemory) {
+		try {
+			appendTo(err, toString());
+		} catch(OutOfMemoryError e) {
+			outOfMemory = true;
+		}
+	}
+	if (outOfMemory) {
+		try {
+			appendTo(err, getClass().getName());
+		} catch(OutOfMemoryError e) {
 			outOfMemory = true;
 			appendTo(err, "java.lang.OutOfMemoryError(?)");			 //$NON-NLS-1$
-        }
-        try {
+		}
+		try {
 			String message = getLocalizedMessage();
 			if (message != null) {
 				appendTo(err, ": "); //$NON-NLS-1$
 				appendTo(err, message);
 			}
-        } catch(OutOfMemoryError e) {
+		} catch(OutOfMemoryError e) {
 			outOfMemory = true;
-        }
-    }
+		}
+	}
 	appendLnTo(err);
-    int duplicates = 0;
+	int duplicates = 0;
 	try {
 		// Don't use getStackTrace() as it calls clone()
 		// Get stackTrace, in case stackTrace is reassigned
@@ -549,34 +585,38 @@ private StackTraceElement[] printStackTrace(
 		if (parentStack != null) {
 			duplicates = countDuplicates(stack, parentStack);
 		}
-	} catch (OutOfMemoryError e) {
+	} catch(OutOfMemoryError e) {
 		appendTo(err, "\tat ?", indents); //$NON-NLS-1$
 		appendLnTo(err);
 		return null;
 	}
-    for (int i=0; i < stack.length - duplicates; i++) {
-		if (!outOfMemory) try {
-            appendTo(err, "\tat " + stack[i], indents);			 //$NON-NLS-1$
-        } catch(OutOfMemoryError e) {
-			outOfMemory = true;
-        }
+	for (int i=0; i < stack.length - duplicates; i++) {
+		if (!outOfMemory) {
+			try {
+				appendTo(err, "\tat " + stack[i], indents);			 //$NON-NLS-1$
+			} catch(OutOfMemoryError e) {
+				outOfMemory = true;
+			}
+		}
 		if (outOfMemory) {
 			appendTo(err, "\tat ", indents); //$NON-NLS-1$
-			stack[i].appendTo(err);
-        }
+			Util.printStackTraceElement(stack[i], null, err, false);
+		}
 		appendLnTo(err);		
-    }
-    if (duplicates > 0) {
-		if (!outOfMemory) try {
-			appendTo(err, "\t... " + duplicates + " more", indents); //$NON-NLS-1$ //$NON-NLS-2$
-		} catch(OutOfMemoryError e) {
-			outOfMemory = true;
+	}
+	if (duplicates > 0) {
+		if (!outOfMemory) {
+			try {
+				appendTo(err, "\t... " + duplicates + " more", indents); //$NON-NLS-1$ //$NON-NLS-2$
+			} catch(OutOfMemoryError e) {
+				outOfMemory = true;
+			}
 		}
 		if (outOfMemory) {
 			appendTo(err, "\t... ", indents); //$NON-NLS-1$
 			appendTo(err, duplicates);
 			appendTo(err, " more"); //$NON-NLS-1$
-        }		
+        	}		
 		appendLnTo(err);
 	}
     
@@ -584,11 +624,11 @@ private StackTraceElement[] printStackTrace(
 		if (suppressedExceptions != null) {
 			for (Throwable t : suppressedExceptions) {
 				StackTraceElement[] stackSuppressed;
-				stackSuppressed = t.printStackTrace(err, stack, indents + 1, true);
+				stackSuppressed = t.printStackTrace(err, stack, indents + 1, true, exceptionChainSet);
 				
 				Throwable throwableSuppressed = t.getCause();
 				while (throwableSuppressed != null && stackSuppressed != null) {
-					stackSuppressed = throwableSuppressed.printStackTrace(err, stackSuppressed, indents + 1, false);
+					stackSuppressed = throwableSuppressed.printStackTrace(err, stackSuppressed, indents + 1, false, exceptionChainSet);
 					throwableSuppressed = throwableSuppressed.getCause();
 				}
 			}
@@ -659,4 +699,3 @@ public final Throwable[] getSuppressed() {
 	}
 }
 }
-

@@ -1,6 +1,5 @@
-
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -32,13 +31,13 @@
 #include "GCExtensions.hpp"
 #include "TgcExtensions.hpp"
 
-#include "Dispatcher.hpp"
 #include "EnvironmentBase.hpp"
 #include "HashTableIterator.hpp"
 #include "HeapMapIterator.hpp"
 #include "HeapRegionDescriptorVLHGC.hpp"
 #include "HeapRegionIteratorVLHGC.hpp"
 #include "HeapRegionManager.hpp"
+#include "ParallelDispatcher.hpp"
 #include "ParallelTask.hpp"
 
 struct ClassTableEntry {
@@ -65,10 +64,10 @@ public:
 private:
 protected:
 public:
-	virtual UDATA getVMStateID(void) { return J9VMSTATE_GC_TGC; }
+	virtual UDATA getVMStateID(void) { return OMRVMSTATE_GC_TGC; }
 	virtual void run(MM_EnvironmentBase *env);
 
-	TgcParallelHeapWalkTask(MM_EnvironmentBase *env, MM_Dispatcher *dispatcher)
+	TgcParallelHeapWalkTask(MM_EnvironmentBase *env, MM_ParallelDispatcher *dispatcher)
 		: MM_ParallelTask(env, dispatcher)
 	{
 		_typeId = __FUNCTION__;
@@ -97,7 +96,7 @@ TgcParallelHeapWalkTask::run(MM_EnvironmentBase *env)
 					J9Object *objectPtr = NULL;
 					while(NULL != (objectPtr = mapIterator.nextObject())) {
 						ClassTableEntry exemplar;
-						exemplar.clazz = J9GC_J9OBJECT_CLAZZ(objectPtr);
+						exemplar.clazz = J9GC_J9OBJECT_CLAZZ(objectPtr, env);
 						exemplar.rememberedInstances = 0;
 						exemplar.totalInstances = 0;
 						ClassTableEntry *entry = (ClassTableEntry *)hashTableAdd(hashTable, &exemplar);
@@ -167,7 +166,7 @@ reportInterRegionRememberedSetDemographics(MM_EnvironmentBase *env)
 	
 	tgcExtensions->printf("<rememberedSetDemographics increment=\"%zu\">\n", tgcExtensions->_interRegionRememberedSetDemographics.incrementCount);
 
-	MM_Dispatcher *dispatcher = extensions->dispatcher;
+	MM_ParallelDispatcher *dispatcher = extensions->dispatcher;
 	TgcParallelHeapWalkTask heapWalkTask(env, dispatcher);
 	dispatcher->run(env, &heapWalkTask);
 	

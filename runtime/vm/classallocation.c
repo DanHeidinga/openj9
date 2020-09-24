@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -168,12 +168,15 @@ allocateClassLoader(J9JavaVM *javaVM)
 
 	classLoader = pool_newElement(javaVM->classLoaderBlocks);
 
-	if (classLoader != NULL) {
+	if (NULL != classLoader) {
+		UDATA classRelationshipsHashTableResult = -1;
 		/* memset not required as the classLoaderBlocks pool returns zero'd memory */
 
 		classLoader->classHashTable = hashClassTableNew(javaVM, INITIAL_CLASSHASHTABLE_SIZE);
-		classLoader->moduleHashTable = hashModuleTableNew(javaVM, INITIAL_MODULE_HASHTABLE_SIZE);
+#if JAVA_SPEC_VERSION > 8
+		classLoader->moduleHashTable = hashModuleNameTableNew(javaVM, INITIAL_MODULE_HASHTABLE_SIZE);
 		classLoader->packageHashTable = hashPackageTableNew(javaVM, INITIAL_PACKAGE_HASHTABLE_SIZE);
+#endif /* JAVA_SPEC_VERSION > 8 */
 		/* Allocate classLocationHashTable only for bootloader which is the first classloader to be allocated.
 		 * The classLoader being allocated must be the bootloader if javaVM->systemClassLoader is NULL.
 		 */
@@ -181,10 +184,16 @@ allocateClassLoader(J9JavaVM *javaVM)
 			classLoader->classLocationHashTable = hashClassLocationTableNew(javaVM, INITIAL_CLASSLOCATION_HASHTABLE_SIZE);
 		}
 
-		if ((NULL == classLoader->classHashTable) 
-			|| (NULL == classLoader->moduleHashTable) 
+		/* Allocate classRelationshipsHashTable */
+		classRelationshipsHashTableResult = j9bcv_hashClassRelationshipTableNew(classLoader, javaVM);
+
+		if ((NULL == classLoader->classHashTable)
+#if JAVA_SPEC_VERSION > 8
+			|| (NULL == classLoader->moduleHashTable)
 			|| (NULL == classLoader->packageHashTable)
+#endif /* JAVA_SPEC_VERSION > 8 */
 			|| ((NULL == javaVM->systemClassLoader) && (NULL == classLoader->classLocationHashTable))
+			|| (1 == classRelationshipsHashTableResult)
 		) {
 			freeClassLoader(classLoader, javaVM, NULL, TRUE);
 			classLoader = NULL;
@@ -222,6 +231,35 @@ freeClassLoader(J9ClassLoader *classLoader, J9JavaVM *javaVM, J9VMThread *vmThre
 	RELEASE_CLASS_LOADER_BLOCKS_MUTEX(javaVM);
 #endif
 
+	/* Free the hot field pool and clean up global hot field class info pool if scavenger dynamicBreadthFirstScanOrdering is enabled */
+	if (javaVM->memoryManagerFunctions->j9gc_hot_reference_field_required(javaVM)) {
+		if (NULL != classLoader->hotFieldPool) {
+			if (NULL != javaVM->hotFieldClassInfoPool && J9_ARE_NO_BITS_SET(classLoader->flags, J9CLASSLOADER_ANON_CLASS_LOADER)) {
+				pool_state hotFieldClassInfoPoolState;
+				J9ClassHotFieldsInfo *hotFieldClassInfoTemp;
+				omrthread_monitor_enter(classLoader->hotFieldPoolMutex);
+				omrthread_monitor_enter(javaVM->hotFieldClassInfoPoolMutex);
+				hotFieldClassInfoTemp = (struct J9ClassHotFieldsInfo*)pool_startDo(javaVM->hotFieldClassInfoPool, &hotFieldClassInfoPoolState);
+				while (NULL != hotFieldClassInfoTemp) {
+					if (hotFieldClassInfoTemp->classLoader == classLoader) {
+						pool_removeElement(javaVM->hotFieldClassInfoPool, hotFieldClassInfoTemp);
+					}
+					hotFieldClassInfoTemp = (struct J9ClassHotFieldsInfo*)pool_nextDo(&hotFieldClassInfoPoolState);
+				}
+				omrthread_monitor_exit(javaVM->hotFieldClassInfoPoolMutex);
+				omrthread_monitor_exit(classLoader->hotFieldPoolMutex);
+			}
+			pool_kill(classLoader->hotFieldPool);
+			classLoader->hotFieldPool = NULL;
+		}
+
+		/* destroy the classloader hot field pool monitor if it exists */
+		if (NULL != classLoader->hotFieldPoolMutex) {
+			omrthread_monitor_destroy(classLoader->hotFieldPoolMutex);
+			classLoader->hotFieldPoolMutex = NULL;
+		}
+	}
+	
 	/* free the class path entries allocated ofr system and non-system class loaders */
 	if (NULL != classLoader->classPathEntries) {
 		if (javaVM->systemClassLoader == classLoader) {
@@ -396,6 +434,13 @@ freeClassLoader(J9ClassLoader *classLoader, J9JavaVM *javaVM, J9VMThread *vmThre
 	if (NULL != classLoader->romClassOrphansHashTable) {
 		hashTableFree(classLoader->romClassOrphansHashTable);
 		classLoader->romClassOrphansHashTable = NULL;
+	}
+
+	/* Free the class relationships table */
+	if (NULL != classLoader->classRelationshipsHashTable) {
+		j9bcv_hashClassRelationshipTableFree(vmThread, classLoader, javaVM);
+		hashTableFree(classLoader->classRelationshipsHashTable);
+		classLoader->classRelationshipsHashTable = NULL;
 	}
 
 	TRIGGER_J9HOOK_VM_CLASS_LOADER_DESTROY(javaVM->hookInterface, javaVM, classLoader);

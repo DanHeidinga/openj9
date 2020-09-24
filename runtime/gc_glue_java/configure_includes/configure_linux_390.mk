@@ -1,5 +1,5 @@
 ###############################################################################
-# Copyright (c) 2016, 2018 IBM Corp. and others
+# Copyright (c) 2016, 2020 IBM Corp. and others
 #
 # This program and the accompanying materials are made available under
 # the terms of the Eclipse Public License 2.0 which accompanies this
@@ -32,46 +32,16 @@ CONFIGURE_ARGS += \
 	--enable-OMR_THR_YIELD_ALG \
 	--enable-OMR_THR_SPIN_WAKE_CONTROL
 
-ifeq (linux_390-64_cmprssptrs_codecov, $(SPEC))
-	CONFIGURE_ARGS += \
-		--enable-OMRTHREAD_LIB_UNIX \
-		--enable-OMR_ARCH_S390 \
-		--enable-OMR_ENV_DATA64 \
-		--enable-OMR_GC_COMPRESSED_POINTERS \
-		--enable-OMR_INTERP_COMPRESSED_OBJECT_HEADER \
-		--enable-OMR_INTERP_SMALL_MONITOR_SLOT \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS
-endif
-
 ifeq (linux_390-64_cmprssptrs, $(SPEC))
 	CONFIGURE_ARGS += \
 		--enable-OMRTHREAD_LIB_UNIX \
 		--enable-OMR_ARCH_S390 \
 		--enable-OMR_ENV_DATA64 \
-		--enable-OMR_GC_COMPRESSED_POINTERS \
+		--enable-OMR_GC_DOUBLE_MAP_ARRAYLETS \
 		--enable-OMR_GC_CONCURRENT_SCAVENGER \
-		--enable-OMR_INTERP_COMPRESSED_OBJECT_HEADER \
-		--enable-OMR_INTERP_SMALL_MONITOR_SLOT \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS
-endif
-
-ifeq (linux_390-64_cmprssptrs_purec, $(SPEC))
-	CONFIGURE_ARGS += \
-		--enable-OMRTHREAD_LIB_UNIX \
-		--enable-OMR_ARCH_S390 \
-		--enable-OMR_ENV_DATA64 \
-		--enable-OMR_GC_COMPRESSED_POINTERS \
-		--enable-OMR_INTERP_COMPRESSED_OBJECT_HEADER \
-		--enable-OMR_INTERP_SMALL_MONITOR_SLOT \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS
-endif
-
-ifeq (linux_390-64_codecov, $(SPEC))
-	CONFIGURE_ARGS += \
-		--enable-OMRTHREAD_LIB_UNIX \
-		--enable-OMR_ARCH_S390 \
-		--enable-OMR_ENV_DATA64 \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS
+		--enable-OMR_GC_IDLE_HEAP_MANAGER \
+		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS \
+		OMR_GC_POINTER_MODE=compressed
 endif
 
 ifeq (linux_390-64, $(SPEC))
@@ -79,49 +49,44 @@ ifeq (linux_390-64, $(SPEC))
 		--enable-OMRTHREAD_LIB_UNIX \
 		--enable-OMR_ARCH_S390 \
 		--enable-OMR_ENV_DATA64 \
+		--enable-OMR_GC_DOUBLE_MAP_ARRAYLETS \
 		--enable-OMR_GC_CONCURRENT_SCAVENGER \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS
-endif
-
-ifeq (linux_390-64_purec, $(SPEC))
-	CONFIGURE_ARGS += \
-		--enable-OMRTHREAD_LIB_UNIX \
-		--enable-OMR_ARCH_S390 \
-		--enable-OMR_ENV_DATA64 \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS
+		--enable-OMR_GC_IDLE_HEAP_MANAGER \
+		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS \
+		OMR_GC_POINTER_MODE=full
 endif
 
 ifeq (linux_390, $(SPEC))
 	CONFIGURE_ARGS += \
 		--enable-OMRTHREAD_LIB_UNIX \
 		--enable-OMR_ARCH_S390 \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS
-endif
-
-ifeq (linux_390_purec, $(SPEC))
-	CONFIGURE_ARGS += \
-		--enable-OMRTHREAD_LIB_UNIX \
-		--enable-OMR_ARCH_S390 \
-		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS
+		--enable-OMR_PORT_CAN_RESERVE_SPECIFIC_ADDRESS \
+		OMR_GC_POINTER_MODE=full
 endif
 
 CONFIGURE_ARGS += libprefix=lib exeext= solibext=.so arlibext=.a objext=.o
 
+ifeq (default,$(origin CC))
+	CC = gcc
+endif
 ifeq (default,$(origin CXX))
-	CXX=$(CC)
+	CXX = g++
 endif
 
+CONFIGURE_ARGS += 'AR=$(AR)'
 CONFIGURE_ARGS += 'AS=$(AS)'
 CONFIGURE_ARGS += 'CC=$(CC)'
+CONFIGURE_ARGS += 'CCLINKEXE=$(CC)'
+CONFIGURE_ARGS += 'CCLINKSHARED=$(CC)'
 CONFIGURE_ARGS += 'CXX=$(CXX)'
-CONFIGURE_ARGS += 'CCLINKEXE=$$(CC)'
-CONFIGURE_ARGS += 'CCLINKSHARED=gcc'
-CONFIGURE_ARGS += 'CXXLINKEXE=c++'
-CONFIGURE_ARGS += 'CXXLINKSHARED=c++'
-CONFIGURE_ARGS += 'AR=$(AR)'
+CONFIGURE_ARGS += 'CXXLINKEXE=$(CXX)'
+CONFIGURE_ARGS += 'CXXLINKSHARED=$(CXX)'
 CONFIGURE_ARGS += 'RM=$(RM)'
 
 CONFIGURE_ARGS += 'OMR_HOST_OS=linux'
 CONFIGURE_ARGS += 'OMR_HOST_ARCH=s390'
 CONFIGURE_ARGS += 'OMR_TARGET_DATASIZE=$(TEMP_TARGET_DATASIZE)'
 CONFIGURE_ARGS += 'OMR_TOOLCHAIN=gcc'
+
+CONFIGURE_ARGS+= 'GLOBAL_CFLAGS=-fstack-protector'
+CONFIGURE_ARGS+= 'GLOBAL_CXXFLAGS=-fstack-protector'

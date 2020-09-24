@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2017, 2018 IBM Corp. and others
+ * Copyright (c) 2017, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -28,19 +28,67 @@
 #include "shcdatatypes.h"
 #include "srphashtable_api.h"
 #include "stackwalk.h"
+#include "ComparingCursor.hpp"
+#include "ComparingCursorHelper.hpp"
 #include "ddrhelp.h"
 
 #define VM_DdrDebugLink(type) DdrDebugLink(vm, type)
 
+VM_DdrDebugLink(CacheletHints)
 VM_DdrDebugLink(CacheletWrapper)
 VM_DdrDebugLink(CharArrayWrapper)
+VM_DdrDebugLink(ComparingCursor)
+VM_DdrDebugLink(ComparingCursorHelper)
+
+const void *
+DDR_ComparingCursorHelper(ComparingCursorHelper * helper)
+{
+	return helper->getBaseAddress();
+}
+
 VM_DdrDebugLink(J9DbgROMClassBuilder)
 VM_DdrDebugLink(J9DbgStringInternTable)
-VM_DdrDebugLink(J9JITFrame)
+VM_DdrDebugLink(J9IndexableObject)
+VM_DdrDebugLink(J9IndexableObjectContiguous)
+VM_DdrDebugLink(J9IndexableObjectContiguousCompressed)
+VM_DdrDebugLink(J9IndexableObjectContiguousFull)
+VM_DdrDebugLink(J9IndexableObjectDiscontiguous)
+VM_DdrDebugLink(J9IndexableObjectDiscontiguousCompressed)
+VM_DdrDebugLink(J9IndexableObjectDiscontiguousFull)
 VM_DdrDebugLink(J9JITDataCacheHeader)
+VM_DdrDebugLink(J9JITFrame)
 VM_DdrDebugLink(J9JITHashTable)
 VM_DdrDebugLink(J9JITStackAtlas)
+VM_DdrDebugLink(J9Object)
+VM_DdrDebugLink(J9ObjectCompressed)
+VM_DdrDebugLink(J9ObjectFull)
 VM_DdrDebugLink(J9OSRFrame)
+VM_DdrDebugLink(J9RAMMethodRef)
 VM_DdrDebugLink(J9RASdumpQueue)
 VM_DdrDebugLink(J9ROMClassTOCEntry)
+VM_DdrDebugLink(J9ROMConstantDynamicRef)
+VM_DdrDebugLink(J9SFStackFrame)
 VM_DdrDebugLink(J9SRPHashTable)
+VM_DdrDebugLink(J9VMPopFramesInterruptEvent)
+
+VM_DdrDebugLink(_jbooleanArray)
+VM_DdrDebugLink(_jbyteArray)
+VM_DdrDebugLink(_jcharArray)
+VM_DdrDebugLink(_jclass)
+VM_DdrDebugLink(_jdoubleArray)
+VM_DdrDebugLink(_jfloatArray)
+VM_DdrDebugLink(_jintArray)
+VM_DdrDebugLink(_jlongArray)
+VM_DdrDebugLink(_jobjectArray)
+VM_DdrDebugLink(_jshortArray)
+VM_DdrDebugLink(_jstring)
+VM_DdrDebugLink(_jthrowable)
+VM_DdrDebugLink(_jweak)
+
+/*
+ * All builds now validate that DTFJ code is compatible with generating pointer
+ * classes dynamically. This will mark core files accordingly.
+ *
+ * @ddr_namespace: map_to_type=DDRAlgorithmVersions
+ */
+#define J9DDR_GENERATE_VERSION 1

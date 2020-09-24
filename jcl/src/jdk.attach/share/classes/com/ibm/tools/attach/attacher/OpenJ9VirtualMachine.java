@@ -1,8 +1,6 @@
-/*[INCLUDE-IF Sidecar16]*/
-package com.ibm.tools.attach.attacher;
-
+/*[INCLUDE-IF Sidecar18-SE]*/
 /*******************************************************************************
- * Copyright (c) 2009, 2017 IBM Corp. and others
+ * Copyright (c) 2009, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -23,40 +21,51 @@ package com.ibm.tools.attach.attacher;
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
 
+package com.ibm.tools.attach.attacher;
+
+import static com.ibm.oti.util.Msg.getString;
+
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.nio.charset.StandardCharsets;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
+import java.security.PrivilegedActionException;
+import java.security.PrivilegedExceptionAction;
 import java.util.List;
 import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import openj9.internal.tools.attach.target.AttachHandler;
+import openj9.internal.tools.attach.target.AttachmentConnection;
+import openj9.internal.tools.attach.target.Command;
+import openj9.internal.tools.attach.target.CommonDirectory;
+import openj9.internal.tools.attach.target.DiagnosticProperties;
+import openj9.internal.tools.attach.target.DiagnosticUtils;
+import openj9.internal.tools.attach.target.FileLock;
+import openj9.internal.tools.attach.target.IPC;
+import openj9.internal.tools.attach.target.Reply;
+import openj9.internal.tools.attach.target.Response;
+import openj9.internal.tools.attach.target.TargetDirectory;
+import com.sun.tools.attach.AgentInitializationException;
+import com.sun.tools.attach.AgentLoadException;
+import com.sun.tools.attach.AttachNotSupportedException;
+import com.sun.tools.attach.AttachOperationFailedException;
 import com.sun.tools.attach.VirtualMachine;
 import com.sun.tools.attach.VirtualMachineDescriptor;
 import com.sun.tools.attach.spi.AttachProvider;
-import com.ibm.tools.attach.target.AttachHandler;
-import com.ibm.tools.attach.target.AttachmentConnection;
-import com.ibm.tools.attach.target.Command;
-import com.ibm.tools.attach.target.CommonDirectory;
-import com.ibm.tools.attach.target.FileLock;
-import com.ibm.tools.attach.target.IPC;
-import com.ibm.tools.attach.target.Reply;
-import com.ibm.tools.attach.target.Response;
-import com.ibm.tools.attach.target.TargetDirectory;
-import com.sun.tools.attach.AttachOperationFailedException;
-import com.sun.tools.attach.AttachNotSupportedException;
-import com.sun.tools.attach.AgentInitializationException;
-import com.sun.tools.attach.AgentLoadException;
-
-import static com.ibm.oti.util.Msg.getString;
 
 /**
  * Handles the initiator end of an attachment to a target VM
  * 
  */
-final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
+public final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
 
 	/* 
 	 * The expected string is "ATTACH_CONNECTED <32 bit hexadecimal key>". 
@@ -64,15 +73,12 @@ final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
 	 * Allow enough for ~100 40-character lines.
 	 */
 	private static final int ATTACH_CONNECTED_MESSAGE_LENGTH_LIMIT = 4000;
-	/*[PR Jazz 35291 Remove socket timeout after attachment established]*/
-	static final String COM_IBM_TOOLS_ATTACH_TIMEOUT = "com.ibm.tools.attach.timeout"; //$NON-NLS-1$
-	static final String COM_IBM_TOOLS_COMMAND_TIMEOUT = "com.ibm.tools.attach.command_timeout"; //$NON-NLS-1$
 	/* The units for timeouts are milliseconds, Set to 0 for no timeout. */	
 	private static final int DEFAULT_ATTACH_TIMEOUT = 120000;	/* should be ~2* the TCP timeout, i.e. /proc/sys/net/ipv4/tcp_fin_timeout on Linux */
 	private static final int DEFAULT_COMMAND_TIMEOUT = 0;
 
-	private static int MAXIMUM_ATTACH_TIMEOUT = Integer.getInteger(COM_IBM_TOOLS_ATTACH_TIMEOUT, DEFAULT_ATTACH_TIMEOUT).intValue();
-	private static int COMMAND_TIMEOUT = Integer.getInteger(COM_IBM_TOOLS_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT).intValue();
+	private static int MAXIMUM_ATTACH_TIMEOUT;
+	private static int COMMAND_TIMEOUT;
 	
 	private static final String INSTRUMENT_LIBRARY = "instrument"; //$NON-NLS-1$
 	private OutputStream commandStream;
@@ -85,6 +91,15 @@ final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
 	private FileLock[] targetLocks;
 	private ServerSocket targetServer;
 	private Socket targetSocket;
+	
+	static {
+		PrivilegedAction<Object> action = () -> {
+			MAXIMUM_ATTACH_TIMEOUT = Integer.getInteger("com.ibm.tools.attach.timeout", DEFAULT_ATTACH_TIMEOUT).intValue(); //$NON-NLS-1$
+			COMMAND_TIMEOUT = Integer.getInteger("com.ibm.tools.attach.command_timeout", DEFAULT_COMMAND_TIMEOUT).intValue(); //$NON-NLS-1$
+			return null;
+		};
+		AccessController.doPrivileged(action);
+	}
 
 	/**
 	 * @param provider
@@ -92,7 +107,6 @@ final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
 	 * @param id
 	 *            identifier for the VM
 	 */
-	@SuppressWarnings("unused")
 	OpenJ9VirtualMachine(AttachProvider provider, String id)
 			throws NullPointerException {
 		super(provider, id);
@@ -100,7 +114,6 @@ final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
 			/*[MSG "K0554", "Virtual machine ID or display name is null"]*/
 			throw new NullPointerException(getString("K0554")); //$NON-NLS-1$
 		}
-		new IPC();
 		this.targetId = id;
 		this.myProvider = (OpenJ9AttachProvider) provider;
 		this.descriptor = (OpenJ9VirtualMachineDescriptor) myProvider.getDescriptor(id);
@@ -113,9 +126,29 @@ final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
 	 *             if the descriptor is null the target does not respond.
 	 */
 	void attachTarget() throws IOException, AttachNotSupportedException {
+		PrivilegedExceptionAction<Object> action = () -> {attachTargetImpl(); return null;};
+		try {
+			AccessController.doPrivileged(action);
+		} catch (PrivilegedActionException e) {
+			Throwable cause = e.getCause();
+			if (cause instanceof AttachNotSupportedException) {
+				throw (AttachNotSupportedException) cause;
+			} else if (cause instanceof IOException) {
+				throw (IOException) cause;
+			} else if (cause instanceof RuntimeException) {
+				throw (RuntimeException) cause;
+			} else if (cause instanceof Error) {
+				throw (Error) cause;
+			} else {
+				throw new RuntimeException(cause);
+			}
+		}
+	}
+
+	private void attachTargetImpl() throws AttachNotSupportedException, IOException {
 		if (null == descriptor) {
-			/*[MSG "K0531", "target not found"]*/
-			throw new AttachNotSupportedException(getString("K0531")); //$NON-NLS-1$
+			/*[MSG "K0531", "target {0} not found"]*/
+			throw new AttachNotSupportedException(getString("K0531", targetId)); //$NON-NLS-1$
 		}
 		AttachNotSupportedException lastException = null;
 		/*[PR CMVC 182802 ]*/
@@ -267,6 +300,19 @@ final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
 		parseResponse(response);
 	}
 
+	/**
+	 * Execute a diagnostic command on a target VM.
+	 * 
+	 * @param diagnosticCommand name of command to execute
+	 * @return properties object containing serialized result
+	 * @throws IOException in case of a communication error
+	 */
+	public Properties executeDiagnosticCommand(String diagnosticCommand) throws IOException {
+		IPC.logMessage("enter executeDiagnosticCommand ", diagnosticCommand); //$NON-NLS-1$
+		AttachmentConnection.streamSend(commandStream, Command.ATTACH_DIAGNOSTICS_PREFIX + diagnosticCommand);
+		return IPC.receiveProperties(responseStream, true);
+	}
+
 	private void lockAllAttachNotificationSyncFiles(
 			List<VirtualMachineDescriptor> vmds) {
 
@@ -305,7 +351,6 @@ final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
 		}
 	}
 
-	@SuppressWarnings("boxing")
 	private static boolean parseResponse(String response) throws IOException,
 			AgentInitializationException, AgentLoadException, IllegalArgumentException
 			, AttachOperationFailedException 
@@ -326,7 +371,7 @@ final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
 				if (null == status) {
 					throw new AgentInitializationException(trimmedResponse);
 				} else {
-					throw new AgentInitializationException(trimmedResponse, status);
+					throw new AgentInitializationException(trimmedResponse, status.intValue());
 				}
 			} else if (response.contains(EXCEPTION_AGENT_LOAD_EXCEPTION)) {
 				throw new AgentLoadException(trimmedResponse);
@@ -349,26 +394,26 @@ final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
 	}
 
 	/**
-	 * parse the status value from the end of the response string: this will be a numeric string at the end of the string.
+	 * parse the status value from the end of the response string: this will be a
+	 * numeric string at the end of the string.
+	 * 
 	 * @param response
-	 * @return Integer value of status, or null if the string does not end in a number
+	 * @return Integer value of status, or null if the string does not end in a
+	 *         number
 	 */
-	@SuppressWarnings("boxing")
 	private static Integer getStatusValue(String response) {
-		Pattern rvPattern = Pattern.compile("(-?\\d+)\\s*$");  //$NON-NLS-1$
+		Pattern rvPattern = Pattern.compile("(-?\\d+)\\s*$"); //$NON-NLS-1$
 		Matcher rvMatcher = rvPattern.matcher(response);
+		Integer ret = null;
 		if (rvMatcher.find()) {
 			String status = rvMatcher.group(1);
 			try {
-				int statusValue = Integer.parseInt(status);
-				return statusValue;
+				ret = Integer.valueOf(status);
 			} catch (NumberFormatException e) {
 				IPC.logMessage("Error parsing response", response); //$NON-NLS-1$
-				return null;
 			}
-		} else {
-			return null;
 		}
+		return ret;
 	}
 
 
@@ -390,7 +435,7 @@ final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
 
 				targetServer = new ServerSocket(0); /* select a free port */
 				portNumber = Integer.valueOf(targetServer.getLocalPort());
-				String key = Integer.toHexString((IPC.getRandomNumber()));
+				String key = IPC.getRandomString();
 				replyFile = new Reply(portNumber, key, TargetDirectory.getTargetDirectoryPath(descriptor.id()), descriptor.getUid());
 				try {
 					replyFile.writeReply();
@@ -421,7 +466,7 @@ final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
 				} else {
 					lockAllAttachNotificationSyncFiles(vmds);
 					numberOfTargets = CommonDirectory.countTargetDirectories();
-					int status = CommonDirectory.notifyVm(numberOfTargets);
+					int status = CommonDirectory.notifyVm(numberOfTargets, descriptor.isGlobalSemaphore());
 					/*[MSG "K0532", "status={0}"]*/
 					if ((IPC.JNI_OK != status)
 							&& (CommonDirectory.J9PORT_INFO_SHSEM_OPENED_STALE != status)) {
@@ -461,7 +506,7 @@ final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
 				}
 				if (numberOfTargets > 0) { /*[PR 48044] if number of targets is 0, then the VM is attaching to itself  and the semaphore was not involved */
 					unlockAllAttachNotificationSyncFiles();
-					CommonDirectory.cancelNotify(numberOfTargets);
+					CommonDirectory.cancelNotify(numberOfTargets, descriptor.isGlobalSemaphore());
 
 					if (numberOfTargets > 2) {
 						try {
@@ -547,6 +592,60 @@ final class OpenJ9VirtualMachine extends VirtualMachine implements Response {
 		}
 		return result;
 
+	}
+	
+	/**
+	 * Generate a text description of a target JVM's heap, including the number and
+	 * sizes of instances of each class.
+	 * 
+	 * @param opts
+	 *            String options: "-live" for live object only, or "-all" for all
+	 *            objects. Default is "live".
+	 * @return byte stream containing the UTF-8 text of the formatted output
+	 */
+	public InputStream heapHisto(Object... opts) {
+		InputStream ret = null;
+		PrivilegedExceptionAction<InputStream> action = () -> heapHistoImpl(opts);
+		try {
+			ret = AccessController.doPrivileged(action);
+		} catch (PrivilegedActionException e) {
+			Throwable cause = e.getCause();
+			if (cause instanceof RuntimeException) {
+				throw (RuntimeException) cause;
+			} else if (cause instanceof Error) {
+				throw (Error) cause;
+			} else {
+				throw new RuntimeException(cause);
+			}
+		}
+		return ret;
+	}
+
+	private InputStream heapHistoImpl(Object... opts) {
+		String responseString = null;
+		IPC.logMessage("heapHisto called"); //$NON-NLS-1$
+		boolean live = true;
+		for (Object opt : opts) {
+			IPC.logMessage("heapHisto option: ", opt.toString()); //$NON-NLS-1$
+			if ("-live".equals(opt)) { //$NON-NLS-1$
+				live = true;
+			} else if ("-all".equals(opt)) { //$NON-NLS-1$
+				live = false;
+			} else {
+				responseString = "unrecognized option: " + opt.toString(); //$NON-NLS-1$
+			}
+		}
+		if (null == responseString) {
+			String cmd = DiagnosticUtils.makeHeapHistoCommand(live);
+			try {
+				DiagnosticProperties props = new DiagnosticProperties(executeDiagnosticCommand(cmd));
+				responseString = props.printStringResult();
+			} catch (IOException e) {
+				responseString = "Error executing heapHisto command: " + e.toString(); //$NON-NLS-1$
+			}
+		}
+		IPC.logMessage("heapHisto result: ", responseString); //$NON-NLS-1$
+		return new ByteArrayInputStream(responseString.getBytes(StandardCharsets.UTF_8));
 	}
 
 	/**

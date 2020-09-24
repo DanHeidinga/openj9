@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2017 IBM Corp. and others
+ * Copyright (c) 2001, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -84,13 +84,17 @@ public:
 		// Local variable data SRP to UTF8 data
 		LOCAL_VARIABLE_DATA_SRP_TO_UTF8,
 		// SRP to intermediate class data
-		SRP_TO_INTERMEDIATE_CLASS_DATA
+		SRP_TO_INTERMEDIATE_CLASS_DATA,
+		// SRP to UTF8 string for class names
+		SRP_TO_UTF8_CLASS_NAME,
+		// Class File Size
+		CLASS_FILE_SIZE
 	};
 
 	/* 
 	 * Mode is used to indicate the transition from one cursor type 
 	 * to another.  This feature was specifically added to enable
-	 * the comparision of ROMClass that had debug information out of line.
+	 * the comparison of ROMClass that had debug information out of line.
 	 * 
 	 * This was required to support the ComparingCursor and ComparingCursorHelper model.
 	 */
@@ -107,7 +111,9 @@ public:
 		_srpOffsetTable(srpOffsetTable),
 		_count(0),
 		_tag(tag),
-		_context(context)
+		_context(context),
+		/* assign -1 to be able to check if it was initialized or not */
+		_classNameIndex((U_16)-1)
 	{
 	}
 
@@ -160,6 +166,8 @@ public:
 	void writeBigEndianU16(U_16 u16Value, DataType dataType) { writeU16(u16Value, dataType); }
 #endif
 
+	U_16 getClassNameIndex(void){ return _classNameIndex; }
+	void setClassNameIndex(U_16 classNameIndex){ _classNameIndex = classNameIndex; }
 	bool isSRPNull(UDATA srpKey) { return !_srpOffsetTable->isNotNull(srpKey); }
 	J9SRP computeSRP(UDATA key, J9SRP *srpAddr) { return _srpOffsetTable->computeSRP(key, srpAddr); }
 	J9WSRP computeWSRP(UDATA key, J9WSRP *wsrpAddr) { return _srpOffsetTable->computeWSRP(key, wsrpAddr); }
@@ -183,6 +191,7 @@ private:
 
 	SRPOffsetTable *_srpOffsetTable;
 	UDATA _tag;
+	U_16 _classNameIndex;
 };
 
 #endif /* CURSOR_HPP_ */

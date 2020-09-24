@@ -1,0 +1,1480 @@
+!! Copyright (c) 2000, 2020 IBM Corp. and others
+!!
+!! This program and the accompanying materials are made available under
+!! the terms of the Eclipse Public License 2.0 which accompanies this
+!! distribution and is available at https://www.eclipse.org/legal/epl-2.0/
+!! or the Apache License, Version 2.0 which accompanies this distribution and
+!! is available at https://www.apache.org/licenses/LICENSE-2.0.
+!!
+!! This Source Code may also be made available under the following
+!! Secondary Licenses when the conditions for such availability set
+!! forth in the Eclipse Public License, v. 2.0 are satisfied: GNU
+!! General Public License, version 2 with the GNU Classpath
+!! Exception [1] and GNU General Public License, version 2 with the
+!! OpenJDK Assembly Exception [2].
+!!
+!! [1] https://www.gnu.org/software/classpath/license.html
+!! [2] http://openjdk.java.net/legal/assembly-exception.html
+!!
+!! SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
+
+#include "j9cfg.h"
+#include "jilconsts.inc"
+#include "p/runtime/ppcasmdefines.inc"
+!	.file "J9PPCArrayTranslate.s"
+
+#ifdef AIXPPC
+        .globl    .__arrayTranslateTRTO
+        .globl    __arrayTranslateTRTO{DS}
+        .globl    .__arrayTranslateTRTO255
+        .globl    __arrayTranslateTRTO255{DS}
+        .globl    .__arrayTranslateTROT255
+        .globl    __arrayTranslateTROT255{DS}
+        .globl    .__arrayTranslateTROT
+        .globl    __arrayTranslateTROT{DS}
+
+#elif defined(LINUXPPC64)
+        .globl    FUNC_LABEL(__arrayTranslateTRTO)
+        .type     FUNC_LABEL(__arrayTranslateTRTO),@function
+        .globl    FUNC_LABEL(__arrayTranslateTRTO255)
+        .type     FUNC_LABEL(__arrayTranslateTRTO255),@function
+        .globl    FUNC_LABEL(__arrayTranslateTROT255)
+        .type     FUNC_LABEL(__arrayTranslateTROT255),@function
+        .globl    FUNC_LABEL(__arrayTranslateTROT)
+        .type     FUNC_LABEL(__arrayTranslateTROT),@function
+
+#elif defined(LINUX) || defined(NEUTRINO)
+	.globl    __arrayTranslateTRTO
+	.globl    __arrayTranslateTRTO255
+	.globl    __arrayTranslateTROT255
+	.globl    __arrayTranslateTROT
+#endif
+
+#ifdef AIXPPC
+! .text section
+    	.align	5
+	.csect    ArrayCopy_TEXT{PR}
+#elif defined(LINUXPPC64)
+	.section  ".text"
+    	.align	5
+#else
+    	.align	5
+#endif
+
+!----------------------------------------------------------------------
+!  Toggles which alignment method to be used for both
+!  arrayTranslateTRTO255 and arrayTranslateTROT255
+#define NOALIGNLOOP
+!----------------------------------------------------------------------
+
+!----------------------------------------------------------------------
+! entry arrayTranslateTRTO
+!----------------------------------------------------------------------
+!  Since we know we have a simple table with maximum valid character 'max', the
+!  conversion process can be implemented as follows:
+!
+!    uint16 input[];
+!    uint8  output[];
+!    int len;
+!    uint16 max; // Valid range 0x0000-0xffff
+!
+!    int i = 0;
+!    while (i  < len) {
+!        uint16 ch = input[i];
+!        if (ch > max) break;
+!        output[i] = ch & 0xff;
+!        i++;
+!    }
+!    return i - 1;
+
+#ifdef AIXPPC
+.__arrayTranslateTRTO:
+	.function .__arrayTranslateTRTO,startproc.__arrayTranslateTRTO,16,0,(endproc.__arrayTranslateTRTO-startproc.__arrayTranslateTRTO)
+        .machine "push"
+        .machine "pwr7"
+#elif defined(LINUXPPC64)
+FUNC_LABEL(__arrayTranslateTRTO):
+#else
+__arrayTranslateTRTO:
+#endif
+
+#if !defined(__LITTLE_ENDIAN__)
+  #define FIRST_CHAR_SHIFT 16
+  #define SECOND_CHAR_SHIFT 0
+#else
+  #define FIRST_CHAR_SHIFT 0
+  #define SECOND_CHAR_SHIFT 16
+#endif
+
+!----------------------------------------------------------------------
+! input:
+! r3 = input ptr
+! r4 = output ptr
+! r5 = num_elements
+! r8 = terminal character 0xff80ff80 (ASCII) or 0xff00ff00 (ISO8859)
+! output:
+! r3 = number_elements_processed
+! r4 = output ptr
+! clobbered: r5-r7, r11, vr0-vr4, cr0
+    	startproc.__arrayTranslateTRTO:
+
+        staddr          r4, -ALen(J9SP)                 ! preserve start of output buffer for later
+
+#if defined(TR_TARGET_64BIT)
+		clrldi r8, r8, 32			! 64bit mask out upper 32bits.
+#endif
+
+#ifdef ALIGNLOOP
+! Alignment loop, aligns input ptr to 16 bytes
+        cmpi            cr0, 0, r5, 8
+        blt-            cr0, .L.__alignResidue_TRTO
+.L.__alignLoop_TRTO:
+        andi.           r6, r3, 0xf
+        beq             cr0, .L.__main_TRTO            ! if clear, we are aligned
+        lhz             r6, 0(r3)
+        andi.           r7, r6, 0xff00
+        bne-            cr0, .L.__done_TRTO            ! element has bits in 0xff00, we are done
+        stb             r6, 0(r4)
+        addi            r3, r3, 2
+        addi            r4, r4, 1
+        addi            r5, r5, -1
+        cmpli           cr0, 0, r5, 0
+        bne             cr0, .L.__alignLoop_TRTO
+        b               .L.__done_TRTO
+#else
+
+        cmpli           cr0, 0, r5, 23                  ! if we have less than 23 elements, go straight to residue
+        blt             cr0, .L.__alignResidue_TRTO       ! since vector loop needs >= 16 and this decision tree needs >= 7
+
+        andi.           r6, r3, 0x2                     ! if set, input alignment is one of 2, 6, 10, 14
+        beq             cr0, .L.__test4_TRTO
+        lhz             r6, 0(r3)
+        and.           	r7, r6, r8
+        bne-            cr0, .L.__done_TRTO
+        stb             r6, 0(r4)
+        addi            r3, r3, 2                       ! input alignment is now one of 4, 8, 12, 16
+        addi            r4, r4, 1
+        addi            r5, r5, -1
+.L.__test4_TRTO:
+        andi.           r6, r3, 0x4                     ! if set, input alignment is one of 4, 12
+        beq             cr0, .L.__test8_TRTO
+        
+        lwz             r6, 0(r3)
+        rlwinm          r7, r6, FIRST_CHAR_SHIFT, 16, 31   ! get first char from word
+        and.            r11, r7, r8
+        bne-            cr0, .L.__done_TRTO
+        stb             r7, 0(r4)
+        addi            r4, r4, 1
+        rlwinm          r6, r6, SECOND_CHAR_SHIFT, 16, 31  ! get second char from word
+        and.            r11, r6, r8   
+        bne-            cr0, .L.__done_TRTO
+        stb             r6, 0(r4)
+        addi            r4, r4, 1
+        
+        addi            r3, r3, 4                       ! input alignment is now one of 8, 16
+        addi            r5, r5, -2
+.L.__test8_TRTO:
+        andi.           r6, r3, 0x8                     ! if set, input alignment is 8
+        beq             cr0, .L.__main_TRTO
+        
+        lwz             r6, 0(r3)
+        rlwinm          r7, r6, FIRST_CHAR_SHIFT, 16, 31   ! get 1st char from word
+        and.            r11, r7, r8
+        bne-            cr0, .L.__done_TRTO
+        stb             r7, 0(r4)
+        addi            r4, r4, 1
+        rlwinm          r6, r6, SECOND_CHAR_SHIFT, 16, 31  ! get 2nd char from word
+        and.            r11, r6, r8   
+        bne-            cr0, .L.__done_TRTO
+        stb             r6, 0(r4)
+        addi            r4, r4, 1
+           
+        lwz             r6, 4(r3)
+        rlwinm          r7, r6, FIRST_CHAR_SHIFT, 16, 31   ! get 1st char from 2nd word
+        and.            r11, r7, r8
+        bne-            cr0, .L.__done_TRTO
+        stb             r7, 0(r4)
+        addi            r4, r4, 1
+        rlwinm          r6, r6, SECOND_CHAR_SHIFT, 16, 31  ! get 2nd char from 2nd word
+        and.            r11, r6, r8   
+        bne-            cr0, .L.__done_TRTO
+        stb             r6, 0(r4)
+        addi            r4, r4, 1
+
+        addi            r3, r3, 8                       ! input alignment is now 16
+        addi            r5, r5, -4
+#endif
+
+.L.__main_TRTO:
+#ifdef ALIGNLOOP
+        rlwinm.         r6, r5, 32-4, 4, 31             ! r6 = num_elements / 16, processed in vector loop
+        beq             cr0, .L.__alignResidue_TRTO       ! if <16 elements, goto residue
+#else
+        rlwinm          r6, r5, 32-4, 4, 31             ! r6 = num_elements / 16, processed in vector loop
+#endif
+
+! Vector loop, 16 elements per iter
+        mtctr           r6
+        rlwinm          r5, r5, 0, 28, 31               ! r5 = num_elements % 16, processed in residue loop
+
+#if !defined(__LITTLE_ENDIAN__)
+        lvsl            vr0, r0, r3                     ! vr0 = 0x000102030405060708090a0b0c0d0e0f, since r3 & 15 == 0
+        vspltisb        vr5, 1                          ! vr1 = 16*{1}
+        vslb            vr1, vr0, vr5                   ! vr1 = 0x00020406080a0c0e10121416181a1c1e = permute control vector upper byte
+        vaddubs		vr5, vr1, vr5			! vr5 - 0x01030507090b0d0f11131417191b1d1f = permute control vector lower byte
+
+        vspltisb        vr0, 4                          ! vr0 = 16*{4}
+       	extrwi		r6, r8, 4, 8			! r6 = 0x8 or 0x0, extract 4 bits starting at position 8 out of 0xff80 or 0xff00
+        lvsl            vr6, 0, r6
+        vspltb		vr6, vr6, 0
+
+        vslb		vr6, vr6, vr0			! vr6 = 16*{0x80} or 16*{0x00}	- Lower byte mask
+        vspltisw        vr0, 0                          ! vr0 = 0			- Upper byte mask
+        li              r6, 16
+        li              r7, 8
+
+.L.__vectorLoop_TRTO:
+        lvx             vr2, r0, r3                     ! load elements 0-7
+        lvx             vr3, r3, r6                     ! load elements 8-15
+        vperm           vr4, vr2, vr3, vr1              ! vr4 now contains high byte of elements 0-15
+        vperm		vr7, vr2, vr3, vr5		! vr7 now contains  low byte of elements 0-15
+       	vand		vr7, vr7, vr6			! vr7 will contain bits of low byte of element masked with 0x00 or 0x80
+        vor vr4, vr4, vr7			! vr4 will be non-zero if any element has bits in 0xff00 or 0xff80
+        vcmpequh_r   vr4, vr4, vr0
+        bge-            cr6, .L.__vectorResidue_TRTO      ! if !cr[lt], i.e. ge, at least one element has bits in 0xff00 or 0xff80, goto residue
+                                                        ! At this point we know all elements are 8 bits long
+        vpkuhus         vr2, vr2, vr3                   ! pack all 16 elements
+#ifdef VSXSTORES
+        ! VSX 8-byte stores perform very poorly on P7
+        xxpermdi        vs35, vs34, vs34, 2             ! swap elements 0-7 with 8-15
+        stxsdx          vs34, r0, r4                    ! store elements 0-7
+        stxsdx          vs35, r4, r7                    ! store elements 8-15
+#else
+        xxlor           vs0, vs34, vs34                 ! move to fp0
+        xxpermdi        vs1, vs34, vs34, 2              ! swap elements 0-7 with 8-15, move to fp1
+        stfdx           fp0, r0, r4                     ! store elements 0-7
+        stfdx           fp1, r4, r7                     ! store elements 8-15
+#endif
+
+#else
+        ! Little Endian path
+        vspltisb        vr1, 0x1f             ! vr1 = 16*{0xff}               - Upper byte mask
+
+        vspltisb        vr4, 4              ! vr4 = 16*{4}
+       	extrwi		r6, r8, 4, 8			! r6 = 0x8 or 0x0, extract 4 bits starting at position 8 out of 0xff80 or 0xff00
+        lvsl            vr5, r0, r6
+        vspltb		vr5, vr5, 0
+        vslb		vr5, vr5, vr4			! vr5 = 16*{0x80} or 16*{0x00}	- Lower byte mask
+
+        vmrghb      vr1, vr1, vr5           ! vr1 = 8*{0xff80} or 8*{0xff00} - Halfword mask
+        vandc       vr0, vr0, vr0           ! vr0 = 16*{0}
+        vspltisw        vr6, 0x10            ! vr6 = 4*{-16} - this is used to shift by 16 bits later
+        li              r6, 16
+        li              r7, 8
+
+.L.__vectorLoop_TRTO:
+        lxvw4x             vs34, r0, r3                     ! load elements 0-7
+        lxvw4x             vs35, r3, r6                     ! load elements 8-15
+       	vand		vr4, vr2, vr1                     ! check elements 0-7 against the mask
+       	vand		vr5, vr3, vr1                     ! check elements 8-15 against the mask
+        vor vr4, vr4, vr5			! vr4 will be non-zero if any element has bits in 0xff00 or 0xff80
+        vcmpequh_r   vr4, vr4, vr0
+        bge-            cr6, .L.__vectorResidue_TRTO      ! if !cr[lt], i.e. ge, at least one element has bits in 0xff00 or 0xff80, goto residue
+                                                        ! At this point we know all elements are 8 bits long
+        vpkuhus         vr2, vr2, vr3                   ! pack all 16 elements
+        vrlw            vr2, vr2, vr6                   ! fix byte ordering for a little endian store
+        stxvw4x         vs34, r0, r4                     ! store elements 0-15
+
+        ! End Little Endian Path
+#endif
+        addi            r3, r3, 32                      ! bump input ptr
+        addi            r4, r4, 16                      ! bump output ptr
+        bdnz            .L.__vectorLoop_TRTO
+
+! Residue loop, single element per iter
+.L.__vectorResidue_TRTO:
+        mfctr           r6
+        rlwimi.         r5, r6, 4, 0, 27                ! add remaining elements from vector loop to residue loop
+        beq             cr0, .L.__done_TRTO               ! if 0 elements left, we are done
+.L.__alignResidue_TRTO:
+        mtctr           r5
+        addi            r3, r3, -2                      ! adjust so we can use lhzu
+.L.__residueLoop_TRTO:
+        lhzu            r5, 2(r3)
+        and.	        r6, r5, r8
+        bne-            .L.__done_TRTO
+        stb             r5, 0(r4)
+        addi            r4, r4, 1
+        bdnz            .L.__residueLoop_TRTO
+
+.L.__done_TRTO:
+        laddr           r5, -ALen(J9SP)
+        subf            r3, r5, r4                      ! r3 = output_ptr - output_base_ptr = num_elements_processed
+        blr
+
+#ifdef AIXPPC
+        .machine "pop"
+#endif
+    	endproc.__arrayTranslateTRTO:
+
+#ifdef AIXPPC
+.__arrayTranslateTRTO255:
+	.function .__arrayTranslateTRTO255,startproc.__arrayTranslateTRTO255,16,0,(endproc.__arrayTranslateTRTO255-startproc.__arrayTranslateTRTO255)
+        .machine "push"
+        .machine "pwr7"
+#elif defined(LINUXPPC64)
+FUNC_LABEL(__arrayTranslateTRTO255):
+#else
+__arrayTranslateTRTO255:
+#endif
+! input:
+! r3 = input ptr
+! r4 = output ptr
+! r5 = num_elements
+! output:
+! r3 = number_elements_processed
+! clobbered: r4-r6, r11, vr0-vr4, cr0, cr6, fp0-fp1 ifndef VSXSTORES
+    	startproc.__arrayTranslateTRTO255:
+
+#if !defined(__LITTLE_ENDIAN__)
+        staddr          r4, -ALen(J9SP)         ! preserve start of output buffer for later
+
+#ifdef ALIGNLOOP
+! Alignment loop, aligns input ptr to 16 bytes
+        cmpi            cr0, 0, r5, 8
+        blt-            cr0, .L__simple_TRTO255
+.L__alignLoop_TRTO255:
+        andi.           r6, r3, 0xf
+        beq             cr0, .L__main_TRTO255   ! if clear, we are aligned
+        lhz             r6, 0(r3)
+        andi.           r11, r6, 0xff00
+        bne-            cr0, .L__done_TRTO255   ! element has bits in 0xff00, we are done
+        stb             r6, 0(r4)
+        addi            r3, r3, 2
+        addi            r4, r4, 1
+        addi            r5, r5, -1
+        cmpli           cr0, 0, r5, 0
+        bne             cr0, .L__alignLoop_TRTO255
+        b               .L__done_TRTO255
+#else
+        cmpli           cr0, 0, r5, 23          ! if we have less than 23 elements, go straight to residue
+        blt-            cr0, .L__simple_TRTO255   ! since vector loop needs >= 16 and this decision tree needs >= 7
+
+        andi.           r6, r3, 0x2             ! if set, input alignment is one of 2, 6, 10, 14
+        beq             cr0, .L__test4_TRTO255
+        lhz             r6, 0(r3)
+        andi.           r11, r6, 0xff00
+        bne-            cr0, .L__done_TRTO255
+        stb             r6, 0(r4)
+        addi            r3, r3, 2               ! input alignment is now one of 4, 8, 12, 16
+        addi            r4, r4, 1
+        addi            r5, r5, -1
+.L__test4_TRTO255:
+        andi.           r6, r3, 0x4             ! if set, input alignment is one of 4, 12
+        beq             cr0, .L__test8_TRTO255
+        lwz             r6, 0(r3)
+        rlwinm          r6, r6, 16, 0, 31
+        andi.           r11, r6, 0xff00
+        bne-            cr0, .L__done_TRTO255
+        stb             r6, 0(r4)
+        andis.          r11, r6, 0xff00
+        addi            r4, r4, 1
+        bne-            cr0, .L__done_TRTO255
+        rlwinm          r6, r6, 32-16, 16, 31
+        stb             r6, 0(r4)
+        addi            r3, r3, 4               ! input alignment is now one of 8, 16
+        addi            r4, r4, 1
+        addi            r5, r5, -2
+.L__test8_TRTO255:
+        andi.           r6, r3, 0x8             ! if set, input alignment is 8
+        beq             cr0, .L__main_TRTO255
+        lwz             r6, 0(r3)
+        rlwinm          r6, r6, 16, 0, 31
+        andi.           r11, r6, 0xff00
+        bne-            cr0, .L__done_TRTO255
+        stb             r6, 0(r4)
+        andis.          r11, r6, 0xff00
+        addi            r4, r4, 1
+        bne-            cr0, .L__done_TRTO255
+        rlwinm          r6, r6, 32-16, 16, 31
+        stb             r6, 0(r4)
+        lwz             r6, 4(r3)
+        rlwinm          r6, r6, 16, 0, 31
+        andi.           r11, r6, 0xff00
+        addi            r4, r4, 1
+        bne-            cr0, .L__done_TRTO255
+        stb             r6, 0(r4)
+        andis.          r11, r6, 0xff00
+        addi            r4, r4, 1
+        bne-            cr0, .L__done_TRTO255
+        rlwinm          r6, r6, 32-16, 16, 31
+        stb             r6, 0(r4)
+        addi            r3, r3, 8               ! input alignment is now 16
+        addi            r4, r4, 1
+        addi            r5, r5, -4
+#endif
+
+.L__main_TRTO255:
+#ifdef ALIGNLOOP
+        rlwinm.         r6, r5, 32-4, 4, 31     ! r6 = num_elements / 16, processed in vector loop
+        beq             cr0, .L__alignResidue_TRTO255   ! if <16 elements, goto residue
+#else
+        rlwinm          r6, r5, 32-4, 4, 31     ! r6 = num_elements / 16, processed in vector loop
+#endif
+
+! Vector loop, 16 elements per iter
+        mtctr           r6
+        rlwinm          r5, r5, 0, 28, 31       ! r5 = num_elements % 16, processed in residue loop
+        li              r6, 16
+        li              r11, 8
+        lvsl            vr0, r0, r3             ! vr0 = 0x000102030405060708090a0b0c0d0e0f, since r3 & 15 == 0
+        vspltisb        vr1, 1                  ! vr1 = 16*{1}
+        vslb            vr1, vr0, vr1           ! vr1 = 0x00020406080a0c0e10121416181a1c1e = permute control vector
+        vspltisw        vr0, 0                  ! vr0 = 0
+.L__vectorLoop_TRTO255:
+        lvx             vr2, r0, r3             ! load elements 0-7
+        lvx             vr3, r3, r6             ! load elements 8-15
+        vperm           vr4, vr2, vr3, vr1      ! vr4 now contains high byte of elements 0-15
+        vcmpequh_r      vr4, vr4, vr0           ! cmp high bytes against 0, cr6[lt] set if all clear
+        bge-            cr6, .L__vectorResidue_TRTO255  ! if !cr[lt], i.e. ge, at least one element has bits in 0xff00, goto residue
+                                                ! At this point we know all elements are 8 bits long
+        vpkuhus         vr2, vr2, vr3           ! pack all 16 elements
+#ifdef VSXSTORES
+        ! VSX 8-byte stores perform very poorly on P7
+        xxpermdi        vs35, vs34, vs34, 2     ! swap elements 0-7 with 8-15
+        stxsdx          vs34, r0, r4            ! store elements 0-7
+        stxsdx          vs35, r4, r11           ! store elements 8-15
+#else
+        xxlor           vs0, vs34, vs34         ! move to fp0
+        xxpermdi        vs1, vs34, vs34, 2      ! swap elements 0-7 with 8-15, move to fp1
+        stfdx           fp0, r0, r4             ! store elements 0-7
+        stfdx           fp1, r4, r11            ! store elements 8-15
+#endif
+        addi            r3, r3, 32              ! bump input ptr
+        addi            r4, r4, 16              ! bump output ptr
+        bdnz            .L__vectorLoop_TRTO255
+
+! Residue loop, single element per iter
+.L__vectorResidue_TRTO255:
+        mfctr           r6
+        rlwimi          r5, r6, 4, 0, 27        ! add remaining elements from vector loop to residue loop
+.L__simple_TRTO255:
+        cmpi            cr0, 0, r5, 0
+        beq             cr0, .L__done_TRTO255   ! if 0 elements left, we are done
+.L__alignResidue_TRTO255:
+        mtctr           r5
+        addi            r3, r3, -2              ! adjust so we can use lhzu
+.L__residueLoop_TRTO255:
+        lhzu            r5, 2(r3)
+        andi.           r6, r5, 0xff00
+        bne-            .L__done_TRTO255
+        stb             r5, 0(r4)
+        addi            r4, r4, 1
+        bdnz            .L__residueLoop_TRTO255
+
+.L__done_TRTO255:
+        laddr           r5, -ALen(J9SP)
+        subf            r3, r5, r4              ! r3 = output_ptr - output_base_ptr = num_elements_processed
+        blr
+#else
+        ! Don`t need LE support for this
+        trap
+#endif
+#ifdef AIXPPC
+        .machine "pop"
+#endif
+    	endproc.__arrayTranslateTRTO255:
+
+!----------------------------------------------------------------------
+! entry arrayTranslateTROT255
+!----------------------------------------------------------------------
+!  Since we know we have a simple table with maximum valid character max, the
+!  conversion process can be implemented as follows:
+!
+!    uint8   input[];
+!    uint16  output[];
+!    int len;
+!    uint16 max; // Valid range 0x0000-0xffff
+!
+!    int i = 0;
+!    while (i  < len) {
+!        output[i] = input[i] & 0xff;
+!        i++;
+!    }
+!    return i - 1;
+
+#ifdef AIXPPC
+.__arrayTranslateTROT255:
+	.function .__arrayTranslateTROT255,startproc.__arrayTranslateTROT255,16,0,(endproc.__arrayTranslateTROT255-startproc.__arrayTranslateTROT255)
+        .machine "push"
+        .machine "pwr7"
+#elif defined(LINUXPPC64)
+FUNC_LABEL(__arrayTranslateTROT255):
+#else
+__arrayTranslateTROT255:
+#endif
+!----------------------------------------------------------------------
+! input:
+! r3 = input ptr
+! r4 = output ptr
+! r5 = num_elements
+! output:
+! r3 = number_elements_processed
+! r4 = output ptr
+! clobbered: r5-r11, vr0-vr4, cr0
+#if !defined(__LITTLE_ENDIAN__)
+    	startproc.__arrayTranslateTROT255:
+
+#define tempReg1        r7
+#define tempReg2        r8
+#define tempReg3        r9
+#define tempReg4        r10
+#define tempReg5        r11
+
+      staddr          r5, -ALen(J9SP)             ! make a copy of num elements processed
+
+      cmpi            cr0, 0, r5, 16
+      blt             cr0, .L.__simple_TROT255
+
+      lis             tempReg4, 0x00ff
+      ori             tempReg4, tempReg4, 0x00ff
+	  
+      andi.           r6, r3, 0xf                       ! if set, input alignment is at 8 bytes.
+      beq             cr0, .L.__main_TROT255
+
+      !Not 16 byte aligned.
+.L.__test1_TROT255:
+      cmpi            cr0, 0, r5, 1			! are there 1 or more bytes left?
+      blt             cr0, .L.__done_TROT255		! false, done
+      andi.           r6, r3, 0x1                       ! if set, input is aligned at an odd byte.
+      beq	      cr0, .L.__test2_TROT255
+.L.__dotest1_TROT255:
+      lbz             r6, 0(r3)
+      sth             r6, 0(r4)
+      addi            r3, r3, 1
+      addi            r4, r4, 2
+      addi            r5, r5, -1
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT255
+.L.__test2_TROT255:					! aligned at 2 bytes.
+      cmpi            cr0, 0, r5, 2			! are there 2 or more bytes left?
+      blt             cr0, .L.__residue_TROT255		! false, goto residue
+      andi.           r6, r3, 0x3                       ! check if input is aligned at 4 bytes.
+      beq             cr0, .L.__test4_TROT255
+.L.__dotest2_TROT255:
+      lhz             r6, 0(r3)                         ! Suppose R6 = 0x0000cafe
+      insrwi          r6, r6, 16, 8                     ! get R6 = 0x00cafefe
+      and             r6, r6, tempReg4                  ! get R6 = 0x00cafefe & 0x00ff00ff = 0x00ca00fe
+      stw             r6, 0(r4)
+      addi            r3, r3, 2
+      addi            r4, r4, 4
+      addi            r5, r5, -2
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT255
+.L.__test4_TROT255:
+      cmpi            cr0, 0, r5, 4			! are there 4 or more bytes left?
+      blt             cr0, .L.__residue_TROT255	        ! false, goto residue
+      andi.           r6, r3, 0x7                       ! check if input is aligned at 8 bytes.
+      beq             cr0, .L.__test8_TROT255
+.L.__dotest4_TROT255:
+      lhz             r6, 0(r3)                         ! suppose R6 = 0xcafe
+      lhz             tempReg1, 2(r3)                   ! get tempReg1 = 0xbabe rest is same as above.
+      insrwi          r6, r6, 16, 8
+      insrwi          tempReg1, tempReg1, 16, 8
+      and             r6, r6, tempReg4
+      and             tempReg1, tempReg1, tempReg4
+      stw             r6, 0(r4)
+      stw             tempReg1, 4(r4)
+      addi            r3, r3, 4
+      addi            r4, r4, 8
+      addi            r5, r5, -4
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT255
+.L.__test8_TROT255:
+      cmpi            cr0, 0, r5, 8			! are there 8 or more bytes left?
+      blt             cr0, .L.__residue_TROT255		! false, goto residue
+      andi.           r6, r3, 0xf                       ! check if input is aligned at 16 bytes.
+      beq             cr0, .L.__main_TROT255
+.L.__dotest8_TROT255:
+#if defined(TR_TARGET_64BIT)
+     ld              r6, 0(r3)
+     clrldi		  tempReg3, r6, 48					!Clear leftmost 48 bits, leave low 16 bits intact.
+     extrdi          tempReg2, r6, 16, 32
+     extrdi          tempReg1, r6, 16, 16
+     extrdi          r6,       r6, 16, 0
+#else
+     lhz             r6, 0(r3)
+     lhz             tempReg1, 2(r3)
+     lhz             tempReg2, 4(r3)
+     lhz             tempReg3, 6(r3)
+#endif
+      insrwi          r6,       r6, 16, 8
+      insrwi          tempReg1, tempReg1, 16, 8
+      insrwi          tempReg2, tempReg2, 16, 8
+      insrwi          tempReg3, tempReg3, 16, 8
+      and             r6, r6, tempReg4
+      and             tempReg1, tempReg1, tempReg4
+      and             tempReg2, tempReg2, tempReg4
+      and             tempReg3, tempReg3, tempReg4
+      stw             r6, 0(r4)
+      stw             tempReg1, 4(r4)
+      stw             tempReg2, 8(r4)
+      stw             tempReg3, 12(r4)
+
+      addi            r3, r3, 8
+      addi            r4, r4, 16
+      addi            r5, r5, -8
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT255
+
+.L.__main_TROT255:
+	cmpi			cr0, 0, r5, 16					! are there 16 or more bytes left?
+	blt             cr0, .L.__residue_TROT255			! false, goto residue
+
+	rlwinm          r6, r5, 32-4, 4, 31             ! r6 = num_elements / 16, processed in vector loop
+	mtctr           r6
+	rlwinm          r5, r5, 0, 28, 31               ! r5 = num_elements % 16, processed in residue loop
+
+	vandc vr0, vr0, vr0								! vr0 = 0x00000000000000000000000000000000
+	li r7, 0
+	lvsr vr1, 0, r7									! vr1 = 0x101112131415161718191a1b1c1d1e1f
+	vmrghb vr3, vr0, vr1							! vr3 = 0x00100011001200130014001500160017
+
+	li  r7, 8
+	li  r8, 16
+	li  r9, 24
+
+.L.__vectorLoop_TROT255:
+	lfd				fp0, 0(r3)						! load elements 0-7
+	lfd				fp1, 8(r3)						! load elements 8-15
+	xxlor			vs33, vs0, vs0					! move over to VMX registers.
+	xxlor			vs34, vs1, vs1
+	vperm			vr1, vr0, vr1, vr3				! unpack high 8 bytes into 16 bytes.
+	vperm			vr2, vr0, vr2, vr3				! unpack  low 8 bytes into 16 bytes.
+
+	#ifdef VSXSTORES
+		xxlor			vs0, vs33, vs33					! move to fp0
+		xxpermdi		vs1, vs33, vs33, 2				! swap elements 0-7 with 8-15, move to fp1b
+		xxlor			vs2, vs34, vs34					! move to fp2
+		xxpermdi		vs3, vs34, vs34, 2				! swap elements 16-23 with 24-31, move to fp3
+
+		stfdx           fp0,  0, r4                     ! store elements 0-7
+	    stfdx           fp1, r7, r4                     ! store elements 8-15
+		stfdx           fp2, r8, r4                     ! store elements 16-23
+	    stfdx           fp3, r9, r4                     ! store elements 24-31
+	#else
+	    xxlor           vs0, vs33, vs33                 ! move to fp0
+	    xxpermdi        vs1, vs33, vs33, 2              ! swap elements 0-7 with 8-15, move to fp1
+	    xxlor           vs2, vs34, vs34                 ! move to fp2
+	    xxpermdi        vs3, vs34, vs34, 2              ! swap elements 0-7 with 8-15, move to fp3
+
+		stfdx           fp0,  0, r4                     ! store elements 0-7
+	    stfdx           fp1, r7, r4                     ! store elements 8-15
+		stfdx           fp2, r8, r4                     ! store elements 16-23
+	    stfdx           fp3, r9, r4                     ! store elements 24-31
+	#endif
+    addi            r3, r3, 16                      ! bump input ptr
+    addi            r4, r4, 32                      ! bump output ptr
+    bdnz            .L.__vectorLoop_TROT255
+
+.L.__simple_TROT255:
+	cmpi            cr0, 0, r5, 0
+	beq             cr0, .L.__done_TROT255			! exit if done with input
+.L.__residue_TROT255:
+      lbz             r6, 0(r3)
+      sth             r6, 0(r4)
+      addi            r3, r3, 1
+      addi            r4, r4, 2
+      addi            r5, r5, -1
+      cmpi            cr0, 0, r5, 0
+      bne             cr0, .L.__residue_TROT255
+
+.L.__done_TROT255:
+	laddr           r3, -ALen(J9SP)					! Return number of elements processed.
+    blr
+
+#ifdef AIXPPC
+        .machine "pop"
+#endif
+    	endproc.__arrayTranslateTROT255:
+
+#else
+
+    	startproc.__arrayTranslateTROT255:
+
+#define tempReg1        r7
+#define tempReg2        r8
+#define tempReg3        r9
+#define tempReg4        r10
+#define tempReg5        r11
+
+      staddr          r5, -ALen(J9SP)             ! make a copy of num elements processed
+
+      cmpi            cr0, 0, r5, 16
+      blt             cr0, .L.__simple_TROT255
+
+      lis             tempReg4, 0x00ff
+      ori             tempReg4, tempReg4, 0x00ff
+
+      andi.           r6, r3, 0xf                       ! if set, input alignment is at 8 bytes.
+      beq             cr0, .L.__main_TROT255
+
+      !Not 16 byte aligned.
+.L.__test1_TROT255:
+      cmpi            cr0, 0, r5, 1			! are there 1 or more bytes left?
+      blt             cr0, .L.__done_TROT255		! false, done
+      andi.           r6, r3, 0x1                       ! if set, input is aligned at an odd byte.
+      beq	      cr0, .L.__test2_TROT255
+.L.__dotest1_TROT255:
+      lbz             r6, 0(r3)
+      sth             r6, 0(r4)
+      addi            r3, r3, 1
+      addi            r4, r4, 2
+      addi            r5, r5, -1
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT255
+.L.__test2_TROT255:					! aligned at 2 bytes.
+      cmpi            cr0, 0, r5, 2			! are there 2 or more bytes left?
+      blt             cr0, .L.__residue_TROT255		! false, goto residue
+      andi.           r6, r3, 0x3                       ! check if input is aligned at 4 bytes.
+      beq             cr0, .L.__test4_TROT255
+.L.__dotest2_TROT255:
+      lhz             r6, 0(r3)                         ! Suppose R6 = 0x0000cafe
+      insrwi          r6, r6, 16, 8                     ! get R6 = 0x00cafefe
+      and             r6, r6, tempReg4                  ! get R6 = 0x00cafefe & 0x00ff00ff = 0x00ca00fe
+      stw             r6, 0(r4)
+      addi            r3, r3, 2
+      addi            r4, r4, 4
+      addi            r5, r5, -2
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT255
+.L.__test4_TROT255:
+      cmpi            cr0, 0, r5, 4			! are there 4 or more bytes left?
+      blt             cr0, .L.__residue_TROT255	        ! false, goto residue
+      andi.           r6, r3, 0x7                       ! check if input is aligned at 8 bytes.
+      beq             cr0, .L.__test8_TROT255
+.L.__dotest4_TROT255:
+      lhz             r6, 0(r3)                         ! suppose R6 = 0xcafe
+      lhz             tempReg1, 2(r3)                   ! get tempReg1 = 0xbabe rest is same as above.
+      insrwi          r6, r6, 16, 8
+      insrwi          tempReg1, tempReg1, 16, 8
+      and             r6, r6, tempReg4
+      and             tempReg1, tempReg1, tempReg4
+      stw             r6, 0(r4)
+      stw             tempReg1, 4(r4)
+      addi            r3, r3, 4
+      addi            r4, r4, 8
+      addi            r5, r5, -4
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT255
+.L.__test8_TROT255:
+      cmpi            cr0, 0, r5, 8			! are there 8 or more bytes left?
+      blt             cr0, .L.__residue_TROT255		! false, goto residue
+      andi.           r6, r3, 0xf                       ! check if input is aligned at 16 bytes.
+      beq             cr0, .L.__main_TROT255
+.L.__dotest8_TROT255:
+#if defined(TR_TARGET_64BIT)
+     ld              r6, 0(r3)
+     extrdi          tempReg3, r6, 16, 0
+     extrdi          tempReg2, r6, 16, 16
+     extrdi          tempReg1, r6, 16, 32
+     clrldi          r6, r6, 48					!Clear leftmost 48 bits, leave low 16 bits intact.
+#else
+     lhz             r6, 0(r3)
+     lhz             tempReg1, 2(r3)
+     lhz             tempReg2, 4(r3)
+     lhz             tempReg3, 6(r3)
+#endif
+      insrwi          r6,       r6, 16, 8
+      insrwi          tempReg1, tempReg1, 16, 8
+      insrwi          tempReg2, tempReg2, 16, 8
+      insrwi          tempReg3, tempReg3, 16, 8
+      and             r6, r6, tempReg4
+      and             tempReg1, tempReg1, tempReg4
+      and             tempReg2, tempReg2, tempReg4
+      and             tempReg3, tempReg3, tempReg4
+      stw             r6, 0(r4)
+      stw             tempReg1, 4(r4)
+      stw             tempReg2, 8(r4)
+      stw             tempReg3, 12(r4)
+
+      addi            r3, r3, 8
+      addi            r4, r4, 16
+      addi            r5, r5, -8
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT255
+
+.L.__main_TROT255:
+	cmpi			cr0, 0, r5, 16					! are there 16 or more bytes left?
+	blt             cr0, .L.__residue_TROT255			! false, goto residue
+
+	rlwinm          r6, r5, 32-4, 4, 31             ! r6 = num_elements / 16, processed in vector loop
+	mtctr           r6
+	rlwinm          r5, r5, 0, 28, 31               ! r5 = num_elements % 16, processed in residue loop
+
+	vandc vr0, vr0, vr0								! vr0 = 0x00000000000000000000000000000000
+
+	li  r6, 16
+    vspltisw        vr3, 0x10            ! vr6 = 4*{-16} - this is used to shift by 16 bits later
+
+.L.__vectorLoop_TROT255:
+    lxvw4x          vs33, r0, r3
+    vrlw            vr1, vr1, vr3                   ! fix byte ordering for a little endian load
+	vmrghb          vr2, vr0, vr1
+	vmrglb          vr1, vr0, vr1
+
+    stxvw4x         vs34, r0, r4                     ! store elements 0-7
+    stxvw4x         vs33, r4, r6                    ! store elements 8-15
+
+    addi            r3, r3, 16                      ! bump input ptr
+    addi            r4, r4, 32                      ! bump output ptr
+    bdnz            .L.__vectorLoop_TROT255
+
+.L.__simple_TROT255:
+	cmpi            cr0, 0, r5, 0
+	beq             cr0, .L.__done_TROT255			! exit if done with input
+.L.__residue_TROT255:
+      lbz             r6, 0(r3)
+      sth             r6, 0(r4)
+      addi            r3, r3, 1
+      addi            r4, r4, 2
+      addi            r5, r5, -1
+      cmpi            cr0, 0, r5, 0
+      bne             cr0, .L.__residue_TROT255
+
+.L.__done_TROT255:
+	laddr           r3, -ALen(J9SP)					! Return number of elements processed.
+    blr
+
+#ifdef AIXPPC
+        .machine "pop"
+#endif
+    	endproc.__arrayTranslateTROT255:
+
+#endif
+
+
+!----------------------------------------------------------------------
+! entry arrayTranslateTROT
+!----------------------------------------------------------------------
+!  Since we know we have a simple table with maximum valid character 'max', the
+!  conversion process can be implemented as follows:
+!
+!    uint8   input[];
+!    uint16  output[];
+!    int len;
+!    uint16 max; // Valid range 0x0000-0xffff
+!
+!    int i = 0;
+!    while (i  < len) {
+!        if(input[i] < 0) break;
+!        output[i] = input[i] & 0x7f;
+!        i++;
+!    }
+!    return i - 1;
+
+#ifdef AIXPPC
+.__arrayTranslateTROT:
+	.function .__arrayTranslateTROT,startproc.__arrayTranslateTROT,16,0,(endproc.__arrayTranslateTROT-startproc.__arrayTranslateTROT)
+        .machine "push"
+        .machine "pwr7"
+#elif defined(LINUXPPC64)
+FUNC_LABEL(__arrayTranslateTROT):
+#else
+__arrayTranslateTROT:
+#endif
+!----------------------------------------------------------------------
+! input:
+! r3 = input ptr
+! r4 = output ptr
+! r5 = num_elements
+! output:
+! r3 = number_elements_processed
+! r4 = output ptr
+! clobbered: r5-r11, vr0-vr4, cr0
+#if !defined(__LITTLE_ENDIAN__)
+    	startproc.__arrayTranslateTROT:
+
+        staddr          r3, -ALen(J9SP)                ! preserve start of output buffer for later
+
+        cmpi            cr0, 0, r5, 16
+        blt             cr0, .L.__simple_TROT
+
+      	lis		tempReg4, 0x00ff
+      	lis	        tempReg5, 0x8080
+      	ori	        tempReg4, tempReg4, 0x00ff
+      	ori	        tempReg5, tempReg5, 0x8080
+
+      andi.           r6, r3, 0xf                       ! if set, input alignment is at 8 bytes.
+      beq             cr0, .L.__main_TROT
+
+      !Not 16 byte aligned
+      !This is both entry and exit alignment/residue code.
+.L.__test1_TROT:
+      cmpi            cr0, 0, r5, 1			! are there 1 or more bytes left?
+      blt             cr0, .L.__done_TROT		! false, done
+      andi.           r6, r3, 0x1                       ! if set, input is aligned at an odd byte.
+      beq	      cr0, .L.__test2_TROT
+.L.__dotest1_TROT:
+      lbz             r6, 0(r3)
+      and.			  tempReg1, r6, tempReg5
+      bne             cr0, .L.__done_TROT		!Skip going to residue, no point
+      sth             r6, 0(r4)
+      addi            r3, r3, 1
+      addi            r4, r4, 2
+      addi            r5, r5, -1
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT
+.L.__test2_TROT:					! aligned at 2 bytes.
+      cmpi            cr0, 0, r5, 2			! are there 2 or more bytes left?
+      blt             cr0, .L.__residue_TROT		! false, goto residue
+      andi.           r6, r3, 0x3                       ! check if input is aligned at 4 bytes.
+      beq             cr0, .L.__test4_TROT
+.L.__dotest2_TROT:
+      lhz             r6, 0(r3)                         ! Suppose R6 = 0x0000cafe
+      and.			  tempReg1, r6, tempReg5
+      bne             cr0, .L.__residue_TROT
+      insrwi          r6, r6, 16, 8                     ! get R6 = 0x00cafefe
+      and             r6, r6, tempReg4                  ! get R6 = 0x00cafefe & 0x00ff00ff = 0x00ca00fe
+      stw             r6, 0(r4)
+      addi            r3, r3, 2
+      addi            r4, r4, 4
+      addi            r5, r5, -2
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT
+.L.__test4_TROT:
+      cmpi            cr0, 0, r5, 4			! are there 4 or more bytes left?
+      blt             cr0, .L.__residue_TROT	        ! false, goto residue
+      andi.           r6, r3, 0x7                       ! check if input is aligned at 8 bytes.
+      beq             cr0, .L.__test8_TROT
+.L.__dotest4_TROT:
+      lhz             r6, 0(r3)                         ! suppose R6 = 0xcafe
+      and.			  tempReg1, r6, tempReg5
+      bne             cr0, .L.__residue_TROT
+      lhz             tempReg1, 2(r3)                   ! get tempReg1 = 0xbabe rest is same as above.
+      and.			  tempReg2, tempReg1, tempReg5
+      bne             cr0, .L.__residue_TROT
+      insrwi          r6, r6, 16, 8
+      insrwi          tempReg1, tempReg1, 16, 8
+      and             r6, r6, tempReg4
+      and             tempReg1, tempReg1, tempReg4
+      stw             r6, 0(r4)
+      stw             tempReg1, 4(r4)
+      addi            r3, r3, 4
+      addi            r4, r4, 8
+      addi            r5, r5, -4
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT
+.L.__test8_TROT:
+      cmpi            cr0, 0, r5, 8			! are there 8 or more bytes left?
+      blt             cr0, .L.__residue_TROT		! false, goto residue
+      andi.           r6, r3, 0xf                       ! check if input is aligned at 16 bytes.
+      beq             cr0, .L.__main_TROT
+.L.__dotest8_TROT:
+	 lwz			 r6, 0(r3)
+	 and.		     tempReg1, r6, tempReg5
+     bne             cr0, .L.__residue_TROT
+
+	 lwz			 tempReg2, 4(r3)
+	 and.		     tempReg1, tempReg2, tempReg5
+     bne             cr0, .L.__residue_TROT
+
+         rlwinm                  tempReg1, r6, 0, 16, 31
+	 srwi			 r6, r6, 16
+
+         rlwinm                  tempReg3, tempReg2, 0, 16, 31
+	 srwi			 tempReg2, tempReg2, 16
+      insrwi          r6,       r6, 16, 8
+      insrwi          tempReg1, tempReg1, 16, 8
+      insrwi          tempReg2, tempReg2, 16, 8
+      insrwi          tempReg3, tempReg3, 16, 8
+      and             r6, r6, tempReg4
+      and             tempReg1, tempReg1, tempReg4
+      and             tempReg2, tempReg2, tempReg4
+      and             tempReg3, tempReg3, tempReg4
+      stw             r6, 0(r4)
+      stw             tempReg1, 4(r4)
+      stw             tempReg2, 8(r4)
+      stw             tempReg3, 12(r4)
+
+      addi            r3, r3, 8
+      addi            r4, r4, 16
+      addi            r5, r5, -8
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT
+
+.L.__main_TROT:
+	cmpi			cr0, 0, r5, 16					! are there 16 or more bytes left?
+	blt             cr0, .L.__residue_TROT			! false, goto residue
+
+	rlwinm          r6, r5, 32-4, 4, 31             ! r6 = num_elements / 16, processed in vector loop
+	mtctr           r6
+	rlwinm          r5, r5, 0, 28, 31               ! r5 = num_elements % 16, processed in residue loop
+
+    vspltisb        vr4, 8                          ! vr4 = 16*{8}
+    vspltisb        vr0, 4                          ! vr0 = 16*{4}
+    vslb			vr4, vr4, vr0					! vr4 = 16*{0x80}
+
+	vandc vr0, vr0, vr0								! vr0 = 0x00000000000000000000000000000000
+	li r7, 0
+	lvsr vr1, 0, r7									! vr1 = 0x101112131415161718191a1b1c1d1e1f
+	vmrghb vr3, vr0, vr1							! vr3 = 0x00100011001200130014001500160017
+
+	li  r7, 8
+	li  r8, 16
+	li  r9, 24
+
+.L.__vectorLoop_TROT:
+	lfd				fp0, 0(r3)						! load elements 0-7
+	lfd				fp1, 8(r3)						! load elements 8-15
+	xxlor			vs33, vs0, vs0					! move over to VMX registers.
+	xxlor			vs34, vs1, vs1
+
+	vmrghb			vr5, vr1, vr2					! merge bytes in high doublewords of vr1 and vr2 into vr5
+	vand			vr5, vr5, vr4					! mask all bytes with 0x80
+	vcmpequh_r  vr5, vr5, vr0
+	bge-            cr6, .L.__loop_abort_TROT       ! if !cr[lt], i.e. ge, at least one element has bits in 0x80 goto residue
+
+	vperm			vr1, vr0, vr1, vr3				! unpack high 8 bytes into 16 bytes.
+	vperm			vr2, vr0, vr2, vr3				! unpack  low 8 bytes into 16 bytes.
+
+	#ifdef VSXSTORES
+		xxlor			vs0, vs33, vs33					! move to fp0
+		xxpermdi		vs1, vs33, vs33, 2				! swap elements 0-7 with 8-15, move to fp1b
+		xxlor			vs2, vs34, vs34					! move to fp2
+		xxpermdi		vs3, vs34, vs34, 2				! swap elements 16-23 with 24-31, move to fp3
+
+		stfdx           fp0,  0, r4                     ! store elements 0-7
+	    stfdx           fp1, r7, r4                     ! store elements 8-15
+		stfdx           fp2, r8, r4                     ! store elements 16-23
+	    stfdx           fp3, r9, r4                     ! store elements 24-31
+	#else
+	    xxlor           vs0, vs33, vs33                 ! move to fp0
+	    xxpermdi        vs1, vs33, vs33, 2              ! swap elements 0-7 with 8-15, move to fp1
+	    xxlor           vs2, vs34, vs34                 ! move to fp2
+	    xxpermdi        vs3, vs34, vs34, 2              ! swap elements 0-7 with 8-15, move to fp3
+
+		stfdx           fp0,  0, r4                     ! store elements 0-7
+	    stfdx           fp1, r7, r4                     ! store elements 8-15
+		stfdx           fp2, r8, r4                     ! store elements 16-23
+	    stfdx           fp3, r9, r4                     ! store elements 24-31
+	#endif
+    addi            r3, r3, 16                      ! bump input ptr
+    addi            r4, r4, 32                      ! bump output ptr
+    bdnz            .L.__vectorLoop_TROT
+
+.L.__loop_abort_TROT:
+        mfctr   r6                                !Get number of iterations left back.
+        rlwimi  r5, r6, 4, 0, 31-4                ! r5 = r6 * 16 + r5, add remaining elements from vector loop and remainder back.
+.L.__simple_TROT:
+        cmpi    cr0, 0, r5, 0
+        beq     cr0, .L.__done_TROT               ! if 0 elements left, we are done
+.L.__residue_TROT:
+		lbz             r6, 0(r3)
+		andi.           r7, r6, 0x80
+                bne             cr0, .L.__done_TROT
+		sth             r6, 0(r4)
+		addi            r3, r3, 1
+		addi            r4, r4, 2
+		addi            r5, r5, -1
+		cmpi            cr0, 0, r5, 0
+                bne             cr0, .L.__residue_TROT
+
+.L.__done_TROT:
+        laddr           r6, -ALen(J9SP)
+        subf            r3, r6, r3                      ! r3 = output_ptr - output_base_ptr = num_elements_processed
+        blr
+
+#ifdef AIXPPC
+        .machine "pop"
+#endif
+    	endproc.__arrayTranslateTROT:
+#else
+    	startproc.__arrayTranslateTROT:
+
+        staddr          r3, -ALen(J9SP)                ! preserve start of output buffer for later
+
+        cmpi            cr0, 0, r5, 16
+        blt             cr0, .L.__simple_TROT
+
+      	lis		tempReg4, 0x00ff
+      	lis	        tempReg5, 0x8080
+      	ori	        tempReg4, tempReg4, 0x00ff
+      	ori	        tempReg5, tempReg5, 0x8080
+
+      andi.           r6, r3, 0xf                       ! if set, input alignment is at 8 bytes.
+      beq             cr0, .L.__main_TROT
+
+      !Not 16 byte aligned
+      !This is both entry and exit alignment/residue code.
+.L.__test1_TROT:
+      cmpi            cr0, 0, r5, 1			! are there 1 or more bytes left?
+      blt             cr0, .L.__done_TROT		! false, done
+      andi.           r6, r3, 0x1                       ! if set, input is aligned at an odd byte.
+      beq	      cr0, .L.__test2_TROT
+.L.__dotest1_TROT:
+      lbz             r6, 0(r3)
+      and.			  tempReg1, r6, tempReg5
+      bne             cr0, .L.__done_TROT		!Skip going to residue, no point
+      sth             r6, 0(r4)
+      addi            r3, r3, 1
+      addi            r4, r4, 2
+      addi            r5, r5, -1
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT
+.L.__test2_TROT:					! aligned at 2 bytes.
+      cmpi            cr0, 0, r5, 2			! are there 2 or more bytes left?
+      blt             cr0, .L.__residue_TROT		! false, goto residue
+      andi.           r6, r3, 0x3                       ! check if input is aligned at 4 bytes.
+      beq             cr0, .L.__test4_TROT
+.L.__dotest2_TROT:
+      lhz             r6, 0(r3)                         ! Suppose R6 = 0x0000cafe
+      and.			  tempReg1, r6, tempReg5
+      bne             cr0, .L.__residue_TROT
+      insrwi          r6, r6, 16, 8                     ! get R6 = 0x00cafefe
+      and             r6, r6, tempReg4                  ! get R6 = 0x00cafefe & 0x00ff00ff = 0x00ca00fe
+      stw             r6, 0(r4)
+      addi            r3, r3, 2
+      addi            r4, r4, 4
+      addi            r5, r5, -2
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT
+.L.__test4_TROT:
+      cmpi            cr0, 0, r5, 4			! are there 4 or more bytes left?
+      blt             cr0, .L.__residue_TROT	        ! false, goto residue
+      andi.           r6, r3, 0x7                       ! check if input is aligned at 8 bytes.
+      beq             cr0, .L.__test8_TROT
+.L.__dotest4_TROT:
+      lhz             r6, 0(r3)                         ! suppose R6 = 0xcafe
+      and.			  tempReg1, r6, tempReg5
+      bne             cr0, .L.__residue_TROT
+      lhz             tempReg1, 2(r3)                   ! get tempReg1 = 0xbabe rest is same as above.
+      and.			  tempReg2, tempReg1, tempReg5
+      bne             cr0, .L.__residue_TROT
+      insrwi          r6, r6, 16, 8
+      insrwi          tempReg1, tempReg1, 16, 8
+      and             r6, r6, tempReg4
+      and             tempReg1, tempReg1, tempReg4
+      stw             r6, 0(r4)
+      stw             tempReg1, 4(r4)
+      addi            r3, r3, 4
+      addi            r4, r4, 8
+      addi            r5, r5, -4
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT
+.L.__test8_TROT:
+      cmpi            cr0, 0, r5, 8			! are there 8 or more bytes left?
+      blt             cr0, .L.__residue_TROT		! false, goto residue
+      andi.           r6, r3, 0xf                       ! check if input is aligned at 16 bytes.
+      beq             cr0, .L.__main_TROT
+.L.__dotest8_TROT:
+	 lwz			 r6, 0(r3)
+	 and.		     tempReg1, r6, tempReg5
+     bne             cr0, .L.__residue_TROT
+
+	 lwz			 tempReg2, 4(r3)
+	 and.		     tempReg1, tempReg2, tempReg5
+     bne             cr0, .L.__residue_TROT
+
+         rlwinm                  tempReg1, r6, 0, 16, 31
+	 srwi			 r6, r6, 16
+
+         rlwinm                  tempReg3, tempReg2, 0, 16, 31
+	 srwi			 tempReg2, tempReg2, 16
+
+      insrwi          r6,       r6, 16, 8
+      insrwi          tempReg1, tempReg1, 16, 8
+      insrwi          tempReg2, tempReg2, 16, 8
+      insrwi          tempReg3, tempReg3, 16, 8
+      and             r6, r6, tempReg4
+      and             tempReg1, tempReg1, tempReg4
+      and             tempReg2, tempReg2, tempReg4
+      and             tempReg3, tempReg3, tempReg4
+      stw             tempReg1, 0(r4)
+      stw             r6, 4(r4)
+
+      stw             tempReg3, 8(r4)
+      stw             tempReg2, 12(r4)
+
+      addi            r3, r3, 8
+      addi            r4, r4, 16
+      addi            r5, r5, -8
+      cmpi            cr0, 0, r5, 0
+      beq             cr0, .L.__done_TROT
+
+.L.__main_TROT:
+	cmpi			cr0, 0, r5, 16					! are there 16 or more bytes left?
+	blt             cr0, .L.__residue_TROT			! false, goto residue
+
+	rlwinm          r6, r5, 32-4, 4, 31             ! r6 = num_elements / 16, processed in vector loop
+	mtctr           r6
+	rlwinm          r5, r5, 0, 28, 31               ! r5 = num_elements % 16, processed in residue loop
+
+    vspltisb        vr4, 8                          ! vr4 = 16*{8}
+    vspltisb        vr0, 4                          ! vr0 = 16*{4}
+    vslb			vr4, vr4, vr0					! vr4 = 16*{0x80}
+
+	vandc vr0, vr0, vr0								! vr0 = 0x00000000000000000000000000000000
+
+	li  r6, 16
+    vspltisw        vr3, 0x10            ! vr3 = 4*{-16} - this is used to shift by 16 bits later
+
+.L.__vectorLoop_TROT:
+    lxvw4x          vs33, r0, r3
+
+	vand			vr2, vr1, vr4					! mask all bytes with 0x80
+	vcmpequh_r  vr2, vr2, vr0
+	bge-            cr6, .L.__loop_abort_TROT       ! if !cr[lt], i.e. ge, at least one element has bits in 0x80 goto residue
+
+    vrlw            vr1, vr1, vr3                   ! fix byte ordering for a little endian load
+    vmrghb          vr2, vr0, vr1
+    vmrglb          vr1, vr0, vr1
+    stxvw4x         vs34, r0, r4                     ! store elements 0-7
+    stxvw4x         vs33, r4, r6                    ! store elements 8-15
+
+    addi            r3, r3, 16                      ! bump input ptr
+    addi            r4, r4, 32                      ! bump output ptr
+    bdnz            .L.__vectorLoop_TROT
+
+.L.__loop_abort_TROT:
+        mfctr   r6                                !Get number of iterations left back.
+        rlwimi  r5, r6, 4, 0, 31-4                ! r5 = r6 * 16 + r5, add remaining elements from vector loop and remainder back.
+.L.__simple_TROT:
+        cmpi    cr0, 0, r5, 0
+        beq     cr0, .L.__done_TROT               ! if 0 elements left, we are done
+.L.__residue_TROT:
+		lbz             r6, 0(r3)
+		andi.		r7, r6, 0x80
+                bne             cr0, .L.__done_TROT
+		sth             r6, 0(r4)
+		addi            r3, r3, 1
+		addi            r4, r4, 2
+		addi            r5, r5, -1
+		cmpi            cr0, 0, r5, 0
+                bne             cr0, .L.__residue_TROT
+
+.L.__done_TROT:
+        laddr           r6, -ALen(J9SP)
+        subf            r3, r6, r3                      ! r3 = output_ptr - output_base_ptr = num_elements_processed
+        blr
+
+#ifdef AIXPPC
+        .machine "pop"
+#endif
+    	endproc.__arrayTranslateTROT:
+#endif
+
+! .data section
+#ifdef AIXPPC
+	.toc
+
+	.csect    __arrayTranslateTRTO{DS}
+	ADDR      .__arrayTranslateTRTO
+	ADDR      TOC{TC0}
+	ADDR      0x00000000
+! End   csect     __arrayTranslateTRTO{DS}
+
+	.csect    __arrayTranslateTRTO255{DS}
+	ADDR      .__arrayTranslateTRTO255
+	ADDR      TOC{TC0}
+	ADDR      0x00000000
+! End   csect     __arrayTranslateTRTO255{DS}
+
+    .csect    __arrayTranslateTROT255{DS}
+	ADDR      .__arrayTranslateTROT255
+	ADDR      TOC{TC0}
+	ADDR      0x00000000
+
+! End   csect     __arrayTranslateTROT255{DS}
+    .csect    __arrayTranslateTROT{DS}
+	ADDR      .__arrayTranslateTROT
+	ADDR      TOC{TC0}
+	ADDR      0x00000000
+! End   csect     __arrayTranslateTROT{DS}
+
+
+#elif defined(LINUXPPC64)
+	.section  ".toc"
+#if !defined(__LITTLE_ENDIAN__)
+	.section  ".opd","aw"
+	.align    3
+	.globl    __arrayTranslateTRTO
+	.size     __arrayTranslateTRTO,24
+__arrayTranslateTRTO:
+	.quad     .__arrayTranslateTRTO
+	.quad     .TOC.@tocbase
+	.long     0x00000000
+	.long     0x00000000
+	.globl    __arrayTranslateTRTO255
+	.size     __arrayTranslateTRTO255,24
+__arrayTranslateTRTO255:
+	.quad     .__arrayTranslateTRTO255
+	.quad     .TOC.@tocbase
+	.long     0x00000000
+	.long     0x00000000
+	.globl    __arrayTranslateTROT255
+	.size     __arrayTranslateTROT255,24
+__arrayTranslateTROT255:
+	.quad     .__arrayTranslateTROT255
+	.quad     .TOC.@tocbase
+	.long     0x00000000
+	.long     0x00000000
+	.globl    __arrayTranslateTROT
+	.size     __arrayTranslateTROT,24
+__arrayTranslateTROT:
+	.quad     .__arrayTranslateTROT
+	.quad     .TOC.@tocbase
+	.long     0x00000000
+	.long     0x00000000
+#endif
+#endif
+
+#if defined(AIXPPC)
+	.csect    ArrayTranslateTRTOSimpleVMX_DATA{RW}
+
+#elif defined(NEUTRINO)
+   .data
+#elif defined(LINUXPPC64)
+	.section  ".data"
+	.align	4
+#if 0
+   .type __arrayTranslateLabelTable,@object
+   .size __arrayTranslateLabelTable,264
+#endif
+#endif
+
+#if 0
+__arrayTranslateLabelTable:
+	ADDR	0xdead0000
+	ADDR	0xdead0001
+	ADDR	L.vector000010
+	ADDR	L.vector000011
+	ADDR	L.vector000100
+	ADDR	L.vector000101
+	ADDR	L.vector000110
+	ADDR	L.vector000111
+    ADDR	L.vector001000
+	ADDR	L.vector001001
+	ADDR	L.vector001010
+	ADDR	L.vector001011
+	ADDR	L.vector001100
+	ADDR	L.vector001101
+	ADDR	L.vector001110
+	ADDR	L.vector001111
+	ADDR	L.vector010000
+	ADDR	L.vector010001
+	ADDR	L.vector010010
+	ADDR	L.vector010011
+	ADDR	L.vector010100
+	ADDR	L.vector010101
+	ADDR	L.vector010110
+	ADDR	L.vector010111
+	ADDR	L.vector011000
+	ADDR	L.vector011001
+	ADDR	L.vector011010
+	ADDR	L.vector011011
+	ADDR	L.vector011100
+	ADDR	L.vector011101
+	ADDR	L.vector011110
+	ADDR	L.vector011111
+
+	ADDR	0xdead0020
+	ADDR	0xdead0021
+	ADDR	L.vector100010
+	ADDR	L.vector100011
+	ADDR	L.vector100100
+	ADDR	L.vector100101
+	ADDR	L.vector100110
+	ADDR	L.vector100111
+    ADDR	L.vector101000
+	ADDR	L.vector101001
+	ADDR	L.vector101010
+	ADDR	L.vector101011
+	ADDR	L.vector101100
+	ADDR	L.vector101101
+	ADDR	L.vector101110
+	ADDR	L.vector101111
+	ADDR	L.vector110000
+	ADDR	L.vector110001
+	ADDR	L.vector110010
+	ADDR	L.vector110011
+	ADDR	L.vector110100
+	ADDR	L.vector110101
+	ADDR	L.vector110110
+	ADDR	L.vector110111
+	ADDR	L.vector111000
+	ADDR	L.vector111001
+	ADDR	L.vector111010
+	ADDR	L.vector111011
+	ADDR	L.vector111100
+	ADDR	L.vector111101
+	ADDR	L.vector111110
+	ADDR	L.vector111111
+
+	ADDR	L.doNull
+	ADDR	L.vector000001
+	ADDR	0xdead0042
+	ADDR	0xdead0043
+	ADDR	0xdead0044
+	ADDR	0xdead0045
+	ADDR	0xdead0046
+	ADDR	0xdead0047
+	ADDR	0xdead0048
+	ADDR	0xdead0049
+	ADDR	0xdead004a
+	ADDR	0xdead004b
+	ADDR	0xdead004c
+	ADDR	0xdead004d
+	ADDR	0xdead004e
+	ADDR	0xdead004f
+	ADDR	0xdead0050
+	ADDR	0xdead0051
+	ADDR	0xdead0052
+	ADDR	0xdead0053
+	ADDR	0xdead0054
+	ADDR	0xdead0055
+	ADDR	0xdead0056
+	ADDR	0xdead0057
+	ADDR	0xdead0058
+	ADDR	0xdead0059
+	ADDR	0xdead005a
+	ADDR	0xdead005b
+	ADDR	0xdead005c
+	ADDR	0xdead005d
+	ADDR	0xdead005e
+	ADDR	L.partialVector010
+
+	ADDR	L.doNull
+	ADDR	L.vector100001
+	ADDR	0xdead0062
+	ADDR	0xdead0063
+	ADDR	0xdead0064
+	ADDR	0xdead0065
+	ADDR	0xdead0066
+	ADDR	0xdead0067
+	ADDR	0xdead0068
+	ADDR	0xdead0069
+	ADDR	0xdead006a
+	ADDR	0xdead006b
+	ADDR	0xdead006c
+	ADDR	0xdead006d
+	ADDR	0xdead006e
+	ADDR	0xdead006f
+	ADDR	0xdead0070
+	ADDR	0xdead0071
+	ADDR	0xdead0072
+	ADDR	0xdead0073
+	ADDR	0xdead0074
+	ADDR	0xdead0075
+	ADDR	0xdead0076
+	ADDR	0xdead0077
+	ADDR	0xdead0078
+	ADDR	0xdead0079
+	ADDR	0xdead007a
+	ADDR	0xdead007b
+	ADDR	0xdead007c
+	ADDR	0xdead007d
+	ADDR	0xdead007e
+	ADDR	L.partialVector010
+! End   csect    ArrayTranslateTRTOSimpleVMX_DATA{RW}
+#endif

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -36,6 +36,10 @@
 void
 MM_JNICriticalRegion::reacquireAccess(J9VMThread* vmThread, UDATA accessMask)
 {
+#if defined(J9VM_INTERP_ATOMIC_FREE_JNI)
+	// Current thread must have entered the VM before acquiring exclusive
+	Assert_MM_false(vmThread->inNative);
+#endif /* J9VM_INTERP_ATOMIC_FREE_JNI */
 	if (J9_ARE_ANY_BITS_SET(vmThread->publicFlags, J9_PUBLIC_FLAGS_DEBUG_VM_ACCESS)) {
 		Assert_MM_true(J9_VM_FUNCTION(vmThread, currentVMThread)(vmThread->javaVM) == vmThread);
 	}
@@ -51,9 +55,9 @@ MM_JNICriticalRegion::reacquireAccess(J9VMThread* vmThread, UDATA accessMask)
 	if (0 != (accessMask & J9_PUBLIC_FLAGS_VM_ACCESS)) {
 		TRIGGER_J9HOOK_VM_ACQUIREVMACCESS(vmThread->javaVM->hookInterface, vmThread);
 
-		/* Now that the hook has been invoked, allow inline VM access acquire */
-		if((vmThread->publicFlags & J9_PUBLIC_FLAGS_DISABLE_INLINE_VM_ACCESS_ACQUIRE) == J9_PUBLIC_FLAGS_DISABLE_INLINE_VM_ACCESS_ACQUIRE) {
-			clearEventFlag(vmThread, J9_PUBLIC_FLAGS_DISABLE_INLINE_VM_ACCESS_ACQUIRE);
+		/* Now that the hook has been invoked, allow inline VM access */
+		if (0 != (vmThread->publicFlags & J9_PUBLIC_FLAGS_DISABLE_INLINE_VM_ACCESS)) {
+			clearEventFlag(vmThread, J9_PUBLIC_FLAGS_DISABLE_INLINE_VM_ACCESS);
 		}
 	}
 
@@ -73,6 +77,10 @@ MM_JNICriticalRegion::reacquireAccess(J9VMThread* vmThread, UDATA accessMask)
 void
 MM_JNICriticalRegion::releaseAccess(J9VMThread* vmThread, UDATA* accessMask)
 {
+#if defined(J9VM_INTERP_ATOMIC_FREE_JNI)
+	// Current thread must have entered the VM before acquiring exclusive
+	Assert_MM_false(vmThread->inNative);
+#endif /* J9VM_INTERP_ATOMIC_FREE_JNI */
 	if (J9_ARE_ANY_BITS_SET(vmThread->publicFlags, J9_PUBLIC_FLAGS_DEBUG_VM_ACCESS)) {
 		Assert_MM_true(J9_VM_FUNCTION(vmThread, currentVMThread)(vmThread->javaVM) == vmThread);
 	}
@@ -82,6 +90,15 @@ MM_JNICriticalRegion::releaseAccess(J9VMThread* vmThread, UDATA* accessMask)
 	UDATA currentAccess = vmThread->publicFlags & (J9_PUBLIC_FLAGS_VM_ACCESS | J9_PUBLIC_FLAGS_JNI_CRITICAL_ACCESS);
 	Assert_MM_true(0 != currentAccess);
 	VM_VMAccess::clearPublicFlags(vmThread, currentAccess);
+
+	if (0 != (currentAccess & J9_PUBLIC_FLAGS_VM_ACCESS)) {
+		TRIGGER_J9HOOK_VM_RELEASEVMACCESS(vmThread->javaVM->hookInterface, vmThread);
+
+		/* Now that the hook has been invoked, allow inline VM access */
+		if (0 != (vmThread->publicFlags & J9_PUBLIC_FLAGS_DISABLE_INLINE_VM_ACCESS)) {
+			clearEventFlag(vmThread, J9_PUBLIC_FLAGS_DISABLE_INLINE_VM_ACCESS);
+		}
+	}
 
 	if(0 != (vmThread->publicFlags & J9_PUBLIC_FLAGS_HALT_THREAD_EXCLUSIVE)) {
 		J9JavaVM* vm = vmThread->javaVM;
@@ -93,9 +110,11 @@ MM_JNICriticalRegion::releaseAccess(J9VMThread* vmThread, UDATA* accessMask)
 		U_64 timeNow = VM_VMAccess::updateExclusiveVMAccessStats(vmThread, vm, PORTLIB);
 
 		if(0 != (currentAccess & J9_PUBLIC_FLAGS_VM_ACCESS)) {
-			--vm->exclusiveAccessResponseCount;
-			if(0 == vm->exclusiveAccessResponseCount) {
-				shouldRespond = TRUE;
+			if (!J9_ARE_ANY_BITS_SET(vmThread->publicFlags, J9_PUBLIC_FLAGS_NOT_COUNTED_BY_EXCLUSIVE)) {
+				--vm->exclusiveAccessResponseCount;
+				if(0 == vm->exclusiveAccessResponseCount) {
+					shouldRespond = TRUE;
+				}
 			}
 		}
 		if(0 != (currentAccess & J9_PUBLIC_FLAGS_JNI_CRITICAL_ACCESS)) {
@@ -105,7 +124,7 @@ MM_JNICriticalRegion::releaseAccess(J9VMThread* vmThread, UDATA* accessMask)
 			}
 		}
 		if(shouldRespond) {
-			VM_VMAccess::respondToExclusiveRequest(vmThread, vm, PORTLIB, timeNow);
+			VM_VMAccess::respondToExclusiveRequest(vmThread, vm, PORTLIB, timeNow, J9_EXCLUSIVE_SLOW_REASON_JNICRITICAL);
 		}
 		omrthread_monitor_exit(vm->exclusiveAccessMutex);
 	}

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2014 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -33,10 +33,27 @@ extern "C"
 {
 #endif
 
+ #if defined(__GNUC__)
+ /*
+  * Source files which include (directly or indirectly) this file
+  * but do not use the functions defined below may fail to compile unless the "unused" attribute
+  * is applied.
+  * Note that Microsoft compilers do not allow this attribute.
+  */
+#if !defined(J9VM_SHRTEST)
+#if !defined(J9SHR_CACHELET_SUPPORT)
+static VMINLINE BOOLEAN j9shr_Query_IsCacheFull(J9JavaVM *vm)  __attribute__ ((__unused__));
+static VMINLINE BOOLEAN j9shr_Query_IsAddressInCache(J9JavaVM *vm, void *address, UDATA length)  __attribute__ ((__unused__));
+static VMINLINE BOOLEAN j9shr_Query_IsAddressInReadWriteCache(J9JavaVM *vm, void *address, UDATA length) __attribute__ ((__unused__));
+#endif /* !J9SHR_CACHELET_SUPPORT */
+static VMINLINE void j9shr_Query_PopulatePreinitConfigDefaults(J9JavaVM *vm, J9SharedClassPreinitConfig *updatedWithDefaults)  __attribute__ ((__unused__));
+#endif /* !J9VM_SHRTEST */
+#endif /* __GNUC__ */
+
 #if defined (J9VM_SHRTEST) && defined (J9SHR_CACHELET_SUPPORT)
 /*This function is not used from shrtest -Xrealtime */
 #else
-static BOOLEAN
+static VMINLINE BOOLEAN
 j9shr_Query_IsCacheFull(J9JavaVM *vm)
 {
 	BOOLEAN retval = TRUE;
@@ -52,7 +69,7 @@ j9shr_Query_IsCacheFull(J9JavaVM *vm)
 
 /**
  * 	Following comment is copied from
- * 	shrinit.cpp :: j9shr_isAddressInCache(J9JavaVM *vm, void *address, UDATA length)
+ * 	shrinit.cpp :: j9shr_isAddressInCache(J9JavaVM *vm, void *address, UDATA length, BOOLEAN checkReadWriteCacheOnly)
  *
  * 	This function checks whether the memory segment;
  *  which starts at the given address and with the given length,
@@ -70,14 +87,37 @@ j9shr_Query_IsCacheFull(J9JavaVM *vm)
 #if defined (J9VM_SHRTEST) && defined (J9SHR_CACHELET_SUPPORT)
 /*This function is not used from shrtest -Xrealtime */
 #else
-static BOOLEAN
+static VMINLINE BOOLEAN
 j9shr_Query_IsAddressInCache(J9JavaVM *vm, void *address, UDATA length)
 {
 	BOOLEAN retval = FALSE;
 	if ((NULL != vm) && (NULL != vm->sharedClassConfig)) {
 		SCAbstractAPI * sharedapi = (SCAbstractAPI *)(vm->sharedClassConfig->sharedAPIObject);
 		if ((NULL != sharedapi) && (NULL != sharedapi->isAddressInCache)) {
-			retval = sharedapi->isAddressInCache(vm, address, length);
+			retval = sharedapi->isAddressInCache(vm, address, length, FALSE);
+		}
+	}
+	return retval;
+}
+
+/**
+ * Check if an address range in in the readWrite (top layer) shared cache
+ *
+ * @param[in] vm  The Java VM.
+ * @param[in] address The start of the address range
+ * @param[in] length The length of the address range
+ *
+ * @return TRUE if the the address range is in the readWrite cache. False otherwise.
+ **/
+
+static VMINLINE BOOLEAN
+j9shr_Query_IsAddressInReadWriteCache(J9JavaVM *vm, void *address, UDATA length)
+{
+	BOOLEAN retval = FALSE;
+	if ((NULL != vm) && (NULL != vm->sharedClassConfig)) {
+		SCAbstractAPI * sharedapi = (SCAbstractAPI *)(vm->sharedClassConfig->sharedAPIObject);
+		if ((NULL != sharedapi) && (NULL != sharedapi->isAddressInCache)) {
+			retval = sharedapi->isAddressInCache(vm, address, length, TRUE);
 		}
 	}
 	return retval;
@@ -85,7 +125,7 @@ j9shr_Query_IsAddressInCache(J9JavaVM *vm, void *address, UDATA length)
 #endif
 
 #if !defined (J9VM_SHRTEST)
-static void
+static VMINLINE void
 j9shr_Query_PopulatePreinitConfigDefaults(J9JavaVM *vm, J9SharedClassPreinitConfig *updatedWithDefaults)
 {
 	if ((NULL != vm) && (NULL != vm->sharedClassConfig)) {

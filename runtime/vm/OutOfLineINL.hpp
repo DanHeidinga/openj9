@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2016, 2018 IBM Corp. and others
+ * Copyright (c) 2016, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -27,6 +27,8 @@
 #include "rommeth.h"
 #include "BytecodeAction.hpp"
 
+#include "objectreferencesmacros_undefine.inc"
+
 extern "C" {
 
 typedef VM_BytecodeAction J9OutOfLineINLMethod(J9VMThread *, J9Method *);
@@ -35,6 +37,7 @@ J9OutOfLineINLMethod OutOfLineINL_jdk_internal_misc_Unsafe_fullFence;
 J9OutOfLineINLMethod OutOfLineINL_jdk_internal_misc_Unsafe_compareAndExchangeObjectVolatile;
 J9OutOfLineINLMethod OutOfLineINL_jdk_internal_misc_Unsafe_compareAndExchangeIntVolatile;
 J9OutOfLineINLMethod OutOfLineINL_jdk_internal_misc_Unsafe_compareAndExchangeLongVolatile;
+J9OutOfLineINLMethod OutOfLineINL_com_ibm_jit_JITHelpers_acmplt;
 #if defined(J9VM_OPT_PANAMA)
 J9OutOfLineINLMethod OutOfLineINL_java_lang_invoke_NativeMethodHandle_initJ9NativeCalloutDataRef;
 J9OutOfLineINLMethod OutOfLineINL_java_lang_invoke_NativeMethodHandle_freeJ9NativeCalloutDataRef;
@@ -128,5 +131,7 @@ public:
  		restoreSpecialStackFrameLeavingArgs(currentThread, ((UDATA*)(nativeMethodFrame + 1)) - 1);
  	}
 };
+
+#include "objectreferencesmacros_define.inc"
 
 #endif /* VM_OUTOFLINEINL_HPP_ */

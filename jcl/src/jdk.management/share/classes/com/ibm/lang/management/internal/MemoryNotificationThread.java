@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar17]*/
 /*******************************************************************************
- * Copyright (c) 2005, 2018 IBM Corp. and others
+ * Copyright (c) 2005, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -42,7 +42,7 @@ import com.sun.management.internal.GarbageCollectionNotificationInfoUtil;
  *
  * @since 1.5
  */
-final class MemoryNotificationThread extends Thread {
+final class MemoryNotificationThread implements Runnable {
 
 	private final ExtendedMemoryMXBeanImpl memBean;
 
@@ -72,8 +72,6 @@ final class MemoryNotificationThread extends Thread {
      *            the start time of this GC in milliseconds since the Java virtual machine was started
      * @param endTime
      *            the end time of this GC in milliseconds since the Java virtual machine was started
-     * @param poolNames
-     *            the name of all memory pools (includes non-heap memory pools)
      * @param initialSize
      *            the initial amount of memory of all memory pools
      * @param preUsed
@@ -92,10 +90,10 @@ final class MemoryNotificationThread extends Thread {
      *            the sequence identifier of the current notification
      */
 	private void dispatchGCNotificationHelper(String gcName, String gcAction, String gcCause, long index,
-			long startTime, long endTime, String[] poolNames, long[] initialSize, long[] preUsed,
+			long startTime, long endTime, long[] initialSize, long[] preUsed,
 			long[] preCommitted, long[] preMax, long[] postUsed, long[] postCommitted, long[] postMax,
 			long sequenceNumber) {
-		GcInfo gcInfo = ExtendedGarbageCollectorMXBeanImpl.buildGcInfo(index, startTime, endTime, poolNames, initialSize, preUsed, preCommitted, preMax, postUsed, postCommitted, postMax);
+		GcInfo gcInfo = ExtendedGarbageCollectorMXBeanImpl.buildGcInfo(index, startTime, endTime, initialSize, preUsed, preCommitted, preMax, postUsed, postCommitted, postMax);
 		GarbageCollectionNotificationInfo info = new GarbageCollectionNotificationInfo(gcName, gcAction, gcCause, gcInfo);
 
 		for (MemoryManagerMXBean bean : memBean.getMemoryManagerMXBeans(false)) {
@@ -158,7 +156,7 @@ final class MemoryNotificationThread extends Thread {
 	private native void processNotificationLoop();
 
 	private boolean registerShutdownHandler() {
-		Thread notifier = new MemoryNotificationThreadShutdown(this);
+		Thread notifier = new MemoryNotificationThreadShutdown(Thread.currentThread());
 		PrivilegedAction<Boolean> action = () -> {
 			try {
 				Runtime.getRuntime().addShutdownHook(notifier);

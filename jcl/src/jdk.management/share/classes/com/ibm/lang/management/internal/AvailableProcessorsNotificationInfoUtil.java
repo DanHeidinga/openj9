@@ -1,6 +1,6 @@
 /*[INCLUDE-IF Sidecar17]*/
 /*******************************************************************************
- * Copyright (c) 2016, 2016 IBM Corp. and others
+ * Copyright (c) 2016, 2019 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -64,14 +64,6 @@ public final class AvailableProcessorsNotificationInfoUtil {
 	}
 
 	/**
-	 * Register converters for the {@link AvailableProcessorsNotificationInfo} class.
-	 */
-	public static void registerConverters() {
-		ManagementUtils.addCompositeConverter(AvailableProcessorsNotificationInfo.class,
-				AvailableProcessorsNotificationInfoUtil::toCompositeData);
-	}
-
-	/**
 	 * @param info a {@link AvailableProcessorsNotificationInfo} object
 	 * @return a {@link CompositeData} object that represents the supplied <code>info</code> object
 	 */
@@ -81,7 +73,7 @@ public final class AvailableProcessorsNotificationInfoUtil {
 		if (info != null) {
 			CompositeType type = getCompositeType();
 			String[] names = { "newAvailableProcessors" }; //$NON-NLS-1$
-			Object[] values = { new Integer(info.getNewAvailableProcessors()) };
+			Object[] values = { Integer.valueOf(info.getNewAvailableProcessors()) };
 
 			try {
 				result = new CompositeDataSupport(type, names, values);

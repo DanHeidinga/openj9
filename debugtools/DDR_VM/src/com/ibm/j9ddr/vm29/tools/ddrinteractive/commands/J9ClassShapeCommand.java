@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2014 IBM Corp. and others
+ * Copyright (c) 2001, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -49,6 +49,7 @@ import com.ibm.j9ddr.vm29.pointer.helper.J9UTF8Helper;
 import com.ibm.j9ddr.vm29.structure.J9Object;
 import com.ibm.j9ddr.vm29.types.U32;
 import com.ibm.j9ddr.vm29.types.UDATA;
+import com.ibm.j9ddr.vm29.pointer.helper.J9ObjectHelper;
 
 public class J9ClassShapeCommand extends Command 
 {
@@ -92,10 +93,7 @@ public class J9ClassShapeCommand extends Command
 
 			String className = J9ClassHelper.getName(instanceClass);
 			J9VMThreadPointer mainThread = vm.mainThread();
-			boolean lockwordPrinted = true;
-			if (J9BuildFlags.thr_lockNursery) {
-				lockwordPrinted = false;
-			}
+			boolean lockwordPrinted = false;
 			CommandUtils.dbgPrint(out, "Instance fields in %s:\n", className);
 			CommandUtils.dbgPrint(out, "\noffset     name\tsignature\t(declaring class)\n");
 
@@ -124,19 +122,17 @@ public class J9ClassShapeCommand extends Command
 					boolean printField = true;
 					boolean isHiddenField = result.isHidden();
 
-					if (J9BuildFlags.thr_lockNursery) {
-						boolean isLockword = (isHiddenField && (result.getOffsetOrAddress().add(J9Object.SIZEOF).eq(superclass.lockOffset())));
+					boolean isLockword = (isHiddenField && (result.getOffsetOrAddress().add(J9ObjectHelper.headerSize()).eq(superclass.lockOffset())));
 
-						if (isLockword) {
-							/*
-							 * Print the lockword field if it is indeed the
-							 * lockword for this instanceClass and we haven't
-							 * printed it yet.
-							 */
-							printField = !lockwordPrinted && instanceClass.lockOffset().eq(superclass.lockOffset());
-							if (printField) {
-								lockwordPrinted = true;
-							}
+					if (isLockword) {
+						/*
+						 * Print the lockword field if it is indeed the
+						 * lockword for this instanceClass and we haven't
+						 * printed it yet.
+						 */
+						printField = !lockwordPrinted && instanceClass.lockOffset().eq(superclass.lockOffset());
+						if (printField) {
+							lockwordPrinted = true;
 						}
 					}
 					if (printField) {

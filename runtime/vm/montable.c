@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 1991, 2017 IBM Corp. and others
+ * Copyright (c) 1991, 2020 IBM Corp. and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -20,12 +20,11 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
 
-
 #include "j9.h"
 #include "j9accessbarrier.h"
 #include "j9protos.h"
-#include "lockNurseryUtil.h"
 #include "mmhook.h"
+#include "j9consts.h"
 #include "ut_j9vm.h"
 #include "vm_api.h"
 #include "vm_internal.h"
@@ -46,9 +45,7 @@ static UDATA hits, misses;
 #define TRACE(message)
 #endif
 
-#ifdef J9VM_THR_LOCK_NURSERY
 #define J9_OBJECT_MONITOR_LOOKUP_SLOT(object,vm) ( (((UDATA)object) >> vm->omrVM->_objectAlignmentShift) & (J9VMTHREAD_OBJECT_MONITOR_CACHE_SIZE-1))
-#endif
 
 static UDATA hashMonitorCompare (void *leftKey, void *rightKey, void *userData);
 static UDATA hashMonitorDestroyDo (void *entry, void *opaque);
@@ -81,21 +78,19 @@ hashMonitorCompare(void *tableEntryKey, void *userKey, void *userData)
 	/* In a Concurrent GC where monitor object can *move* in a middle of GC cycle,
 	 * we need a proper barrier to get an up-to-date location of the monitor object
 	 * Only access to the table entry needs the barrier. The user provided key should already have an updated location of the objects,
-	 * since a read barrier had to be executed some time prior to the construction of the key, whereever the value is read from */
-	j9object_t tableEntryObject = J9MONITORTABLE_OBJECT_LOAD_VM((J9JavaVM *)userData, &(tableEntryMonitor->userData));
+	 * since a read barrier had to be executed some time prior to the construction of the key, wherever the value is read from */
+	j9object_t tableEntryObject = J9WEAKROOT_OBJECT_LOAD_VM((J9JavaVM *)userData, &(tableEntryMonitor->userData));
 
 	return tableEntryObject == (j9object_t)userMonitor->userData;
 }
 
-#ifdef J9VM_THR_LOCK_NURSERY
 void
 cacheObjectMonitorForLookup(J9JavaVM* vm, J9VMThread* vmStruct, J9ObjectMonitor* objectMonitor)
 {
-	j9object_t object = J9MONITORTABLE_OBJECT_LOAD(vmStruct, &((J9ThreadAbstractMonitor*)(objectMonitor->monitor))->userData);
+	j9object_t object = J9WEAKROOT_OBJECT_LOAD(vmStruct, &((J9ThreadAbstractMonitor*)(objectMonitor->monitor))->userData);
 
 	vmStruct->objectMonitorLookupCache[J9_OBJECT_MONITOR_LOOKUP_SLOT(object,vm)] = (j9objectmonitor_t) ((UDATA) objectMonitor);
 }
-#endif
 
 
 
@@ -108,17 +103,14 @@ cacheObjectMonitorForLookup(J9JavaVM* vm, J9VMThread* vmStruct, J9ObjectMonitor*
  * @return an initialized J9HashTable on success, otherwise NULL
  */
 static J9HashTable*
-createMonitorTable(J9JavaVM *vm, char *tableName) {
-
-#if defined(J9VM_INTERP_SMALL_MONITOR_SLOT)
-#define MONTABLE_FLAGS J9HASH_TABLE_ALLOCATE_ELEMENTS_USING_MALLOC32
-#else
-#define MONTABLE_FLAGS 0
-#endif
-
+createMonitorTable(J9JavaVM *vm, char *tableName)
+{
+	U_32 flags = 0;
+	if (J9JAVAVM_COMPRESS_OBJECT_REFERENCES(vm)) {
+		flags = J9HASH_TABLE_ALLOCATE_ELEMENTS_USING_MALLOC32;
+	}
 	Assert_VM_false(NULL == tableName);
-	return hashTableNew(OMRPORT_FROM_J9PORT(vm->portLibrary), tableName, 64, sizeof(J9ObjectMonitor), 0, MONTABLE_FLAGS, OMRMEM_CATEGORY_VM, hashMonitorHash, hashMonitorCompare, NULL, vm);
-#undef MONTABLE_FLAGS
+	return hashTableNew(OMRPORT_FROM_J9PORT(vm->portLibrary), tableName, 64, sizeof(J9ObjectMonitor), 0, flags, OMRMEM_CATEGORY_VM, hashMonitorHash, hashMonitorCompare, NULL, vm);
 }
 
 UDATA
@@ -246,7 +238,6 @@ monitorTableAt(J9VMThread* vmStruct, j9object_t object)
 	PORT_ACCESS_FROM_VMC(vmStruct);
 #endif
 
-#ifdef J9VM_THR_LOCK_NURSERY
 	Trc_VM_monitorTableAt_Entry(vmStruct, object, J9OBJECT_CLAZZ(vmStruct, object),J9OBJECT_MONITOR_OFFSET(vmStruct,object));
 
 	if (TrcEnabled_Trc_VM_monitorTableAtObjectWithNoLockword){
@@ -255,17 +246,14 @@ monitorTableAt(J9VMThread* vmStruct, j9object_t object)
 			Trc_VM_monitorTableAtObjectWithNoLockword(vmStruct, J9UTF8_LENGTH(J9ROMCLASS_CLASSNAME(J9OBJECT_CLAZZ(vmStruct, object)->romClass)), J9UTF8_DATA(J9ROMCLASS_CLASSNAME(J9OBJECT_CLAZZ(vmStruct, object)->romClass)), object);
 		}
 	}
-
-#else
-	Trc_VM_monitorTableAt_Entry(vmStruct, object, J9OBJECT_CLAZZ(vmStruct, object),offsetof(J9Object,monitor));
-#endif
-
-#ifdef J9VM_THR_LOCK_NURSERY
 	objectMonitor = (J9ObjectMonitor*) ((UDATA) vmStruct->objectMonitorLookupCache[J9_OBJECT_MONITOR_LOOKUP_SLOT(object,vm)]);
-#else
-	objectMonitor = vmStruct->cachedMonitor;
-#endif
-	if ((objectMonitor != NULL) && (((J9ThreadAbstractMonitor*)objectMonitor->monitor)->userData == (UDATA) object)) {
+
+	/* If we are in a middle of a concurrent GC that may move objects, existing barriers ensure that object ptr is always up-to-date. We also
+	 * have to make sure that the entry in the thread local caches points to the up-to-date location of the cached object, before we proceed
+	 * with the comparison. Otherwise, we may miss to identify cache hit. Hence, we call a 'weak' read barrier (only updating slot if object already moved,
+	 * but not triggering a copy) on userData slot.
+	 */
+	if ((objectMonitor != NULL) && (J9WEAKROOT_OBJECT_LOAD_VM(vm, &((J9ThreadAbstractMonitor*)objectMonitor->monitor)->userData) == object)) {
 		HIT();
 		TRACE("Cache hit");
 		Trc_VM_monitorTableAt_CacheHit_Exit(vmStruct, objectMonitor);
@@ -294,9 +282,7 @@ monitorTableAt(J9VMThread* vmStruct, j9object_t object)
 			omrthread_monitor_t monitor;
 			UDATA monitorFlags = J9THREAD_MONITOR_OBJECT;
 
-#ifdef J9VM_THR_LOCK_NURSERY
 			key_objectMonitor.alternateLockword = 0;
-#endif
 
 			if (omrthread_monitor_init_with_name(&monitor, monitorFlags, NULL) == 0) {
 				TRACE("Adding monitor");
@@ -349,11 +335,7 @@ monitorTableAt(J9VMThread* vmStruct, j9object_t object)
 	}
 
 	if (NULL != objectMonitor) {
-#ifdef J9VM_THR_LOCK_NURSERY
 		cacheObjectMonitorForLookup(vm, vmStruct, objectMonitor);
-#else
-		vmStruct->cachedMonitor = objectMonitor;
-#endif
 	}
 
 	omrthread_monitor_exit(mutex);
