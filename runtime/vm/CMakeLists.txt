@@ -151,6 +151,7 @@ set(main_sources
 	StackDumper.c
 	statistics.c
 	stringhelpers.cpp
+	SnapshotImageWriter.cpp
 	swalk.c
 	threadhelp.cpp
 	threadpark.c
