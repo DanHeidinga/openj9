@@ -24,7 +24,8 @@
 #define SNAPSHOTIMAGEWRITER_HPP_
 
 #include "j9cfg.h"
-
+#include "elf.h"
+#include "stdio.h"
 
 class SnapshotImageWriter
 {
@@ -33,6 +34,25 @@ class SnapshotImageWriter
 	 * Data Members
 	 */
 private:
+	const char* _filename;
+	bool _is_little_endian;
+
+	::FILE *_image_file;
+
+	/* Record where the ELFHeader is in the file */
+	fpos_t _position_elf_header;
+
+	/* Number of program headers */
+	int32_t _num_program_headers;
+	int32_t _num_section_headers;
+	int32_t _index_name_section_header;
+	int32_t _program_header_start_offset;
+	int32_t _section_header_start_offset;
+
+	/* Flag to indicate file writing failed or the file
+	 * being generated will be invalid in some way
+	 */
+	bool _is_invalid;
 
 protected:
 public:
@@ -41,12 +61,19 @@ public:
 	 * Function Members
 	 */
 private:
-
 protected:
+	void invalidateFile(void) { _is_invalid = true; }
+	bool isFileValid(void) { return !_is_invalid; };
 
 public:
-	SnapshotImageWriter();
+	SnapshotImageWriter(const char* filename, bool isLittleEndian = true);
 	~SnapshotImageWriter();
+
+	bool openFile(void);
+	bool closeFile(void);
+	void reserveHeaderSpace(void);
+	void writeHeader(void);
+
 
 };
 
