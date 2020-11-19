@@ -24,8 +24,21 @@
 #define SNAPSHOTIMAGEWRITER_HPP_
 
 #include "j9cfg.h"
-#include "elf.h"
-#include "stdio.h"
+#include <elf.h>
+#include <stdio.h>
+
+typedef struct SnapshotImageSectionHeader {
+		Elf64_Shdr s_header;
+		SnapshotImageSectionHeader *next;
+} SnapshotImageSectionHeader;
+
+typedef struct SnapshotImageProgramHeader {
+		Elf64_Phdr p_header;
+		SnapshotImageProgramHeader *next;
+		SnapshotImageSectionHeader *sections;
+		int64_t numSections;
+} SnapshotImageProgramHeader;
+
 
 class SnapshotImageWriter
 {
@@ -48,11 +61,15 @@ private:
 	int32_t _index_name_section_header;
 	int32_t _program_header_start_offset;
 	int32_t _section_header_start_offset;
+	int64_t _file_offset;
 
 	/* Flag to indicate file writing failed or the file
 	 * being generated will be invalid in some way
 	 */
 	bool _is_invalid;
+
+	SnapshotImageProgramHeader *_program_headers;
+	SnapshotImageProgramHeader *_program_headers_tail;
 
 protected:
 public:
@@ -74,6 +91,8 @@ public:
 	void reserveHeaderSpace(void);
 	void writeHeader(void);
 
+	SnapshotImageProgramHeader* startProgramHeader(uint32_t type, uint32_t flags, Elf64_Addr vaddr, Elf64_Addr paddr, uint64_t align) ;
+	void endProgramHeader(SnapshotImageProgramHeader *programHeader);
 
 };
 

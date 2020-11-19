@@ -20,9 +20,10 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
 
-#include "elf.h"
-#include "stdio.h"
-#include "string.h"
+#include <elf.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "SnapshotImageWriter.hpp"
 #include "vm_api.h"
@@ -36,7 +37,10 @@ SnapshotImageWriter::SnapshotImageWriter(const char *filename, bool is_little_en
 	_index_name_section_header(0),
 	_program_header_start_offset(0),
 	_section_header_start_offset(0),
-	_is_invalid(false)
+	_file_offset(0),
+	_is_invalid(false),
+	_program_headers(nullptr),
+	_program_headers_tail(nullptr)
 {
 	printf("SnapshotImageWriter\n");
 }
@@ -55,7 +59,7 @@ Elf64_Phdr *_programHeader;   /**< The ELFProgramHeader, required for executable
 Elf64_Shdr *_zeroSection;
 #endif
 
-#if 0
+
 /* PROGRAM HEADER
 typedef struct {
         Elf64_Word      p_type;
@@ -68,9 +72,36 @@ typedef struct {
         Elf64_Xword     p_align;
 } Elf64_Phdr;
 */
-SnapshotImageProgramHeader* startProgramHeader();
-void endProgramHeader(SnapshotImageProgramHeader *programHeader);
+SnapshotImageProgramHeader* SnapshotImageWriter::startProgramHeader(uint32_t type, uint32_t flags, Elf64_Addr vaddr, Elf64_Addr paddr, uint64_t align) {
+	SnapshotImageProgramHeader *header = (SnapshotImageProgramHeader *)malloc(sizeof(SnapshotImageProgramHeader));
+	if (header == nullptr) {
+		invalidateFile();
+		return nullptr;
+	}
+	memset(header, 0, sizeof(*header));
+	header->p_header.p_type = type;
+	header->p_header.p_flags = flags;
+	header->p_header.p_offset = _file_offset;
+	header->p_header.p_vaddr = vaddr;
+	header->p_header.p_paddr = paddr;
+	header->p_header.p_align = align;
 
+	/* Set up linked list of program headers, always adding to the end of the list */
+	if (_program_headers == nullptr) {
+		_program_headers = header;
+		_program_headers_tail = header;
+	} else {
+		_program_headers_tail->next = header;
+		_program_headers_tail = header;
+	}
+	return header;
+}
+void SnapshotImageWriter::endProgramHeader(SnapshotImageProgramHeader *programHeader) {
+	programHeader->p_header.p_filesz = (_file_offset - programHeader->p_header.p_offset);
+	/* Force memsize to be the same of the filesize, for now at least */
+	programHeader->p_header.p_memsz = programHeader->p_header.p_filesz;
+}
+#if 0
 /* Sections are contained within ProgramHeaders (mostly) */
 SnapshotImageSectionHeader* startSectionHeader(SnapshotImageProgramHeader *programHeader);
 void endSectionHeader(SnapshotImageSectionHeader *sectionHeader;
