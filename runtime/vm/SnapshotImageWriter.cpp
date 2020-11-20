@@ -21,6 +21,7 @@
  *******************************************************************************/
 
 #include <elf.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,16 +63,38 @@ Elf64_Shdr *_zeroSection;
 
 /* PROGRAM HEADER
 typedef struct {
-        Elf64_Word      p_type;
-        Elf64_Word      p_flags;
-        Elf64_Off       p_offset;
-        Elf64_Addr      p_vaddr;
-        Elf64_Addr      p_paddr;
-        Elf64_Xword     p_filesz;
-        Elf64_Xword     p_memsz;
-        Elf64_Xword     p_align;
+               uint32_t   p_type;
+               uint32_t   p_flags;
+               Elf64_Off  p_offset;
+               Elf64_Addr p_vaddr;
+               Elf64_Addr p_paddr;
+               uint64_t   p_filesz;
+               uint64_t   p_memsz;
+               uint64_t   p_align;
 } Elf64_Phdr;
 */
+static void printProgramHeader(SnapshotImageProgramHeader *header) {
+	printf(">>>>>> {\n"
+	"p_type = %" PRIu32 "\n"
+	"p_flags = %" PRIu32 "\n"
+	"p_offset = %x\n"
+	"p_vaddr = %x\n"
+	"p_paddr = %x\n"
+	"p_filesz = %" PRIu64 "\n"
+	"p_memsz = %" PRIu64 "\n"
+	"p_align = %" PRIu64 "\n"
+	"}\n",
+	header->p_header.p_type,
+	header->p_header.p_flags,
+	(int)header->p_header.p_offset,
+	(int)header->p_header.p_vaddr,
+	(int)header->p_header.p_paddr,
+	header->p_header.p_filesz,
+	header->p_header.p_memsz,
+	header->p_header.p_align
+	);
+}
+
 SnapshotImageProgramHeader* SnapshotImageWriter::startProgramHeader(uint32_t type, uint32_t flags, Elf64_Addr vaddr, Elf64_Addr paddr, uint64_t align) {
 	SnapshotImageProgramHeader *header = (SnapshotImageProgramHeader *)malloc(sizeof(SnapshotImageProgramHeader));
 	if (header == nullptr) {
@@ -94,13 +117,30 @@ SnapshotImageProgramHeader* SnapshotImageWriter::startProgramHeader(uint32_t typ
 		_program_headers_tail->next = header;
 		_program_headers_tail = header;
 	}
+	_num_program_headers += 1;
 	return header;
 }
-void SnapshotImageWriter::endProgramHeader(SnapshotImageProgramHeader *programHeader) {
+
+void SnapshotImageWriter::endProgramHeader(SnapshotImageProgramHeader *programHeader, uint64_t extraMemSize) {
 	programHeader->p_header.p_filesz = (_file_offset - programHeader->p_header.p_offset);
 	/* Force memsize to be the same of the filesize, for now at least */
-	programHeader->p_header.p_memsz = programHeader->p_header.p_filesz;
+	programHeader->p_header.p_memsz = programHeader->p_header.p_filesz + extraMemSize;
 }
+
+void SnapshotImageWriter::writeProgramHeaders(void)
+{
+	if (_program_headers != nullptr) {
+		/* Record the offset for the ELF header */
+		_program_header_start_offset = _file_offset;
+		SnapshotImageProgramHeader *iterator = _program_headers;
+		while (iterator != nullptr) {
+			writeBytes(reinterpret_cast<uint8_t*>(&iterator->p_header), sizeof(Elf64_Phdr));
+			printProgramHeader(iterator);
+			iterator = iterator->next;
+		}
+	}
+}
+
 #if 0
 /* Sections are contained within ProgramHeaders (mostly) */
 SnapshotImageSectionHeader* startSectionHeader(SnapshotImageProgramHeader *programHeader);
@@ -155,6 +195,16 @@ bool SnapshotImageWriter::closeFile(void)
 	return false;
 }
 
+/**
+ * Write bytes into the file.  Always use this method to write the bytes
+ * as it tracks the current file offset.
+ */
+void SnapshotImageWriter::writeBytes(uint8_t * buffer, size_t num_bytes, bool update_offset) {
+	fwrite(buffer, sizeof(uint8_t), num_bytes, _image_file);
+	if (update_offset) {
+		_file_offset += num_bytes;
+	}
+}
 
 void SnapshotImageWriter::reserveHeaderSpace(void)
 {
@@ -167,7 +217,7 @@ void SnapshotImageWriter::reserveHeaderSpace(void)
 		return;
 	}
 	Elf64_Ehdr header = {0};
-	fwrite(&header, sizeof(uint8_t), sizeof(Elf64_Ehdr), _image_file);
+	writeBytes(reinterpret_cast<uint8_t*>(&header), sizeof(Elf64_Ehdr));
 }
 
 void SnapshotImageWriter::writeHeader(void)
@@ -212,7 +262,7 @@ void SnapshotImageWriter::writeHeader(void)
 		invalidateFile();
 		return;
 	}
-	fwrite(&header, sizeof(uint8_t), sizeof(Elf64_Ehdr), _image_file);
+	writeBytes(reinterpret_cast<uint8_t*>(&header), sizeof(Elf64_Ehdr), false);
 }
 
 extern "C" void
@@ -221,7 +271,19 @@ writeSnapshotImageFile(J9JavaVM *vm)
 	SnapshotImageWriter writer("DanTest.image");
 	if (writer.openFile()) {
 		writer.reserveHeaderSpace();
-		// Write other parts of the file
+		// TODO: Write segments
+		
+		SnapshotImageProgramHeader *h = writer.startProgramHeader(PT_LOAD, PF_X | PF_R, 0x1000, 0, 0x1000);
+		writer.endProgramHeader(h);
+		
+		// Write program and section headers at the end of the file
+		writer.writeProgramHeaders();
+		// TODO: section headers
+
+		/* Go back and write the ELF header last so we have all the
+		 * info necessary - ie: number of program and section headers -
+		 * to fill in the heaader correctly.
+		 */
 		writer.writeHeader();
 		writer.closeFile();
 	}

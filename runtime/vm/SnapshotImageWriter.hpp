@@ -81,6 +81,7 @@ private:
 protected:
 	void invalidateFile(void) { _is_invalid = true; }
 	bool isFileValid(void) { return !_is_invalid; };
+	void writeBytes(uint8_t *buffer, size_t num_bytes, bool update_offset = true);
 
 public:
 	SnapshotImageWriter(const char* filename, bool isLittleEndian = true);
@@ -92,7 +93,8 @@ public:
 	void writeHeader(void);
 
 	SnapshotImageProgramHeader* startProgramHeader(uint32_t type, uint32_t flags, Elf64_Addr vaddr, Elf64_Addr paddr, uint64_t align) ;
-	void endProgramHeader(SnapshotImageProgramHeader *programHeader);
+	void endProgramHeader(SnapshotImageProgramHeader *programHeader, uint64_t extraMemSize = 0);
+	void writeProgramHeaders(void);
 
 };
 
