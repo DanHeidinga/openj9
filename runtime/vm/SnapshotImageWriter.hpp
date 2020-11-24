@@ -29,6 +29,7 @@
 
 typedef struct SnapshotImageSectionHeader {
 		Elf64_Shdr s_header;
+		char *name;
 		SnapshotImageSectionHeader *next;
 } SnapshotImageSectionHeader;
 
@@ -71,6 +72,16 @@ private:
 	SnapshotImageProgramHeader *_program_headers;
 	SnapshotImageProgramHeader *_program_headers_tail;
 
+	/* Some sections are not contained in a program header, they
+	 * just a default part of the file.
+	 *
+	 * This list is to track those sections:
+	 *	* zero (NULL) section
+	 *	* string table (SHT_STRTAB)
+	 */
+	SnapshotImageSectionHeader *_header_sections;
+	SnapshotImageSectionHeader *_header_sections_tail;
+
 protected:
 public:
 
@@ -82,6 +93,9 @@ protected:
 	void invalidateFile(void) { _is_invalid = true; }
 	bool isFileValid(void) { return !_is_invalid; };
 	void writeBytes(uint8_t *buffer, size_t num_bytes, bool update_offset = true);
+
+	bool writeNULLSectionHeader();
+	bool writeShstrtabSectionHeader(void);
 
 public:
 	SnapshotImageWriter(const char* filename, bool isLittleEndian = true);
@@ -95,6 +109,7 @@ public:
 	SnapshotImageProgramHeader* startProgramHeader(uint32_t type, uint32_t flags, Elf64_Addr vaddr, Elf64_Addr paddr, uint64_t align) ;
 	void endProgramHeader(SnapshotImageProgramHeader *programHeader, uint64_t extraMemSize = 0);
 	void writeProgramHeaders(void);
+	void writeSectionHeaders(void);
 
 };
 

@@ -142,28 +142,64 @@ void SnapshotImageWriter::writeProgramHeaders(void)
 }
 
 #if 0
+/* SECTIONS
+typedef struct {
+	uint32_t   sh_name;
+	uint32_t   sh_type;
+	uint64_t   sh_flags;
+	Elf64_Addr sh_addr;
+	Elf64_Off  sh_offset;
+	uint64_t   sh_size;
+	uint32_t   sh_link;
+	uint32_t   sh_info;
+	uint64_t   sh_addralign;
+	uint64_t   sh_entsize;
+} Elf64_Shdr;
+*/
 /* Sections are contained within ProgramHeaders (mostly) */
 SnapshotImageSectionHeader* startSectionHeader(SnapshotImageProgramHeader *programHeader);
 void endSectionHeader(SnapshotImageSectionHeader *sectionHeader;
 
-
-
-/* SECTIONS
-typedef struct {
-        Elf64_Word      sh_name;
-        Elf64_Word      sh_type;
-        Elf64_Xword     sh_flags;
-        Elf64_Addr      sh_addr;
-        Elf64_Off       sh_offset;
-        Elf64_Xword     sh_size;
-        Elf64_Word      sh_link;
-        Elf64_Word      sh_info;
-        Elf64_Xword     sh_addralign;
-        Elf64_Xword     sh_entsize;
-} Elf64_Shdr;
-*/
-
 #endif
+
+/**
+ * Write the null section header.  It's required in every file with
+ * section headers and not worth adding to a list.  Treat it as
+ * special case as it must be writen first
+ */
+bool SnapshotImageWriter::writeNULLSectionHeader()
+{
+	Elf64_Shdr zeroSection = {0};
+	writeBytes(reinterpret_cast<uint8_t*>(&zeroSection), sizeof(zeroSection));
+	return true;
+}
+
+bool SnapshotImageWriter::writeShstrtabSectionHeader(void)
+{
+	// write the names of each section into this section
+	// Must start with `\0` and end with `\0` (of the last string)
+	// Each section will have an index into this for its sh_name
+	// Type SHT_STRTAB
+#if 0
+	// TODO: need to create a string table abstraction and have at least two - static strings vs dynamic ones
+	Elf64_Shdr stringTable = {0};
+	stringTable.sh_name = getStringTableIndex(".shstrtab"); // static
+	stringTable.sh_type = SHT_STRTAB;
+	stringTable.sh_offset = 0; //TODO - save _file_offset
+	stringTable.sh_size = getStringTableSize();	// static
+	writeBytes(reinterpret_cast<uint8_t*>(&stringTable), sizeof(stringTable));
+#endif
+	return true;
+}
+
+void SnapshotImageWriter::writeSectionHeaders(void)
+{
+	_section_header_start_offset = _file_offset;
+	_num_section_headers += 1; //temporary hack
+	writeNULLSectionHeader();
+
+}
+
 
 /* Open image file for writing.
  *
@@ -278,7 +314,7 @@ writeSnapshotImageFile(J9JavaVM *vm)
 		
 		// Write program and section headers at the end of the file
 		writer.writeProgramHeaders();
-		// TODO: section headers
+		writer.writeSectionHeaders();
 
 		/* Go back and write the ELF header last so we have all the
 		 * info necessary - ie: number of program and section headers -
