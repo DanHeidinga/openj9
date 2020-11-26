@@ -26,10 +26,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "hashtable_api.h"
 #include "SnapshotImageWriter.hpp"
 #include "vm_api.h"
 
-SnapshotImageWriter::SnapshotImageWriter(const char *filename, bool is_little_endian) :
+static uintptr_t string_table_hash(void *entry, void *userData);
+static uintptr_t string_table_equal(void *leftEntry, void *rightEntry, void *userData);
+static void string_table_print(OMRPortLibrary *portLibrary, void *entry, void *userData); 
+
+SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *port_lib, bool is_little_endian) :
 	_filename(filename),
 	_is_little_endian(is_little_endian),
 	_image_file(nullptr),
@@ -41,7 +46,9 @@ SnapshotImageWriter::SnapshotImageWriter(const char *filename, bool is_little_en
 	_file_offset(0),
 	_is_invalid(false),
 	_program_headers(nullptr),
-	_program_headers_tail(nullptr)
+	_program_headers_tail(nullptr),
+	_port_lib(port_lib),
+	_static_string_table(port_lib)
 {
 	printf("SnapshotImageWriter\n");
 }
@@ -49,6 +56,18 @@ SnapshotImageWriter::SnapshotImageWriter(const char *filename, bool is_little_en
 SnapshotImageWriter::~SnapshotImageWriter()
 {
 	printf("Deleting SnapshotImageWriter\n");
+	if (_num_program_headers > 0) {
+		SnapshotImageProgramHeader *iter = _program_headers;
+		while (nullptr != iter) {
+			SnapshotImageProgramHeader *prev = iter;
+			iter = iter->next;
+			free(prev);
+		}
+	}
+	if (_num_section_headers > 0) {
+		/* TODO: free the section headers */
+	}
+
 }
 
 // TODO
@@ -96,7 +115,7 @@ static void printProgramHeader(SnapshotImageProgramHeader *header) {
 }
 
 SnapshotImageProgramHeader* SnapshotImageWriter::startProgramHeader(uint32_t type, uint32_t flags, Elf64_Addr vaddr, Elf64_Addr paddr, uint64_t align) {
-	SnapshotImageProgramHeader *header = (SnapshotImageProgramHeader *)malloc(sizeof(SnapshotImageProgramHeader));
+	SnapshotImageProgramHeader *header = static_cast<SnapshotImageProgramHeader *>(malloc(sizeof(SnapshotImageProgramHeader)));
 	if (header == nullptr) {
 		invalidateFile();
 		return nullptr;
@@ -174,28 +193,38 @@ bool SnapshotImageWriter::writeNULLSectionHeader()
 	return true;
 }
 
-bool SnapshotImageWriter::writeShstrtabSectionHeader(void)
+SnapshotImageSectionHeader* SnapshotImageWriter::createShstrtabSectionHeader(void)
 {
-	// write the names of each section into this section
-	// Must start with `\0` and end with `\0` (of the last string)
-	// Each section will have an index into this for its sh_name
-	// Type SHT_STRTAB
-#if 0
-	// TODO: need to create a string table abstraction and have at least two - static strings vs dynamic ones
-	Elf64_Shdr stringTable = {0};
-	stringTable.sh_name = getStringTableIndex(".shstrtab"); // static
-	stringTable.sh_type = SHT_STRTAB;
-	stringTable.sh_offset = 0; //TODO - save _file_offset
-	stringTable.sh_size = getStringTableSize();	// static
-	writeBytes(reinterpret_cast<uint8_t*>(&stringTable), sizeof(stringTable));
-#endif
+	SnapshotImageSectionHeader *header = static_cast<SnapshotImageSectionHeader *>(malloc(sizeof(SnapshotImageSectionHeader)));
+	if (header == nullptr) {
+		invalidateFile();
+		return nullptr;
+	}
+	memset(header, 0, sizeof(*header));
+	header->s_header.sh_name = _static_string_table.get_string_table_index(".shstrtab");
+	header->s_header.sh_type = SHT_STRTAB;
+	return header;
+}
+
+bool SnapshotImageWriter::writeStringTable(SnapshotImageSectionHeader *header, StringTable *table)
+{
+	header->s_header.sh_offset = _file_offset;
+	header->s_header.sh_size = table->get_table_size();
+	return table->write_table_segment(this);
+}
+
+bool SnapshotImageWriter::writeSectionHeader(SnapshotImageSectionHeader *header)
+{
+	_index_name_section_header = 1;	// HACK - temporary
+	writeBytes(reinterpret_cast<uint8_t*>(&header->s_header), sizeof(header->s_header));
+
 	return true;
 }
 
 void SnapshotImageWriter::writeSectionHeaders(void)
 {
 	_section_header_start_offset = _file_offset;
-	_num_section_headers += 1; //temporary hack
+	_num_section_headers += 2; //temporary hack
 	writeNULLSectionHeader();
 
 }
@@ -235,7 +264,7 @@ bool SnapshotImageWriter::closeFile(void)
  * Write bytes into the file.  Always use this method to write the bytes
  * as it tracks the current file offset.
  */
-void SnapshotImageWriter::writeBytes(uint8_t * buffer, size_t num_bytes, bool update_offset) {
+void SnapshotImageWriter::writeBytes(const uint8_t * buffer, size_t num_bytes, bool update_offset) {
 	fwrite(buffer, sizeof(uint8_t), num_bytes, _image_file);
 	if (update_offset) {
 		_file_offset += num_bytes;
@@ -304,7 +333,12 @@ void SnapshotImageWriter::writeHeader(void)
 extern "C" void
 writeSnapshotImageFile(J9JavaVM *vm)
 {
-	SnapshotImageWriter writer("DanTest.image");
+	SnapshotImageWriter::writeSnapshotFile(vm);
+}
+
+void SnapshotImageWriter::writeSnapshotFile(J9JavaVM *vm)
+{
+	SnapshotImageWriter writer("DanTest.image", vm->portLibrary);
 	if (writer.openFile()) {
 		writer.reserveHeaderSpace();
 		// TODO: Write segments
@@ -312,9 +346,15 @@ writeSnapshotImageFile(J9JavaVM *vm)
 		SnapshotImageProgramHeader *h = writer.startProgramHeader(PT_LOAD, PF_X | PF_R, 0x1000, 0, 0x1000);
 		writer.endProgramHeader(h);
 		
+		// write the special sections, like the string tables and symbol tables
+		// that aren't part of any existing Program Header
+		SnapshotImageSectionHeader* strtab = writer.createShstrtabSectionHeader();
+		writer.writeStringTable(strtab, writer.get_static_string_table());
+
 		// Write program and section headers at the end of the file
 		writer.writeProgramHeaders();
 		writer.writeSectionHeaders();
+		writer.writeSectionHeader(strtab);
 
 		/* Go back and write the ELF header last so we have all the
 		 * info necessary - ie: number of program and section headers -
@@ -324,4 +364,124 @@ writeSnapshotImageFile(J9JavaVM *vm)
 		writer.closeFile();
 	}
 
+}
+
+/*
+J9HashTable *
+hashTableNew(
+	OMRPortLibrary *portLibrary,
+	const char *tableName,
+	uint32_t tableSize,
+	uint32_t entrySize,
+	uint32_t entryAlignment,
+	uint32_t flags,
+	uint32_t memoryCategory,
+	J9HashTableHashFn hashFn,
+	J9HashTableEqualFn hashEqualFn,
+	J9HashTablePrintFn printFn,
+	void *functionUserData);
+*/
+StringTable::StringTable(J9PortLibrary *port_lib) :
+	_table_size(1),	/* Table must have the initial `\0` in it */
+	_list_head(nullptr),
+	_list_tail(nullptr)
+{
+		_string_table = hashTableNew(OMRPORT_FROM_J9PORT(port_lib),
+			"ElfStringTable", /* tableName */
+			0, /* table size */
+			sizeof(StringTableEntry) /* entry size */,
+			0, /* entryAlignment */
+			0, /* flags */
+			0, /* memoryCategory */
+			string_table_hash,
+			string_table_equal,
+			string_table_print,
+			NULL);
+}
+
+StringTable::~StringTable()
+{
+	if (nullptr != _string_table) {
+		hashTableFree(_string_table);
+	}
+}
+
+int64_t StringTable::get_string_table_index(const char *str)
+{
+	if (nullptr == str) {
+		/* All emtpy strings will map to the 0th entry */
+		return 0;
+	}
+
+	StringTableEntry examplar = {0};
+	examplar.str = str;
+	StringTableEntry *entry = static_cast<StringTableEntry*>(hashTableAdd(_string_table, &examplar));
+	if (entry->offset == 0) {
+		/* New entry.  Set the:
+		 * 	offset to the _table_size
+		 *  update the _table_size += num_bytes(entry->str) including the null
+		 *  add the entry to the list so we can traverse them in order
+		 */
+		size_t length = strlen(str) + 1; /* +1 for the null byte */
+		entry->offset = _table_size;
+		_table_size += length;
+		if (_list_head == nullptr) {
+			_list_head = entry;
+			_list_tail = entry;
+		} else {
+			_list_tail->next = entry;
+			_list_tail = entry;
+		}
+	}
+	return entry->offset;
+}
+
+bool StringTable::write_table_segment(SnapshotImageWriter *writer)
+{
+	// Write the initial null byte
+	uint8_t nulByte = '\0';
+	writer->writeBytes(&nulByte, 1);
+
+	StringTableEntry *iter = _list_head;
+	while (iter != nullptr) {
+		writer->writeBytes(reinterpret_cast<const uint8_t*>(iter->str), strlen(iter->str) + 1);
+		iter = iter->next;
+	}
+	return true;
+}
+
+
+static uintptr_t string_table_hash(void *the_entry, void *userData)
+{
+	StringTableEntry *entry = static_cast<StringTableEntry*>(the_entry);
+
+	/* Implementation of the elf_hash hashing function */
+	uintptr_t hash = 0;
+	const char *cursor = entry->str;
+	while ('\0' != *cursor) {
+		hash = (hash << 4) + *cursor++;
+		uintptr_t high = hash & 0xF0000000;
+		if (high != 0) {
+			hash ^= high >> 24;
+		}
+		hash &= ~high;
+	}
+	return hash;
+
+}
+static uintptr_t string_table_equal(void *leftEntry, void *rightEntry, void *userData)
+{
+	StringTableEntry *left = static_cast<StringTableEntry*>(leftEntry);
+	StringTableEntry *right = static_cast<StringTableEntry*>(rightEntry);
+
+	if (0 == strcmp(left->str, right->str)) {
+		return 0;
+	}
+	return 1;
+}
+
+static void string_table_print(OMRPortLibrary *portLibrary, void *the_entry, void *userData)
+{
+	StringTableEntry *entry = static_cast<StringTableEntry*>(the_entry);
+	printf("{.str: '%s', .offset: %" PRIu64 " .next: %p} \n", entry->str, entry->offset, entry->next);
 }

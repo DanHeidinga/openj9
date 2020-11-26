@@ -23,9 +23,11 @@
 #ifndef SNAPSHOTIMAGEWRITER_HPP_
 #define SNAPSHOTIMAGEWRITER_HPP_
 
-#include "j9cfg.h"
 #include <elf.h>
 #include <stdio.h>
+
+#include "j9cfg.h"
+#include "vm_api.h"
 
 typedef struct SnapshotImageSectionHeader {
 		Elf64_Shdr s_header;
@@ -40,6 +42,95 @@ typedef struct SnapshotImageProgramHeader {
 		int64_t numSections;
 } SnapshotImageProgramHeader;
 
+typedef struct StringTableEntry {
+	const char *str;
+	/* Used to chain the entries in order for writing them out */
+	StringTableEntry *next;
+	uint64_t offset;
+} StringTableEntry;
+
+/* Forward declaration */
+class SnapshotImageWriter;
+
+/*
+ * The string table will write data into the file
+ * with the following format:
+ * 		\0AA\0BB\0
+ * And Strings with indexes:
+ * 0 - \0  "none"
+ * 1 - AA
+ * 5 - BB
+ * 7 - null string
+ *
+ */
+class StringTable {
+	/**
+	 * Data members:
+	 */
+private:
+	int64_t _table_size;
+
+	/* Table to map entries to their offset */
+	J9HashTable *_string_table;
+
+	/* List used to write out the entries in the table
+	 * so we can traverse them in the correct order
+	 */
+	StringTableEntry *_list_head;
+	StringTableEntry *_list_tail;
+
+protected:
+public:
+
+	/**
+	 * Function members:
+	 */
+private:
+protected:
+public:
+
+	/**
+	 * Construct a new StringTable.
+	 *
+	 * @param portLib a J9PortLibrary used to allocate / construct in the hashtable
+	 */
+	StringTable(J9PortLibrary *portLib);
+
+	/**
+	 * Descructor: free the hashtable backing the string table.
+	 */
+	~StringTable();
+
+	/**
+	 * Find the index for the `str`.  If `str` is
+	 * already in the table, then return the existing
+	 * index.  Otherwise, add the string to the table
+	 * and then return its index
+	 *
+	 * @param str the string to get an index for
+	 * @return the index (offset from the start) of the string table
+	 */
+	int64_t get_string_table_index(const char *str);
+
+	/**
+	 * Return the size of the table.  The size is
+	 * as calculated as the segment size for the elf
+	 * file.
+	 *
+	 * For a table with the strings "AA" && "BB", the
+	 * size would be 7.
+	 *
+	 * @return the segment size of the table.
+	 */
+	int64_t get_table_size() { return _table_size; }
+
+	/**
+	 * Write the table using the provided writer
+	 *
+	 * @return true if successful, false on failure
+	 */
+	bool write_table_segment(SnapshotImageWriter *writer);
+};
 
 class SnapshotImageWriter
 {
@@ -82,6 +173,11 @@ private:
 	SnapshotImageSectionHeader *_header_sections;
 	SnapshotImageSectionHeader *_header_sections_tail;
 
+	J9PortLibrary *_port_lib;
+
+	StringTable _static_string_table;
+	//StringTable _dynamic_string_table;
+
 protected:
 public:
 
@@ -92,13 +188,17 @@ private:
 protected:
 	void invalidateFile(void) { _is_invalid = true; }
 	bool isFileValid(void) { return !_is_invalid; };
-	void writeBytes(uint8_t *buffer, size_t num_bytes, bool update_offset = true);
+	void writeBytes(const uint8_t *buffer, size_t num_bytes, bool update_offset = true);
 
 	bool writeNULLSectionHeader();
-	bool writeShstrtabSectionHeader(void);
+	//bool writeShstrtabSectionHeader(void);
+	SnapshotImageSectionHeader* createShstrtabSectionHeader(void);
+	bool writeStringTable(SnapshotImageSectionHeader *header, StringTable *table);
+	bool writeSectionHeader(SnapshotImageSectionHeader *header);
+	StringTable* get_static_string_table(void) { return &_static_string_table; }
 
 public:
-	SnapshotImageWriter(const char* filename, bool isLittleEndian = true);
+	SnapshotImageWriter(const char* filename, J9PortLibrary *portLib, bool isLittleEndian = true);
 	~SnapshotImageWriter();
 
 	bool openFile(void);
@@ -111,6 +211,8 @@ public:
 	void writeProgramHeaders(void);
 	void writeSectionHeaders(void);
 
+	static void writeSnapshotFile(J9JavaVM *vm);
+friend StringTable;
 };
 
 #endif /* SNAPSHOTIMAGEWRITER_HPP_ */
