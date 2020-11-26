@@ -48,9 +48,26 @@ SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *po
 	_program_headers(nullptr),
 	_program_headers_tail(nullptr),
 	_port_lib(port_lib),
-	_static_string_table(port_lib)
+	_section_header_name_string_table(port_lib),
+	_section_header_string_table_header(nullptr)
 {
 	printf("SnapshotImageWriter\n");
+	/**
+	 * Create the null section header.  It's required in every file with
+	 * section headers and not worth adding to a list.  Treat it as
+	 * special case as it must be writen first.  We can force this by
+	 * having it be first in the list
+	 */
+	SnapshotImageSectionHeader* zeroSectionHeader = allocateSectionHeader(0, nullptr);
+	_section_headers = zeroSectionHeader;
+	_section_headers_tail = zeroSectionHeader;
+	_num_section_headers += 1;
+
+	/**
+	 * Create the section header string table ("shstrtab") section as its needed to name
+	 * the other sections
+	 */
+	createSectionHeaderStringTableSection();
 }
 
 SnapshotImageWriter::~SnapshotImageWriter()
@@ -69,16 +86,6 @@ SnapshotImageWriter::~SnapshotImageWriter()
 	}
 
 }
-
-// TODO
-// Need an abstraction for a Segment and for sections in that segement
-#if 0
-Elf64_Phdr *_programHeader;   /**< The ELFProgramHeader, required for executable ELF */
-
-    /**< The section headers and the sectionheader names */
-Elf64_Shdr *_zeroSection;
-#endif
-
 
 /* PROGRAM HEADER
 typedef struct {
@@ -181,29 +188,42 @@ void endSectionHeader(SnapshotImageSectionHeader *sectionHeader;
 
 #endif
 
-/**
- * Write the null section header.  It's required in every file with
- * section headers and not worth adding to a list.  Treat it as
- * special case as it must be writen first
- */
-bool SnapshotImageWriter::writeNULLSectionHeader()
-{
-	Elf64_Shdr zeroSection = {0};
-	writeBytes(reinterpret_cast<uint8_t*>(&zeroSection), sizeof(zeroSection));
-	return true;
-}
 
-SnapshotImageSectionHeader* SnapshotImageWriter::createShstrtabSectionHeader(void)
-{
+
+SnapshotImageSectionHeader* SnapshotImageWriter::allocateSectionHeader(uint32_t type, const char *section_name) {
 	SnapshotImageSectionHeader *header = static_cast<SnapshotImageSectionHeader *>(malloc(sizeof(SnapshotImageSectionHeader)));
 	if (header == nullptr) {
 		invalidateFile();
 		return nullptr;
 	}
 	memset(header, 0, sizeof(*header));
-	header->s_header.sh_name = _static_string_table.get_string_table_index(".shstrtab");
-	header->s_header.sh_type = SHT_STRTAB;
+	header->s_header.sh_type = type;
+	header->s_header.sh_name = _section_header_name_string_table.get_string_table_index(section_name);
 	return header;
+}
+
+void SnapshotImageWriter::append_to_section_header_list(SnapshotImageSectionHeader* header)
+{
+	/* List will always have th zero section header in it first so we can unconditionally
+	 * add to the tail without needing to check the head
+	 */
+	_section_headers_tail->next = header;
+	_section_headers_tail = header;
+	_num_section_headers += 1;
+}
+
+/**
+ * Create the SECTION HEADER string table, which will contain the names of new sections.
+ */
+SnapshotImageSectionHeader* SnapshotImageWriter::createSectionHeaderStringTableSection(void)
+{
+	if (_section_header_string_table_header == nullptr) {
+		SnapshotImageSectionHeader *header = allocateSectionHeader(SHT_STRTAB, ".shstrtab");
+		_index_name_section_header = _num_section_headers;
+		_section_header_string_table_header = header;
+		append_to_section_header_list(header);
+	}
+	return _section_header_string_table_header;
 }
 
 bool SnapshotImageWriter::writeStringTable(SnapshotImageSectionHeader *header, StringTable *table)
@@ -215,17 +235,21 @@ bool SnapshotImageWriter::writeStringTable(SnapshotImageSectionHeader *header, S
 
 bool SnapshotImageWriter::writeSectionHeader(SnapshotImageSectionHeader *header)
 {
-	_index_name_section_header = 1;	// HACK - temporary
 	writeBytes(reinterpret_cast<uint8_t*>(&header->s_header), sizeof(header->s_header));
-
 	return true;
 }
 
 void SnapshotImageWriter::writeSectionHeaders(void)
 {
-	_section_header_start_offset = _file_offset;
-	_num_section_headers += 2; //temporary hack
-	writeNULLSectionHeader();
+	if (_section_headers != nullptr) {
+		/* Record the offset for the ELF header */
+		_section_header_start_offset = _file_offset;
+		SnapshotImageSectionHeader *iterator = _section_headers;
+		while (iterator != nullptr) {
+			writeSectionHeader(iterator);
+			iterator = iterator->next;
+		}
+	}
 
 }
 
@@ -348,13 +372,11 @@ void SnapshotImageWriter::writeSnapshotFile(J9JavaVM *vm)
 		
 		// write the special sections, like the string tables and symbol tables
 		// that aren't part of any existing Program Header
-		SnapshotImageSectionHeader* strtab = writer.createShstrtabSectionHeader();
-		writer.writeStringTable(strtab, writer.get_static_string_table());
+		writer.writeStringTable(writer._section_header_string_table_header, writer.get_section_header_name_string_table());
 
 		// Write program and section headers at the end of the file
 		writer.writeProgramHeaders();
 		writer.writeSectionHeaders();
-		writer.writeSectionHeader(strtab);
 
 		/* Go back and write the ELF header last so we have all the
 		 * info necessary - ie: number of program and section headers -
@@ -406,7 +428,7 @@ StringTable::~StringTable()
 	}
 }
 
-int64_t StringTable::get_string_table_index(const char *str)
+uint64_t StringTable::get_string_table_index(const char *str)
 {
 	if (nullptr == str) {
 		/* All emtpy strings will map to the 0th entry */

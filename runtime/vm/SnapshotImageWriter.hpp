@@ -110,7 +110,7 @@ public:
 	 * @param str the string to get an index for
 	 * @return the index (offset from the start) of the string table
 	 */
-	int64_t get_string_table_index(const char *str);
+	uint64_t get_string_table_index(const char *str);
 
 	/**
 	 * Return the size of the table.  The size is
@@ -168,14 +168,15 @@ private:
 	 *
 	 * This list is to track those sections:
 	 *	* zero (NULL) section
-	 *	* string table (SHT_STRTAB)
+	 *	* section header string table (SHT_STRTAB)
 	 */
-	SnapshotImageSectionHeader *_header_sections;
-	SnapshotImageSectionHeader *_header_sections_tail;
+	SnapshotImageSectionHeader *_section_headers;
+	SnapshotImageSectionHeader *_section_headers_tail;
 
 	J9PortLibrary *_port_lib;
 
-	StringTable _static_string_table;
+	StringTable _section_header_name_string_table;
+	SnapshotImageSectionHeader * _section_header_string_table_header;
 	//StringTable _dynamic_string_table;
 
 protected:
@@ -185,6 +186,22 @@ public:
 	 * Function Members
 	 */
 private:
+	/* Private API that allocates a new section but doesn't increment the section counters, etc */
+	SnapshotImageSectionHeader* allocateSectionHeader(uint32_t type, const char *section_name);
+
+	/* Adds to the section_header_list for sections that aren't contained in a program header */
+	void append_to_section_header_list(SnapshotImageSectionHeader* header);
+
+	/* Create the shrstrtab (section header string table) section.  This happens as a by product
+	 * of creating a section header and naming it.
+	 */
+	SnapshotImageSectionHeader* createSectionHeaderStringTableSection(void);
+
+	/* Add a string to the section header string table which records the names of sections.
+	 * Caller is responsible to keep the string alive for the entirity of the image write.
+	 */
+	uint64_t add_section_header_name(const char* str);
+
 protected:
 	void invalidateFile(void) { _is_invalid = true; }
 	bool isFileValid(void) { return !_is_invalid; };
@@ -195,7 +212,7 @@ protected:
 	SnapshotImageSectionHeader* createShstrtabSectionHeader(void);
 	bool writeStringTable(SnapshotImageSectionHeader *header, StringTable *table);
 	bool writeSectionHeader(SnapshotImageSectionHeader *header);
-	StringTable* get_static_string_table(void) { return &_static_string_table; }
+	StringTable* get_section_header_name_string_table(void) { return &_section_header_name_string_table; }
 
 public:
 	SnapshotImageWriter(const char* filename, J9PortLibrary *portLib, bool isLittleEndian = true);
