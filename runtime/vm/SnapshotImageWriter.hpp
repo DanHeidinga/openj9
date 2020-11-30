@@ -194,6 +194,14 @@ private:
 protected:
 public:
 	SymbolTable(StringTable *string_table, J9PortLibrary *port_lib);
+	~SymbolTable();
+
+	/**
+	 * Return the number of symbols in the table.
+	 *
+	 * @return the number of symbols in the table
+	 */
+	int64_t get_number_of_symbols();
 };
 
 class SnapshotImageWriter
@@ -294,7 +302,9 @@ public:
 	void writeSectionHeaders(void);
 
 	static void writeSnapshotFile(J9JavaVM *vm);
+
 friend StringTable;
+friend SymbolTable;
 };
 
 #endif /* SNAPSHOTIMAGEWRITER_HPP_ */

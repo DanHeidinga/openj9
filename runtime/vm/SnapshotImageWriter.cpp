@@ -409,21 +409,6 @@ void SnapshotImageWriter::writeSnapshotFile(J9JavaVM *vm)
 
 }
 
-/*
-J9HashTable *
-hashTableNew(
-	OMRPortLibrary *portLibrary,
-	const char *tableName,
-	uint32_t tableSize,
-	uint32_t entrySize,
-	uint32_t entryAlignment,
-	uint32_t flags,
-	uint32_t memoryCategory,
-	J9HashTableHashFn hashFn,
-	J9HashTableEqualFn hashEqualFn,
-	J9HashTablePrintFn printFn,
-	void *functionUserData);
-*/
 StringTable::StringTable(J9PortLibrary *port_lib)
 	: _table_size(1)	/* Table must have the initial `\0` in it */
 	, _list_head(nullptr)
@@ -440,7 +425,8 @@ StringTable::StringTable(J9PortLibrary *port_lib)
 			string_table_hash,
 			string_table_equal,
 			string_table_print,
-			NULL);
+			NULL /* userData */
+		);
 }
 
 StringTable::~StringTable()
@@ -460,6 +446,7 @@ uint64_t StringTable::get_string_table_index(const char *str)
 	StringTableEntry examplar = {0};
 	examplar.str = str;
 	StringTableEntry *entry = static_cast<StringTableEntry*>(hashTableAdd(_string_table, &examplar));
+	// todo - deal with allocation failure
 	if (entry->offset == 0) {
 		/* New entry.  Set the:
 		 * 	offset to the _table_size
@@ -544,8 +531,41 @@ SymbolTable::SymbolTable(StringTable *string_table, J9PortLibrary *port_lib)
 		0, /* minNumElements */
 		0, /* elementAlignment */
 		0, /* flags */
-		"SymbolTable", /* callsite */
+		"ElfSymbolTable", /* callsite */
 		0, /* memoryCategory */
 		POOL_FOR_PORT(_port_lib)
 	);
+
+	/* _symbol[0] is the STN_UNDEF symbol */
+	SymbolTableEntry *undef_symbol = static_cast<SymbolTableEntry*>(pool_newElement(_symbols));
+	if (nullptr == undef_symbol) {
+		//TODO - handle allocation failure
+	} else {
+		undef_symbol->symbol.st_shndx = SHN_UNDEF;
+	}
+}
+
+// TODO - API: Create a new symbol
+// TODO - API: Write the symbol table to a section
+// TODO - API: Write the section header and connect it to the symbol table
+
+//pool_do to iterator over all items
+
+int64_t SymbolTable::get_number_of_symbols()
+{
+	int64_t num_symbols = 0;
+	if (nullptr != _symbols) {
+		num_symbols = pool_numElements(_symbols);
+	}
+	return num_symbols;
+}
+
+/**
+ * Destroy the SymbolTable and free the J9Pool that backs it.
+ */
+SymbolTable::~SymbolTable()
+{
+	if (nullptr != _symbols) {
+		pool_kill(_symbols);
+	}
 }
