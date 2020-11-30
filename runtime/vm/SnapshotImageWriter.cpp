@@ -49,7 +49,9 @@ SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *po
 	_program_headers_tail(nullptr),
 	_port_lib(port_lib),
 	_section_header_name_string_table(port_lib),
-	_section_header_string_table_header(nullptr)
+	_section_header_string_table_header(nullptr),
+	_static_string_table(port_lib),
+	_static_string_table_header(nullptr)
 {
 	printf("SnapshotImageWriter\n");
 	/**
@@ -68,6 +70,10 @@ SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *po
 	 * the other sections
 	 */
 	createSectionHeaderStringTableSection();
+
+	/* Create section header for the static string table */
+	_static_string_table_header = allocateSectionHeader(SHT_STRTAB, ".strtab");
+	append_to_section_header_list(_static_string_table_header);
 }
 
 SnapshotImageWriter::~SnapshotImageWriter()
@@ -354,6 +360,23 @@ void SnapshotImageWriter::writeHeader(void)
 	writeBytes(reinterpret_cast<uint8_t*>(&header), sizeof(Elf64_Ehdr), false);
 }
 
+/**
+ * Look up the index for a string in the static string table (.strtab).
+ *
+ * The string will be added to the table if it is not yet present and the offset
+ * in the table will be returned.
+ *
+ * The caller is responsible to keep the string alive until the SnapshotImageWriter
+ * has completed writing the file.
+ *
+ * @param str the string to add to the static string table
+ * @return the offset in the string table
+ */
+uint64_t SnapshotImageWriter::get_static_string_table_index(const char *str)
+{
+	return _static_string_table.get_string_table_index(str);
+}
+
 extern "C" void
 writeSnapshotImageFile(J9JavaVM *vm)
 {
@@ -367,12 +390,18 @@ void SnapshotImageWriter::writeSnapshotFile(J9JavaVM *vm)
 		writer.reserveHeaderSpace();
 		// TODO: Write segments
 		
+		writer.get_static_string_table_index("Foo");
+		writer.get_static_string_table_index("Bar");
+
 		SnapshotImageProgramHeader *h = writer.startProgramHeader(PT_LOAD, PF_X | PF_R, 0x1000, 0, 0x1000);
 		writer.endProgramHeader(h);
 		
 		// write the special sections, like the string tables and symbol tables
 		// that aren't part of any existing Program Header
 		writer.writeStringTable(writer._section_header_string_table_header, writer.get_section_header_name_string_table());
+
+		// write the .strtab string table
+		writer.writeStringTable(writer._static_string_table_header, &(writer._static_string_table));
 
 		// Write program and section headers at the end of the file
 		writer.writeProgramHeaders();

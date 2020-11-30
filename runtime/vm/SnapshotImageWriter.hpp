@@ -175,8 +175,14 @@ private:
 
 	J9PortLibrary *_port_lib;
 
+	/* Section Header string table (SHT_STRTAB): .shstrtab */
 	StringTable _section_header_name_string_table;
 	SnapshotImageSectionHeader * _section_header_string_table_header;
+
+	/* Static string table (SHT_STRTAB): .strtab */
+	StringTable _static_string_table;
+	SnapshotImageSectionHeader * _static_string_table_header;
+
 	//StringTable _dynamic_string_table;
 
 protected:
@@ -222,6 +228,8 @@ public:
 	bool closeFile(void);
 	void reserveHeaderSpace(void);
 	void writeHeader(void);
+
+	uint64_t get_static_string_table_index(const char *str);
 
 	SnapshotImageProgramHeader* startProgramHeader(uint32_t type, uint32_t flags, Elf64_Addr vaddr, Elf64_Addr paddr, uint64_t align) ;
 	void endProgramHeader(SnapshotImageProgramHeader *programHeader, uint64_t extraMemSize = 0);
