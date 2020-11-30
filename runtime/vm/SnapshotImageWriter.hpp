@@ -49,6 +49,14 @@ typedef struct StringTableEntry {
 	uint64_t offset;
 } StringTableEntry;
 
+typedef struct SymbolTableEntry {
+	Elf64_Sym symbol;
+	/* Intended for chaining through the symbols to
+	 * create the hashtable chains
+	 */
+	SymbolTableEntry *hash_chain;
+} SymbolTableEntry;
+
 /* Forward declaration */
 class SnapshotImageWriter;
 
@@ -148,6 +156,44 @@ public:
 	 * @return true if successful, false on failure
 	 */
 	bool write_table_segment(SnapshotImageWriter *writer);
+};
+
+/*
+typedef struct {
+	uint32_t      st_name;
+	unsigned char st_info;
+	unsigned char st_other;
+	uint16_t      st_shndx;
+	Elf64_Addr    st_value;
+	uint64_t      st_size;
+} Elf64_Sym;
+*/
+class SymbolTable
+{
+/**
+ * Data Members
+ */
+private:
+	StringTable *_string_table;
+
+	/* Required to allocate the Pool */
+	J9PortLibrary *_port_lib;
+
+	// Vector? of symbols
+	// Or linked list?  Will eventually want to be able to chain through the symbols
+	// for the hash table.
+	J9Pool *_symbols;
+
+protected:
+public:
+
+/**
+ * Function members
+ */
+private:
+protected:
+public:
+	SymbolTable(StringTable *string_table, J9PortLibrary *port_lib);
 };
 
 class SnapshotImageWriter

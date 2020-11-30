@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include "hashtable_api.h"
+#include "omrutil.h"
 #include "SnapshotImageWriter.hpp"
 #include "vm_api.h"
 
@@ -220,20 +221,6 @@ void SnapshotImageWriter::append_to_section_header_list(SnapshotImageSectionHead
 	_section_headers_tail->next = header;
 	_section_headers_tail = header;
 	_num_section_headers += 1;
-}
-
-/**
- * Create the SECTION HEADER string table, which will contain the names of new sections.
- */
-SnapshotImageSectionHeader* SnapshotImageWriter::createSectionHeaderStringTableSection(void)
-{
-	if (_section_header_string_table_header == nullptr) {
-		SnapshotImageSectionHeader *header = allocateSectionHeader(SHT_STRTAB, ".shstrtab");
-		_index_name_section_header = _num_section_headers;
-		_section_header_string_table_header = header;
-		append_to_section_header_list(header);
-	}
-	return _section_header_string_table_header;
 }
 
 bool SnapshotImageWriter::writeStringTable(StringTable *table)
@@ -541,4 +528,24 @@ static void string_table_print(OMRPortLibrary *portLibrary, void *the_entry, voi
 {
 	StringTableEntry *entry = static_cast<StringTableEntry*>(the_entry);
 	printf("{.str: '%s', .offset: %" PRIu64 " .next: %p} \n", entry->str, entry->offset, entry->next);
+}
+
+/**
+ * Create a SymbolTable that stores its strings in `string_table` and allocates
+ * its backing storage (a J9Pool) with the `port_lib`
+ */
+SymbolTable::SymbolTable(StringTable *string_table, J9PortLibrary *port_lib)
+	: _string_table(string_table)
+	, _port_lib(port_lib)
+	, _symbols(nullptr)
+{
+	_symbols = pool_new(
+		sizeof(SymbolTableEntry),
+		0, /* minNumElements */
+		0, /* elementAlignment */
+		0, /* flags */
+		"SymbolTable", /* callsite */
+		0, /* memoryCategory */
+		POOL_FOR_PORT(_port_lib)
+	);
 }
