@@ -79,6 +79,9 @@ private:
 	StringTableEntry *_list_head;
 	StringTableEntry *_list_tail;
 
+	/* Section containing the StringTable */
+	SnapshotImageSectionHeader *_section;
+
 protected:
 public:
 
@@ -100,6 +103,21 @@ public:
 	 * Descructor: free the hashtable backing the string table.
 	 */
 	~StringTable();
+
+	/**
+	 * Set the section header related to this string table
+	 *
+	 * @param header the SnapshotImageSectionHeader pointer representing this string table.
+	 * @return void
+	 */
+	void set_section_header(SnapshotImageSectionHeader *header) { _section = header;}
+
+	/**
+	 * Get the section header related to this string table
+	 *
+	 *  @return the SnapshotImageSectionHeader pointer representing this string table.
+	 */
+	SnapshotImageSectionHeader * get_section_header(void) { return _section;}
 
 	/**
 	 * Find the index for the `str`.  If `str` is
@@ -198,11 +216,6 @@ private:
 	/* Adds to the section_header_list for sections that aren't contained in a program header */
 	void append_to_section_header_list(SnapshotImageSectionHeader* header);
 
-	/* Create the shrstrtab (section header string table) section.  This happens as a by product
-	 * of creating a section header and naming it.
-	 */
-	SnapshotImageSectionHeader* createSectionHeaderStringTableSection(void);
-
 	/* Add a string to the section header string table which records the names of sections.
 	 * Caller is responsible to keep the string alive for the entirity of the image write.
 	 */
@@ -214,9 +227,7 @@ protected:
 	void writeBytes(const uint8_t *buffer, size_t num_bytes, bool update_offset = true);
 
 	bool writeNULLSectionHeader();
-	//bool writeShstrtabSectionHeader(void);
-	SnapshotImageSectionHeader* createShstrtabSectionHeader(void);
-	bool writeStringTable(SnapshotImageSectionHeader *header, StringTable *table);
+	bool writeStringTable(StringTable *table);
 	bool writeSectionHeader(SnapshotImageSectionHeader *header);
 	StringTable* get_section_header_name_string_table(void) { return &_section_header_name_string_table; }
 

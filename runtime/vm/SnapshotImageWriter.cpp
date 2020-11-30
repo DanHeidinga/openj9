@@ -34,24 +34,24 @@ static uintptr_t string_table_hash(void *entry, void *userData);
 static uintptr_t string_table_equal(void *leftEntry, void *rightEntry, void *userData);
 static void string_table_print(OMRPortLibrary *portLibrary, void *entry, void *userData); 
 
-SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *port_lib, bool is_little_endian) :
-	_filename(filename),
-	_is_little_endian(is_little_endian),
-	_image_file(nullptr),
-	_num_program_headers(0),
-	_num_section_headers(0),
-	_index_name_section_header(0),
-	_program_header_start_offset(0),
-	_section_header_start_offset(0),
-	_file_offset(0),
-	_is_invalid(false),
-	_program_headers(nullptr),
-	_program_headers_tail(nullptr),
-	_port_lib(port_lib),
-	_section_header_name_string_table(port_lib),
-	_section_header_string_table_header(nullptr),
-	_static_string_table(port_lib),
-	_static_string_table_header(nullptr)
+SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *port_lib, bool is_little_endian)
+	: _filename(filename)
+	, _is_little_endian(is_little_endian)
+	, _image_file(nullptr)
+	, _num_program_headers(0)
+	, _num_section_headers(0)
+	, _index_name_section_header(0)
+	, _program_header_start_offset(0)
+	, _section_header_start_offset(0)
+	, _file_offset(0)
+	, _is_invalid(false)
+	, _program_headers(nullptr)
+	, _program_headers_tail(nullptr)
+	, _port_lib(port_lib)
+	, _section_header_name_string_table(_port_lib)
+	, _section_header_string_table_header(nullptr)
+	, _static_string_table(port_lib)
+	, _static_string_table_header(nullptr)
 {
 	printf("SnapshotImageWriter\n");
 	/**
@@ -69,11 +69,15 @@ SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *po
 	 * Create the section header string table ("shstrtab") section as its needed to name
 	 * the other sections
 	 */
-	createSectionHeaderStringTableSection();
+	_section_header_string_table_header = allocateSectionHeader(SHT_STRTAB, ".shstrtab");
+	_index_name_section_header = _num_section_headers;
+	append_to_section_header_list(_section_header_string_table_header);
+	_section_header_name_string_table.set_section_header(_section_header_string_table_header);
 
-	/* Create section header for the static string table */
+	/* Create section header for the static string table (".strtab") */
 	_static_string_table_header = allocateSectionHeader(SHT_STRTAB, ".strtab");
 	append_to_section_header_list(_static_string_table_header);
+	_static_string_table.set_section_header(_static_string_table_header);
 }
 
 SnapshotImageWriter::~SnapshotImageWriter()
@@ -232,8 +236,9 @@ SnapshotImageSectionHeader* SnapshotImageWriter::createSectionHeaderStringTableS
 	return _section_header_string_table_header;
 }
 
-bool SnapshotImageWriter::writeStringTable(SnapshotImageSectionHeader *header, StringTable *table)
+bool SnapshotImageWriter::writeStringTable(StringTable *table)
 {
+	SnapshotImageSectionHeader *header = table->get_section_header();
 	header->s_header.sh_offset = _file_offset;
 	header->s_header.sh_size = table->get_table_size();
 	return table->write_table_segment(this);
@@ -398,10 +403,10 @@ void SnapshotImageWriter::writeSnapshotFile(J9JavaVM *vm)
 		
 		// write the special sections, like the string tables and symbol tables
 		// that aren't part of any existing Program Header
-		writer.writeStringTable(writer._section_header_string_table_header, writer.get_section_header_name_string_table());
+		writer.writeStringTable(writer.get_section_header_name_string_table());
 
 		// write the .strtab string table
-		writer.writeStringTable(writer._static_string_table_header, &(writer._static_string_table));
+		writer.writeStringTable(&(writer._static_string_table));
 
 		// Write program and section headers at the end of the file
 		writer.writeProgramHeaders();
@@ -432,10 +437,11 @@ hashTableNew(
 	J9HashTablePrintFn printFn,
 	void *functionUserData);
 */
-StringTable::StringTable(J9PortLibrary *port_lib) :
-	_table_size(1),	/* Table must have the initial `\0` in it */
-	_list_head(nullptr),
-	_list_tail(nullptr)
+StringTable::StringTable(J9PortLibrary *port_lib)
+	: _table_size(1)	/* Table must have the initial `\0` in it */
+	, _list_head(nullptr)
+	, _list_tail(nullptr)
+	, _section(nullptr)
 {
 		_string_table = hashTableNew(OMRPORT_FROM_J9PORT(port_lib),
 			"ElfStringTable", /* tableName */
