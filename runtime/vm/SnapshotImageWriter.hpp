@@ -33,6 +33,10 @@ typedef struct SnapshotImageSectionHeader {
 		Elf64_Shdr s_header;
 		char *name;
 		SnapshotImageSectionHeader *next;
+		/* global index in the section table header section,
+		 * this applies across program section groups
+		 */
+		uint64_t index;
 } SnapshotImageSectionHeader;
 
 typedef struct SnapshotImageProgramHeader {
@@ -202,6 +206,8 @@ public:
 	 * @return the number of symbols in the table
 	 */
 	int64_t get_number_of_symbols();
+
+	SymbolTableEntry * create_symbol(const char *name, char info, char other, uint64_t sectionIndex, uintptr_t value, uint64_t size);
 };
 
 class SnapshotImageWriter

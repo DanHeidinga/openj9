@@ -64,14 +64,13 @@ SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *po
 	SnapshotImageSectionHeader* zeroSectionHeader = allocateSectionHeader(0, nullptr);
 	_section_headers = zeroSectionHeader;
 	_section_headers_tail = zeroSectionHeader;
-	_num_section_headers += 1;
 
 	/**
 	 * Create the section header string table ("shstrtab") section as its needed to name
 	 * the other sections
 	 */
 	_section_header_string_table_header = allocateSectionHeader(SHT_STRTAB, ".shstrtab");
-	_index_name_section_header = _num_section_headers;
+	_index_name_section_header = _section_header_string_table_header->index;
 	append_to_section_header_list(_section_header_string_table_header);
 	_section_header_name_string_table.set_section_header(_section_header_string_table_header);
 
@@ -92,8 +91,13 @@ SnapshotImageWriter::~SnapshotImageWriter()
 			free(prev);
 		}
 	}
-	if (_num_section_headers > 0) {
-		/* TODO: free the section headers */
+	if (_section_headers != nullptr) {
+		SnapshotImageSectionHeader *current = _section_headers;
+		while (current != nullptr) {
+			SnapshotImageSectionHeader *next = current->next;
+			free(current);
+			current = next;
+		}
 	}
 
 }
@@ -210,6 +214,8 @@ SnapshotImageSectionHeader* SnapshotImageWriter::allocateSectionHeader(uint32_t 
 	memset(header, 0, sizeof(*header));
 	header->s_header.sh_type = type;
 	header->s_header.sh_name = _section_header_name_string_table.get_string_table_index(section_name);
+	header->index = _num_section_headers;
+	_num_section_headers += 1;
 	return header;
 }
 
@@ -220,7 +226,6 @@ void SnapshotImageWriter::append_to_section_header_list(SnapshotImageSectionHead
 	 */
 	_section_headers_tail->next = header;
 	_section_headers_tail = header;
-	_num_section_headers += 1;
 }
 
 bool SnapshotImageWriter::writeStringTable(StringTable *table)
