@@ -132,6 +132,18 @@ public:
 	SnapshotImageSectionHeader * get_section_header(void) { return _section;}
 
 	/**
+	 * Get the index for the section header or 0 if no header.
+	 * 
+	 * @return the section header index
+	 */
+	uint32_t get_section_header_index() {
+		if (_section != nullptr) {
+			return _section->index;
+		}
+		return 0;
+	}
+
+	/**
 	 * Find the index for the `str`.  If `str` is
 	 * already in the table, then return the existing
 	 * index.  Otherwise, add the string to the table
@@ -160,6 +172,12 @@ public:
 	 * @return true if successful, false on failure
 	 */
 	bool write_table_segment(SnapshotImageWriter *writer);
+
+	/**
+	 * Debug API to print the table to stdout.
+	 */
+	void debug_print_table();
+
 };
 
 /*
@@ -188,13 +206,68 @@ private:
 	// for the hash table.
 	J9Pool *_symbols;
 
+	/* Section containing the SymbolTable */
+	SnapshotImageSectionHeader *_section;
+
 protected:
 public:
+
+enum Binding {
+	Local = STB_LOCAL,
+	Global = STB_GLOBAL,
+	Weak = STB_WEAK
+};
+
+enum Type {
+	Notype = STT_NOTYPE,
+	Object = STT_OBJECT,
+	Func = STT_FUNC,
+	Section = STT_SECTION,
+	File = STT_FILE,
+	Common = STT_COMMON,
+	Tls = STT_TLS
+};
+
+enum Visibility {
+	Default = STV_DEFAULT,
+	Internal = STV_INTERNAL,
+	Hidden = STV_HIDDEN,
+	Protected = STV_PROTECTED
+};
 
 /**
  * Function members
  */
 private:
+
+	/**
+	 * Encode the Binding and Type so it can be stored in the
+	 * `st_info` Symbol field.
+	 *
+	 * @param b the binding value
+	 * @param t the Type of the symbol
+	 * @return the encoded char
+	 */
+	unsigned char st_info(Binding b, Type t) {
+		return (b << 4) + (t & 0xf);
+	}
+
+	/**
+	 * Encode the visibility so it can be stored in the
+	 * `st_other` Symbol field.
+	 *
+	 * @param v The visibiilty
+	 * @return the encoded char
+	 */
+	unsigned char st_other(Visibility v) {
+		return v & 0x3;
+	}
+
+	/* Callback used by the J9Pool pool_do() to write out
+	 * each element of the SymbolTable
+	 */
+	static void writeSymbolTableEntry(void *anElement, void *userData);
+
 protected:
 public:
 	SymbolTable(StringTable *string_table, J9PortLibrary *port_lib);
@@ -207,7 +280,65 @@ public:
 	 */
 	int64_t get_number_of_symbols();
 
-	SymbolTableEntry * create_symbol(const char *name, char info, char other, uint64_t sectionIndex, uintptr_t value, uint64_t size);
+	SymbolTableEntry * create_symbol(const char *name, Binding binding, Type type, Visibility visibility, uint16_t sectionIndex, uintptr_t value, uint64_t size);
+
+	/**
+	 * Write the table using the provided writer.
+	 *
+	 * @return true if successful, false on failure
+	 */
+	bool write_table_segment(SnapshotImageWriter *writer);
+
+	/**
+	 * Set the section header related to this string table
+	 *
+	 * @param header the SnapshotImageSectionHeader pointer representing this string table.
+	 * @return void
+	 */
+	void set_section_header(SnapshotImageSectionHeader *header) {
+		_section = header;
+		if (header != nullptr) {
+			/* SymbolTables require the `sh_entsize` to indicate the size of the table entries */
+			header->s_header.sh_entsize = sizeof(Elf64_Sym);
+		}
+	}
+
+	/**
+	 * Get the section header related to this string table
+	 *
+	 *  @return the SnapshotImageSectionHeader pointer representing this string table.
+	 */
+	SnapshotImageSectionHeader * get_section_header(void) { return _section;}
+
+	/**
+	 * Get the index for the section header or 0 if no header.
+	 *
+	 * @return the section header index
+	 */
+	uint32_t get_section_header_index() {
+		if (_section != nullptr) {
+			return _section->index;
+		}
+		return 0;
+	}
+
+	/**
+	 * Return the size of the table.  The size is
+	 * as calculated as the segment size for the elf
+	 * file.
+	 *
+	 * For a SymbolTable, this is sizeof(Elf64_Sym) * numSymbols
+	 *
+	 * @return the segment size of the table.
+	 */
+	int64_t get_table_size() { return sizeof(Elf64_Sym) * get_number_of_symbols(); }
+
+	/**
+	 * Return the StringTable used with this SymbolTable
+	 *
+	 * @return a pointer to a StringTable
+	 */
+	StringTable *get_string_table(void) { return _string_table; }
 };
 
 class SnapshotImageWriter
@@ -261,6 +392,8 @@ private:
 	StringTable _static_string_table;
 	SnapshotImageSectionHeader * _static_string_table_header;
 
+	/* Static symbol table (SHT_SYMTAB): .symtab */
+	SymbolTable _static_symbol_table;
 	//StringTable _dynamic_string_table;
 
 protected:
@@ -270,6 +403,7 @@ public:
 	 * Function Members
 	 */
 private:
+
 	/* Private API that allocates a new section but doesn't increment the section counters, etc */
 	SnapshotImageSectionHeader* allocateSectionHeader(uint32_t type, const char *section_name);
 
@@ -286,8 +420,8 @@ protected:
 	bool isFileValid(void) { return !_is_invalid; };
 	void writeBytes(const uint8_t *buffer, size_t num_bytes, bool update_offset = true);
 
-	bool writeNULLSectionHeader();
 	bool writeStringTable(StringTable *table);
+	bool writeSymbolTable(SymbolTable *table);
 	bool writeSectionHeader(SnapshotImageSectionHeader *header);
 	StringTable* get_section_header_name_string_table(void) { return &_section_header_name_string_table; }
 

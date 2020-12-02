@@ -53,6 +53,7 @@ SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *po
 	, _section_header_string_table_header(nullptr)
 	, _static_string_table(port_lib)
 	, _static_string_table_header(nullptr)
+	, _static_symbol_table(&_static_string_table, port_lib)
 {
 	printf("SnapshotImageWriter\n");
 	/**
@@ -78,6 +79,11 @@ SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *po
 	_static_string_table_header = allocateSectionHeader(SHT_STRTAB, ".strtab");
 	append_to_section_header_list(_static_string_table_header);
 	_static_string_table.set_section_header(_static_string_table_header);
+
+	/* Create section header for the static symbol table (".symtab") */
+	SnapshotImageSectionHeader* sh_symtab = allocateSectionHeader(SHT_SYMTAB, ".symtab");
+	append_to_section_header_list(sh_symtab);
+	_static_symbol_table.set_section_header(sh_symtab);
 }
 
 SnapshotImageWriter::~SnapshotImageWriter()
@@ -236,6 +242,18 @@ bool SnapshotImageWriter::writeStringTable(StringTable *table)
 	return table->write_table_segment(this);
 }
 
+bool SnapshotImageWriter::writeSymbolTable(SymbolTable *table)
+{
+	table->get_string_table()->debug_print_table();
+
+	SnapshotImageSectionHeader *header = table->get_section_header();
+	header->s_header.sh_offset = _file_offset;
+	header->s_header.sh_size = table->get_table_size();
+	/* SymbolTables point to their StringTable section */
+	header->s_header.sh_link = table->get_string_table()->get_section_header_index();
+	return table->write_table_segment(this);
+}
+
 bool SnapshotImageWriter::writeSectionHeader(SnapshotImageSectionHeader *header)
 {
 	writeBytes(reinterpret_cast<uint8_t*>(&header->s_header), sizeof(header->s_header));
@@ -391,14 +409,18 @@ void SnapshotImageWriter::writeSnapshotFile(J9JavaVM *vm)
 		writer.get_static_string_table_index("Bar");
 
 		SnapshotImageProgramHeader *h = writer.startProgramHeader(PT_LOAD, PF_X | PF_R, 0x1000, 0, 0x1000);
+	
 		writer.endProgramHeader(h);
-		
+
 		// write the special sections, like the string tables and symbol tables
 		// that aren't part of any existing Program Header
 		writer.writeStringTable(writer.get_section_header_name_string_table());
 
 		// write the .strtab string table
 		writer.writeStringTable(&(writer._static_string_table));
+
+		// write the .symtab static table -> must be written after the .strtab
+		writer.writeSymbolTable(&(writer._static_symbol_table));
 
 		// Write program and section headers at the end of the file
 		writer.writeProgramHeaders();
@@ -522,6 +544,25 @@ static void string_table_print(OMRPortLibrary *portLibrary, void *the_entry, voi
 	printf("{.str: '%s', .offset: %" PRIu64 " .next: %p} \n", entry->str, entry->offset, entry->next);
 }
 
+static uintptr_t string_table_do_print(void *the_entry, void *userData)
+{
+	StringTableEntry *entry = static_cast<StringTableEntry*>(the_entry);
+	printf("{.str: '%s', .offset: %" PRIu64 " .next: %p} \n", entry->str, entry->offset, entry->next);
+	/* Don't modify the table - just print it */
+	return 0;
+}
+
+void StringTable::debug_print_table()
+{
+	int index = -1;
+	if (_section != nullptr) {
+		index = (int)_section->index;
+	}
+	printf("[String Table: header_index=%d]\n", index);
+	hashTableForEachDo(_string_table, string_table_do_print, nullptr);
+	printf("[======= String Table =======]\n");
+}
+
 /**
  * Create a SymbolTable that stores its strings in `string_table` and allocates
  * its backing storage (a J9Pool) with the `port_lib`
@@ -530,6 +571,7 @@ SymbolTable::SymbolTable(StringTable *string_table, J9PortLibrary *port_lib)
 	: _string_table(string_table)
 	, _port_lib(port_lib)
 	, _symbols(nullptr)
+	, _section(nullptr)
 {
 	_symbols = pool_new(
 		sizeof(SymbolTableEntry),
@@ -549,9 +591,47 @@ SymbolTable::SymbolTable(StringTable *string_table, J9PortLibrary *port_lib)
 		undef_symbol->symbol.st_shndx = SHN_UNDEF;
 	}
 }
+/*
+typedef struct {
+	uint32_t      st_name;
+	unsigned char st_info;
+	unsigned char st_other;
+	uint16_t      st_shndx;
+	Elf64_Addr    st_value;
+	uint64_t      st_size;
+} Elf64_Sym;
+*/
+SymbolTableEntry * SymbolTable::create_symbol(const char *name, Binding binding, Type type, Visibility visibility, uint16_t sectionIndex, uintptr_t value, uint64_t size)
+{
+	SymbolTableEntry *entry = static_cast<SymbolTableEntry *>(pool_newElement(_symbols));
+	if (entry == nullptr) {
+		return nullptr;
+	}
 
-// TODO - API: Create a new symbol
-// TODO - API: Write the symbol table to a section
+	entry->symbol.st_name = _string_table->get_string_table_index(name);
+	entry->symbol.st_info = st_info(binding, type);
+	entry->symbol.st_other = st_other(visibility);
+	entry->symbol.st_shndx = sectionIndex;
+	entry->symbol.st_value = value;	// Usually the virtual address for this section
+	entry->symbol.st_size = size;
+
+	return entry;
+}
+
+bool SymbolTable::write_table_segment(SnapshotImageWriter *writer)
+{		
+	pool_do(_symbols, writeSymbolTableEntry, writer);
+	return true;
+}
+
+void SymbolTable::writeSymbolTableEntry(void *anElement, void *userData)
+{
+	SnapshotImageWriter *writer = static_cast<SnapshotImageWriter *>(userData);
+	SymbolTableEntry *entry = static_cast<SymbolTableEntry *>(anElement);
+
+	writer->writeBytes(reinterpret_cast<const uint8_t*>(&entry->symbol), sizeof(entry->symbol));
+}
+
 // TODO - API: Write the section header and connect it to the symbol table
 
 //pool_do to iterator over all items
