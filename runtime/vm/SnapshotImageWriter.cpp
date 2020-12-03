@@ -253,6 +253,10 @@ bool SnapshotImageWriter::writeSymbolTable(SymbolTable *table)
 	header->s_header.sh_link = table->get_string_table()->get_section_header_index();
 	/* SymbolTables require the `sh_entsize` to indicate the size of the table entries */
 	header->s_header.sh_entsize = sizeof(Elf64_Sym);
+	/* SymbolTables need to put the local symbols first, then the global symbols
+	 * and have the sh_info point to the first non-local symbol.
+	 */
+	header->s_header.sh_info = table->get_number_of_local_symbols();
 	return table->write_table_segment(this);
 }
 
@@ -412,6 +416,11 @@ void SnapshotImageWriter::writeSnapshotFile(J9JavaVM *vm)
 
 		SnapshotImageProgramHeader *h = writer.startProgramHeader(PT_LOAD, PF_X | PF_R, 0x1000, 0, 0x1000);
 	
+		writer._static_symbol_table.create_symbol("GlobalSymbolTest",
+			SymbolTable::Binding::Global,
+			SymbolTable::Type::Notype,
+			SymbolTable::Visibility::Default, 1, 0x1000, 0);
+
 		writer.endProgramHeader(h);
 
 		// write the special sections, like the string tables and symbol tables
@@ -573,9 +582,20 @@ SymbolTable::SymbolTable(StringTable *string_table, J9PortLibrary *port_lib)
 	: _string_table(string_table)
 	, _port_lib(port_lib)
 	, _local_symbols(nullptr)
+	, _global_symbols(nullptr)
 	, _section(nullptr)
 {
 	_local_symbols = pool_new(
+		sizeof(SymbolTableEntry),
+		0, /* minNumElements */
+		0, /* elementAlignment */
+		0, /* flags */
+		"ElfSymbolTable", /* callsite */
+		0, /* memoryCategory */
+		POOL_FOR_PORT(_port_lib)
+	);
+
+	_global_symbols = pool_new(
 		sizeof(SymbolTableEntry),
 		0, /* minNumElements */
 		0, /* elementAlignment */
@@ -605,7 +625,22 @@ typedef struct {
 */
 SymbolTableEntry * SymbolTable::create_symbol(const char *name, Binding binding, Type type, Visibility visibility, uint16_t sectionIndex, uintptr_t value, uint64_t size)
 {
-	SymbolTableEntry *entry = static_cast<SymbolTableEntry *>(pool_newElement(_local_symbols));
+	J9Pool *pool = _local_symbols;
+
+	/* Need to maintain two pools to differentiate local and global/weak
+	 * symbols as the readelf requires the local symbols to come before
+	 * the global ones
+	 */
+	switch (binding) {
+	case Local:
+		pool = _local_symbols;
+		break;
+	case Global: /* fallthrough */
+	case Weak:
+		pool = _global_symbols;
+	}
+
+	SymbolTableEntry *entry = static_cast<SymbolTableEntry *>(pool_newElement(pool));
 	if (entry == nullptr) {
 		return nullptr;
 	}
@@ -623,6 +658,7 @@ SymbolTableEntry * SymbolTable::create_symbol(const char *name, Binding binding,
 bool SymbolTable::write_table_segment(SnapshotImageWriter *writer)
 {		
 	pool_do(_local_symbols, writeSymbolTableEntry, writer);
+	pool_do(_global_symbols, writeSymbolTableEntry, writer);
 	return true;
 }
 
@@ -636,15 +672,29 @@ void SymbolTable::writeSymbolTableEntry(void *anElement, void *userData)
 
 // TODO - API: Write the section header and connect it to the symbol table
 
-//pool_do to iterator over all items
-
-int64_t SymbolTable::get_number_of_symbols()
+int32_t SymbolTable::get_number_of_symbols()
 {
-	int64_t num_symbols = 0;
-	if (nullptr != _local_symbols) {
-		num_symbols = pool_numElements(_local_symbols);
+	int32_t num_symbols = get_number_of_local_symbols();
+	num_symbols += get_number_of_global_symbols();
+	return num_symbols;
+}
+
+static int32_t num_symbols_in_pool(J9Pool *pool) {
+	int32_t num_symbols = 0;
+	if (nullptr != pool) {
+		num_symbols = pool_numElements(pool);
 	}
 	return num_symbols;
+}
+
+int32_t SymbolTable::get_number_of_local_symbols(void)
+{
+	return num_symbols_in_pool(_local_symbols);
+}
+
+int32_t SymbolTable::get_number_of_global_symbols(void)
+{
+	return num_symbols_in_pool(_global_symbols);
 }
 
 /**

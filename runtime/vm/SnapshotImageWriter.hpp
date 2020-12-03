@@ -201,10 +201,8 @@ private:
 	/* Required to allocate the Pool */
 	J9PortLibrary *_port_lib;
 
-	// Vector? of symbols
-	// Or linked list?  Will eventually want to be able to chain through the symbols
-	// for the hash table.
 	J9Pool *_local_symbols;
+	J9Pool *_global_symbols;
 
 	/* Section containing the SymbolTable */
 	SnapshotImageSectionHeader *_section;
@@ -274,11 +272,25 @@ public:
 	~SymbolTable();
 
 	/**
-	 * Return the number of symbols in the table.
+	 * Return the total number of symbols in the table.
 	 *
 	 * @return the number of symbols in the table
 	 */
-	int64_t get_number_of_symbols();
+	int32_t get_number_of_symbols();
+
+	/**
+	 * Return the number of local symbols in the table.
+	 *
+	 * @return the number of local symbols
+	 */
+	int32_t get_number_of_local_symbols(void);
+
+	/**
+	 * Return the number of global/weak symbols in the table.
+	 *
+	 * @return the number of global/weak symbols
+	 */
+	int32_t get_number_of_global_symbols(void);
 
 	SymbolTableEntry * create_symbol(const char *name, Binding binding, Type type, Visibility visibility, uint16_t sectionIndex, uintptr_t value, uint64_t size);
 
