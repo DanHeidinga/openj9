@@ -295,13 +295,7 @@ public:
 	 * @param header the SnapshotImageSectionHeader pointer representing this string table.
 	 * @return void
 	 */
-	void set_section_header(SnapshotImageSectionHeader *header) {
-		_section = header;
-		if (header != nullptr) {
-			/* SymbolTables require the `sh_entsize` to indicate the size of the table entries */
-			header->s_header.sh_entsize = sizeof(Elf64_Sym);
-		}
-	}
+	void set_section_header(SnapshotImageSectionHeader *header) { _section = header; }
 
 	/**
 	 * Get the section header related to this string table

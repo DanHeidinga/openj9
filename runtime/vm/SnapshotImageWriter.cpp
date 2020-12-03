@@ -251,6 +251,8 @@ bool SnapshotImageWriter::writeSymbolTable(SymbolTable *table)
 	header->s_header.sh_size = table->get_table_size();
 	/* SymbolTables point to their StringTable section */
 	header->s_header.sh_link = table->get_string_table()->get_section_header_index();
+	/* SymbolTables require the `sh_entsize` to indicate the size of the table entries */
+	header->s_header.sh_entsize = sizeof(Elf64_Sym);
 	return table->write_table_segment(this);
 }
 
