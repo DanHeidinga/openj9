@@ -572,10 +572,10 @@ void StringTable::debug_print_table()
 SymbolTable::SymbolTable(StringTable *string_table, J9PortLibrary *port_lib)
 	: _string_table(string_table)
 	, _port_lib(port_lib)
-	, _symbols(nullptr)
+	, _local_symbols(nullptr)
 	, _section(nullptr)
 {
-	_symbols = pool_new(
+	_local_symbols = pool_new(
 		sizeof(SymbolTableEntry),
 		0, /* minNumElements */
 		0, /* elementAlignment */
@@ -586,7 +586,7 @@ SymbolTable::SymbolTable(StringTable *string_table, J9PortLibrary *port_lib)
 	);
 
 	/* _symbol[0] is the STN_UNDEF symbol */
-	SymbolTableEntry *undef_symbol = static_cast<SymbolTableEntry*>(pool_newElement(_symbols));
+	SymbolTableEntry *undef_symbol = static_cast<SymbolTableEntry*>(pool_newElement(_local_symbols));
 	if (nullptr == undef_symbol) {
 		//TODO - handle allocation failure
 	} else {
@@ -605,7 +605,7 @@ typedef struct {
 */
 SymbolTableEntry * SymbolTable::create_symbol(const char *name, Binding binding, Type type, Visibility visibility, uint16_t sectionIndex, uintptr_t value, uint64_t size)
 {
-	SymbolTableEntry *entry = static_cast<SymbolTableEntry *>(pool_newElement(_symbols));
+	SymbolTableEntry *entry = static_cast<SymbolTableEntry *>(pool_newElement(_local_symbols));
 	if (entry == nullptr) {
 		return nullptr;
 	}
@@ -622,7 +622,7 @@ SymbolTableEntry * SymbolTable::create_symbol(const char *name, Binding binding,
 
 bool SymbolTable::write_table_segment(SnapshotImageWriter *writer)
 {		
-	pool_do(_symbols, writeSymbolTableEntry, writer);
+	pool_do(_local_symbols, writeSymbolTableEntry, writer);
 	return true;
 }
 
@@ -641,8 +641,8 @@ void SymbolTable::writeSymbolTableEntry(void *anElement, void *userData)
 int64_t SymbolTable::get_number_of_symbols()
 {
 	int64_t num_symbols = 0;
-	if (nullptr != _symbols) {
-		num_symbols = pool_numElements(_symbols);
+	if (nullptr != _local_symbols) {
+		num_symbols = pool_numElements(_local_symbols);
 	}
 	return num_symbols;
 }
@@ -652,7 +652,7 @@ int64_t SymbolTable::get_number_of_symbols()
  */
 SymbolTable::~SymbolTable()
 {
-	if (nullptr != _symbols) {
-		pool_kill(_symbols);
+	if (nullptr != _local_symbols) {
+		pool_kill(_local_symbols);
 	}
 }

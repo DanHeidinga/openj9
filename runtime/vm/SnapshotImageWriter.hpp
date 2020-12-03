@@ -204,7 +204,7 @@ private:
 	// Vector? of symbols
 	// Or linked list?  Will eventually want to be able to chain through the symbols
 	// for the hash table.
-	J9Pool *_symbols;
+	J9Pool *_local_symbols;
 
 	/* Section containing the SymbolTable */
 	SnapshotImageSectionHeader *_section;
