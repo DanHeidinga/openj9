@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2001, 2020 IBM Corp. and others
+ * Copyright (c) 2020, 2020 Red Hat and others
  *
  * This program and the accompanying materials are made available under
  * the terms of the Eclipse Public License 2.0 which accompanies this
@@ -20,6 +20,7 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
 
+#include <cassert>
 #include <elf.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -34,6 +35,7 @@
 static uintptr_t string_table_hash(void *entry, void *userData);
 static uintptr_t string_table_equal(void *leftEntry, void *rightEntry, void *userData);
 static void string_table_print(OMRPortLibrary *portLibrary, void *entry, void *userData); 
+static void printSectionHeader(SnapshotImageSectionHeader *header);
 
 SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *port_lib, bool is_little_endian)
 	: _filename(filename)
@@ -53,7 +55,9 @@ SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *po
 	, _section_header_string_table_header(nullptr)
 	, _static_string_table(port_lib)
 	, _static_string_table_header(nullptr)
-	, _static_symbol_table(&_static_string_table, port_lib)
+	, _dynamic_string_table(port_lib)
+	, _dynamic_string_table_header(nullptr)
+	, _symbol_table(&_static_string_table, &_dynamic_string_table, port_lib)
 {
 	printf("SnapshotImageWriter\n");
 	/**
@@ -83,7 +87,20 @@ SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *po
 	/* Create section header for the static symbol table (".symtab") */
 	SnapshotImageSectionHeader* sh_symtab = allocateSectionHeader(SHT_SYMTAB, ".symtab");
 	append_to_section_header_list(sh_symtab);
-	_static_symbol_table.set_section_header(sh_symtab);
+	_symbol_table.set_local_section_header(sh_symtab);
+
+	/* Create section header for the dynamic symbol table (".dynsym") */
+	SnapshotImageSectionHeader* dynsym = allocateSectionHeader(SHT_DYNSYM, ".dynsym");
+	/* TODO: This needs to be part of the PT_DYNAMIC section, not the segmentless section */
+	append_to_section_header_list(dynsym);
+	_symbol_table.set_global_section_header(dynsym);
+	printSectionHeader(dynsym);
+
+	{ //TODO: this needs to be part of the DYNAMIC section
+		SnapshotImageSectionHeader* dynstr = allocateSectionHeader(SHT_STRTAB, ".dynstr");
+		append_to_section_header_list(dynstr);
+		_dynamic_string_table.set_section_header(dynstr);
+	}
 }
 
 SnapshotImageWriter::~SnapshotImageWriter()
@@ -209,7 +226,52 @@ void endSectionHeader(SnapshotImageSectionHeader *sectionHeader;
 
 #endif
 
+static void printSectionHeader(SnapshotImageSectionHeader *header) {
+	printf(">>>>>> Elf64_Shdr {\n"
+	"sh_name = %" PRIu32 "\n"
+	"sh_type = %" PRIu32 "\n"
+	"sh_flags = %" PRIx64 "\n"
+	"sh_addr = %" PRIx64 "\n"
+	"sh_offset = %" PRIu64 "\n"
+	"sh_size = %" PRIu64 " \n"
+	"sh_link = %" PRIu32 " \n"
+	"sh_info = %" PRIu32 "\n"
+	"sh_addralign = %" PRIu64 "\n"
+	"sh_entsize = %" PRIu64 "\n"
+	"}\n",
+	header->s_header.sh_name,
+	header->s_header.sh_type,
+	header->s_header.sh_flags,
+	(uint64_t)header->s_header.sh_addr,
+	(uint64_t)header->s_header.sh_offset,
+	header->s_header.sh_size,
+	header->s_header.sh_link,
+	header->s_header.sh_info,
+	header->s_header.sh_addralign,
+	header->s_header.sh_entsize);
+}
 
+SymbolTableEntry* SnapshotImageWriter::create_global_symbol(const char *name, SymbolTable::Type type, uint16_t sectionIndex, uintptr_t value, uint64_t size)
+{
+	return _symbol_table.create_symbol(name,
+		SymbolTable::Binding::Global,
+		type,
+		SymbolTable::Visibility::Default,
+		sectionIndex,
+		value,
+		size);
+}
+
+SymbolTableEntry* SnapshotImageWriter::create_local_symbol(const char *name, SymbolTable::Type type, uint16_t sectionIndex, uintptr_t value, uint64_t size)
+{
+	return _symbol_table.create_symbol(name,
+		SymbolTable::Binding::Local,
+		type,
+		SymbolTable::Visibility::Default,
+		sectionIndex,
+		value,
+		size);
+}
 
 SnapshotImageSectionHeader* SnapshotImageWriter::allocateSectionHeader(uint32_t type, const char *section_name) {
 	SnapshotImageSectionHeader *header = static_cast<SnapshotImageSectionHeader *>(malloc(sizeof(SnapshotImageSectionHeader)));
@@ -236,29 +298,71 @@ void SnapshotImageWriter::append_to_section_header_list(SnapshotImageSectionHead
 
 bool SnapshotImageWriter::writeStringTable(StringTable *table)
 {
+	//table->debug_print_table();
+	assert(table != nullptr);
 	SnapshotImageSectionHeader *header = table->get_section_header();
+	assert(header != nullptr);
 	header->s_header.sh_offset = _file_offset;
 	header->s_header.sh_size = table->get_table_size();
 	return table->write_table_segment(this);
 }
 
-bool SnapshotImageWriter::writeSymbolTable(SymbolTable *table)
+#if TO_DELETE
+bool SnapshotImageWriter::writeLocalSymbolTable()
 {
-	table->get_string_table()->debug_print_table();
+	_symbol_table.get_local_string_table()->debug_print_table();
 
-	SnapshotImageSectionHeader *header = table->get_section_header();
+	SnapshotImageSectionHeader *header = _symbol_table.get_local_section_header();
 	header->s_header.sh_offset = _file_offset;
-	header->s_header.sh_size = table->get_table_size();
+	header->s_header.sh_size = _symbol_table.get_local_table_size();
 	/* SymbolTables point to their StringTable section */
-	header->s_header.sh_link = table->get_string_table()->get_section_header_index();
+	header->s_header.sh_link = _symbol_table.get_local_string_table()->get_section_header_index();
 	/* SymbolTables require the `sh_entsize` to indicate the size of the table entries */
 	header->s_header.sh_entsize = sizeof(Elf64_Sym);
 	/* SymbolTables need to put the local symbols first, then the global symbols
-	 * and have the sh_info point to the first non-local symbol.
+	 * and have the sh_info point to the first non-local symbol.  We need to + 1
+	 * here to account for the mandatory SHN_UNDEF symbol that must start the table.
 	 */
-	header->s_header.sh_info = table->get_number_of_local_symbols();
-	return table->write_table_segment(this);
+	header->s_header.sh_info = _symbol_table.get_number_of_local_symbols() + 1;
+	return _symbol_table.write_table_segment(this, SymbolTable::Binding::Local);
 }
+#endif
+
+bool SnapshotImageWriter::writeSymbolTable(SymbolTable::Binding binding)
+{
+	SnapshotImageSectionHeader *header = nullptr;
+	uint32_t table_size = 0;
+	uint32_t section_index = 0;
+	uint32_t num_symbols = 1; // The mandatory SHN_UNDEF symbol
+	if (binding == SymbolTable::Binding::Local) {
+		header = _symbol_table.get_local_section_header();
+		table_size = _symbol_table.get_local_table_size();
+		section_index = _symbol_table.get_local_string_table()->get_section_header_index();
+		num_symbols += _symbol_table.get_number_of_local_symbols();
+		_symbol_table.get_local_string_table()->debug_print_table();
+	} else {
+		// Global case
+		header = _symbol_table.get_global_section_header();
+		table_size = _symbol_table.get_global_table_size();
+		section_index = _symbol_table.get_local_string_table()->get_section_header_index();
+		num_symbols += _symbol_table.get_number_of_global_symbols();
+		_symbol_table.get_global_string_table()->debug_print_table();
+	}
+
+	header->s_header.sh_offset = _file_offset;
+	header->s_header.sh_size = table_size;
+	/* SymbolTables point to their StringTable section */
+	header->s_header.sh_link = section_index;
+	/* SymbolTables require the `sh_entsize` to indicate the size of the table entries */
+	header->s_header.sh_entsize = sizeof(Elf64_Sym);
+	/* SymbolTables need to put the local symbols first, then the global symbols
+	 * and have the sh_info point to the first non-local symbol.  We need to + 1
+	 * here to account for the mandatory SHN_UNDEF symbol that must start the table.
+	 */
+	header->s_header.sh_info = num_symbols;
+	return _symbol_table.write_table_segment(this, binding);
+}
+// TODO: bool SnapshotImageWriter::writeGlobalSymbolTable()
 
 bool SnapshotImageWriter::writeSectionHeader(SnapshotImageSectionHeader *header)
 {
@@ -393,7 +497,7 @@ void SnapshotImageWriter::writeHeader(void)
  * @param str the string to add to the static string table
  * @return the offset in the string table
  */
-uint64_t SnapshotImageWriter::get_static_string_table_index(const char *str)
+uint32_t SnapshotImageWriter::get_static_string_table_index(const char *str)
 {
 	return _static_string_table.get_string_table_index(str);
 }
@@ -416,10 +520,12 @@ void SnapshotImageWriter::writeSnapshotFile(J9JavaVM *vm)
 
 		SnapshotImageProgramHeader *h = writer.startProgramHeader(PT_LOAD, PF_X | PF_R, 0x1000, 0, 0x1000);
 	
-		writer._static_symbol_table.create_symbol("GlobalSymbolTest",
-			SymbolTable::Binding::Global,
+		writer.create_global_symbol("GlobalSymbolTest",
 			SymbolTable::Type::Notype,
-			SymbolTable::Visibility::Default, 1, 0x1000, 0);
+			1, 0x1000, 0);
+		writer.create_local_symbol("LocalSymbolTest",
+			SymbolTable::Type::Notype,
+			1, 0x1040, 0);
 
 		writer.endProgramHeader(h);
 
@@ -431,7 +537,9 @@ void SnapshotImageWriter::writeSnapshotFile(J9JavaVM *vm)
 		writer.writeStringTable(&(writer._static_string_table));
 
 		// write the .symtab static table -> must be written after the .strtab
-		writer.writeSymbolTable(&(writer._static_symbol_table));
+		writer.writeSymbolTable(SymbolTable::Binding::Local);
+		writer.writeStringTable(&(writer._dynamic_string_table));
+		writer.writeSymbolTable(SymbolTable::Binding::Global);
 
 		// Write program and section headers at the end of the file
 		writer.writeProgramHeaders();
@@ -474,7 +582,7 @@ StringTable::~StringTable()
 	}
 }
 
-uint64_t StringTable::get_string_table_index(const char *str)
+uint32_t StringTable::get_string_table_index(const char *str)
 {
 	if (nullptr == str) {
 		/* All emtpy strings will map to the 0th entry */
@@ -484,7 +592,11 @@ uint64_t StringTable::get_string_table_index(const char *str)
 	StringTableEntry examplar = {0};
 	examplar.str = str;
 	StringTableEntry *entry = static_cast<StringTableEntry*>(hashTableAdd(_string_table, &examplar));
-	// todo - deal with allocation failure
+	if (entry == nullptr) {
+		// todo - deal with allocation failure
+		printf("StringTable::get_string_table_index allocation failure!  Aborting\n");
+		abort();
+	}
 	if (entry->offset == 0) {
 		/* New entry.  Set the:
 		 * 	offset to the _table_size
@@ -544,21 +656,21 @@ static uintptr_t string_table_equal(void *leftEntry, void *rightEntry, void *use
 	StringTableEntry *right = static_cast<StringTableEntry*>(rightEntry);
 
 	if (0 == strcmp(left->str, right->str)) {
-		return 0;
+		return 1;
 	}
-	return 1;
+	return 0;
 }
 
 static void string_table_print(OMRPortLibrary *portLibrary, void *the_entry, void *userData)
 {
 	StringTableEntry *entry = static_cast<StringTableEntry*>(the_entry);
-	printf("{.str: '%s', .offset: %" PRIu64 " .next: %p} \n", entry->str, entry->offset, entry->next);
+	printf("{.str: '%s', .offset: %" PRIu32 " .next: %p} \n", entry->str, entry->offset, entry->next);
 }
 
 static uintptr_t string_table_do_print(void *the_entry, void *userData)
 {
 	StringTableEntry *entry = static_cast<StringTableEntry*>(the_entry);
-	printf("{.str: '%s', .offset: %" PRIu64 " .next: %p} \n", entry->str, entry->offset, entry->next);
+	printf("{.str: '%s', .offset: %" PRIu32 " .next: %p} \n", entry->str, entry->offset, entry->next);
 	/* Don't modify the table - just print it */
 	return 0;
 }
@@ -578,14 +690,17 @@ void StringTable::debug_print_table()
  * Create a SymbolTable that stores its strings in `string_table` and allocates
  * its backing storage (a J9Pool) with the `port_lib`
  */
-SymbolTable::SymbolTable(StringTable *string_table, J9PortLibrary *port_lib)
-	: _string_table(string_table)
+SymbolTable::SymbolTable(StringTable *local_strings, StringTable *global_strings, J9PortLibrary *port_lib)
+	: _local_strings(local_strings)
+	, _global_strings(global_strings)
+	, _num_local_symbols(0)
+	, _num_global_symbols(0)
 	, _port_lib(port_lib)
-	, _local_symbols(nullptr)
-	, _global_symbols(nullptr)
-	, _section(nullptr)
+	, _symbols(nullptr)
+	, _local_section(nullptr)
+	, _global_section(nullptr)
 {
-	_local_symbols = pool_new(
+	_symbols = pool_new(
 		sizeof(SymbolTableEntry),
 		0, /* minNumElements */
 		0, /* elementAlignment */
@@ -595,23 +710,9 @@ SymbolTable::SymbolTable(StringTable *string_table, J9PortLibrary *port_lib)
 		POOL_FOR_PORT(_port_lib)
 	);
 
-	_global_symbols = pool_new(
-		sizeof(SymbolTableEntry),
-		0, /* minNumElements */
-		0, /* elementAlignment */
-		0, /* flags */
-		"ElfSymbolTable", /* callsite */
-		0, /* memoryCategory */
-		POOL_FOR_PORT(_port_lib)
-	);
-
-	/* _symbol[0] is the STN_UNDEF symbol */
-	SymbolTableEntry *undef_symbol = static_cast<SymbolTableEntry*>(pool_newElement(_local_symbols));
-	if (nullptr == undef_symbol) {
-		//TODO - handle allocation failure
-	} else {
-		undef_symbol->symbol.st_shndx = SHN_UNDEF;
-	}
+	/* Don't create an STN_UNDEF symbol as we'll add
+	 * it when writing the table.
+	 */
 }
 /*
 typedef struct {
@@ -625,27 +726,26 @@ typedef struct {
 */
 SymbolTableEntry * SymbolTable::create_symbol(const char *name, Binding binding, Type type, Visibility visibility, uint16_t sectionIndex, uintptr_t value, uint64_t size)
 {
-	J9Pool *pool = _local_symbols;
 
-	/* Need to maintain two pools to differentiate local and global/weak
-	 * symbols as the readelf requires the local symbols to come before
-	 * the global ones
-	 */
-	switch (binding) {
-	case Local:
-		pool = _local_symbols;
-		break;
-	case Global: /* fallthrough */
-	case Weak:
-		pool = _global_symbols;
-	}
-
-	SymbolTableEntry *entry = static_cast<SymbolTableEntry *>(pool_newElement(pool));
+	SymbolTableEntry *entry = static_cast<SymbolTableEntry *>(pool_newElement(_symbols));
 	if (entry == nullptr) {
 		return nullptr;
 	}
+	memset(entry, 0, sizeof(SymbolTableEntry));
 
-	entry->symbol.st_name = _string_table->get_string_table_index(name);
+	/* Track a string index in both the local and the global string
+	 * tables as they indexes won't be the same.  We'll write the
+	 * correct one into the entry when writing the table
+	 */
+	if ((binding == Global) || (binding == Weak)) {
+		entry->globalStringIndex = _global_strings->get_string_table_index(name);
+		_num_global_symbols += 1;
+	} else {
+		_num_local_symbols += 1;
+	}
+	entry->localStringIndex = _local_strings->get_string_table_index(name);
+
+	entry->symbol.st_name = 0;	// Needs to be filled in when written and depends on the type of the symbol
 	entry->symbol.st_info = st_info(binding, type);
 	entry->symbol.st_other = st_other(visibility);
 	entry->symbol.st_shndx = sectionIndex;
@@ -655,46 +755,65 @@ SymbolTableEntry * SymbolTable::create_symbol(const char *name, Binding binding,
 	return entry;
 }
 
-bool SymbolTable::write_table_segment(SnapshotImageWriter *writer)
-{		
-	pool_do(_local_symbols, writeSymbolTableEntry, writer);
-	pool_do(_global_symbols, writeSymbolTableEntry, writer);
+typedef struct SymbolTableUserData {
+	SnapshotImageWriter *writer;
+	SymbolTable::Binding binding;
+} SymbolTableUserData;
+
+/* Binding must be one of {Binding::Local or Binding::Global} to determine which table
+ * to write
+ */
+bool SymbolTable::write_table_segment(SnapshotImageWriter *writer, Binding binding)
+{
+	/* Write the SHN_UNDEF symbol to start the table */
+	Elf64_Sym shn_undef = {0};
+	shn_undef.st_shndx = SHN_UNDEF;
+	writer->writeBytes(reinterpret_cast<const uint8_t*>(&shn_undef), sizeof(shn_undef));
+	SymbolTableUserData userData;
+	userData.writer = writer;
+	switch(binding) {
+	case Local:
+		userData.binding = Local;
+		pool_do(_symbols, writeSymbolTableEntry, &userData);
+		/* Fallthrough */
+	case Global:
+	case Weak:
+		userData.binding = Global;
+		pool_do(_symbols, writeSymbolTableEntry, &userData);
+		break;
+	default:
+		/* Unreachable */
+		assert(false);
+	}
 	return true;
 }
 
 void SymbolTable::writeSymbolTableEntry(void *anElement, void *userData)
 {
-	SnapshotImageWriter *writer = static_cast<SnapshotImageWriter *>(userData);
+	SymbolTableUserData *data = static_cast<SymbolTableUserData *>(userData);
 	SymbolTableEntry *entry = static_cast<SymbolTableEntry *>(anElement);
 
-	writer->writeBytes(reinterpret_cast<const uint8_t*>(&entry->symbol), sizeof(entry->symbol));
+	if (data->binding == binding(entry->symbol.st_info)) {
+		SnapshotImageWriter *writer = data->writer;
+		if (data->binding == Local) {
+			entry->symbol.st_name = entry->localStringIndex;
+		} else {
+			entry->symbol.st_name = entry->globalStringIndex;
+		}
+		writer->writeBytes(reinterpret_cast<const uint8_t*>(&entry->symbol), sizeof(entry->symbol));
+	}
 }
 
 // TODO - API: Write the section header and connect it to the symbol table
 
-int32_t SymbolTable::get_number_of_symbols()
-{
-	int32_t num_symbols = get_number_of_local_symbols();
-	num_symbols += get_number_of_global_symbols();
-	return num_symbols;
-}
-
-static int32_t num_symbols_in_pool(J9Pool *pool) {
-	int32_t num_symbols = 0;
-	if (nullptr != pool) {
-		num_symbols = pool_numElements(pool);
-	}
-	return num_symbols;
-}
-
 int32_t SymbolTable::get_number_of_local_symbols(void)
 {
-	return num_symbols_in_pool(_local_symbols);
+	return _num_local_symbols;
 }
 
 int32_t SymbolTable::get_number_of_global_symbols(void)
 {
-	return num_symbols_in_pool(_global_symbols);
+	return _num_global_symbols;
 }
 
 /**
@@ -702,7 +821,89 @@ int32_t SymbolTable::get_number_of_global_symbols(void)
  */
 SymbolTable::~SymbolTable()
 {
-	if (nullptr != _local_symbols) {
-		pool_kill(_local_symbols);
+	if (nullptr != _symbols) {
+		pool_kill(_symbols);
 	}
+}
+
+
+DynamicTable::DynamicTable(J9PortLibrary *port_lib)
+	: _dyamic_program_header(nullptr)
+	, _dyamic_section_header(nullptr)
+	, _entries(nullptr)
+{
+	_entries = pool_new(
+		sizeof(DynamicTableEntry),
+		0, /* minNumElements */
+		0, /* elementAlignment */
+		0, /* flags */
+		"ElfDynamicTable", /* callsite */
+		0, /* memoryCategory */
+		POOL_FOR_PORT(port_lib)
+	);
+}
+
+DynamicTable::~DynamicTable()
+{
+	if (nullptr != _entries) {
+		pool_kill(_entries);
+	}
+}
+
+DynamicTableEntry * DynamicTable::add_entry(int64_t tag, SnapshotImageSectionHeader *header)
+{
+	DynamicTableEntry *entry = static_cast<DynamicTableEntry*>(pool_newElement(_entries));
+	if (nullptr != entry) {
+		entry->entry.d_tag = tag;
+		entry->definingSection = header;
+	}
+	return entry;
+}
+
+void DynamicTable::finalizeEntries() {
+	pool_do(_entries, finalizeDynamicTableEntry, nullptr);
+}
+
+void DynamicTable::finalizeDynamicTableEntry(void *anElement, void *userData)
+{
+	DynamicTableEntry *entry = static_cast<DynamicTableEntry *>(anElement);
+
+	switch(entry->entry.d_tag) {
+	case DT_HASH:
+	case DT_STRTAB:
+	case DT_SYMTAB:
+		/* point to virtual address of hash table in memory.
+		 * No relocation required, loader does it for us
+		 */
+		entry->entry.d_un.d_ptr = entry->definingSection->s_header.sh_addr;
+		break;
+	case DT_SYMENT:
+		/* Size of a symbol table entry */
+		entry->entry.d_un.d_val = sizeof(Elf64_Sym);
+		break;
+	case DT_STRSZ:
+		/* Size of the string table: only known after string table written */
+		entry->entry.d_un.d_ptr = entry->definingSection->s_header.sh_size;
+		break;
+	default:
+		printf("Unknown Dynamic entry type: %" PRIu64 " with header=%p\n", entry->entry.d_tag, entry->definingSection);
+		printSectionHeader(entry->definingSection);
+	}
+}
+
+bool DynamicTable::write_table_segment(SnapshotImageWriter *writer)
+{
+	pool_do(_entries, writeDynamicTableEntry, writer);
+	/* Table is terminated by a null entry */
+	Elf64_Dyn dt_null = {0};
+	writer->writeBytes(reinterpret_cast<const uint8_t*>(&dt_null), sizeof(dt_null));
+	return true;
+}
+
+void DynamicTable::writeDynamicTableEntry(void *anElement, void *userData)
+{
+	SnapshotImageWriter *writer = static_cast<SnapshotImageWriter *>(userData);
+	DynamicTableEntry *entry = static_cast<DynamicTableEntry *>(anElement);
+
+	writer->writeBytes(reinterpret_cast<const uint8_t*>(&entry->entry), sizeof(entry->entry));
 }

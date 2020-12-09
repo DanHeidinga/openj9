@@ -50,16 +50,23 @@ typedef struct StringTableEntry {
 	const char *str;
 	/* Used to chain the entries in order for writing them out */
 	StringTableEntry *next;
-	uint64_t offset;
+	uint32_t offset;
 } StringTableEntry;
 
 typedef struct SymbolTableEntry {
 	Elf64_Sym symbol;
+	uint32_t localStringIndex;
+	uint32_t globalStringIndex;
 	/* Intended for chaining through the symbols to
 	 * create the hashtable chains
 	 */
 	SymbolTableEntry *hash_chain;
 } SymbolTableEntry;
+
+typedef struct DynamicTableEntry {
+	Elf64_Dyn entry;
+	SnapshotImageSectionHeader *definingSection;
+} DynamicTableEntry;
 
 /* Forward declaration */
 class SnapshotImageWriter;
@@ -80,7 +87,7 @@ class StringTable {
 	 * Data members:
 	 */
 private:
-	int64_t _table_size;
+	int32_t _table_size;
 
 	/* Table to map entries to their offset */
 	J9HashTable *_string_table;
@@ -152,7 +159,7 @@ public:
 	 * @param str the string to get an index for
 	 * @return the index (offset from the start) of the string table
 	 */
-	uint64_t get_string_table_index(const char *str);
+	uint32_t get_string_table_index(const char *str);
 
 	/**
 	 * Return the size of the table.  The size is
@@ -164,7 +171,7 @@ public:
 	 *
 	 * @return the segment size of the table.
 	 */
-	int64_t get_table_size() { return _table_size; }
+	int32_t get_table_size() { return _table_size; }
 
 	/**
 	 * Write the table using the provided writer
@@ -196,16 +203,40 @@ class SymbolTable
  * Data Members
  */
 private:
-	StringTable *_string_table;
+	/* There are two string tables as the global strings,
+	 * those associated with the global symbols, are a
+	 * strict subset of the local strings which will also
+	 * include the names of local symbols.
+	 *
+	 * The local strings map to the ".strtab" section and
+	 * the global strings to the ".dynstr" section.
+	 */
+	StringTable *_local_strings;
+	StringTable *_global_strings;
+
+	/* Keep two separate counts so we can correctly write
+	 * out the counts when writing the separate symbol
+	 * tables.
+	 *
+	 * Invariant: total count is always 1 great than these
+	 * counts as the tables must include a "SHN_UNDEF" 
+	 * symbol as the 0th entry.
+	 */
+	int32_t _num_local_symbols;
+	int32_t _num_global_symbols;
 
 	/* Required to allocate the Pool */
 	J9PortLibrary *_port_lib;
 
-	J9Pool *_local_symbols;
-	J9Pool *_global_symbols;
+	/* The pool of symbols in this table.  There are
+	 * linked lists that thread through these symbols
+	 * to track the global vs local symbols
+	 */
+	J9Pool *_symbols;
 
 	/* Section containing the SymbolTable */
-	SnapshotImageSectionHeader *_section;
+	SnapshotImageSectionHeader *_local_section;
+	SnapshotImageSectionHeader *_global_section;
 
 protected:
 public:
@@ -246,8 +277,17 @@ private:
 	 * @param t the Type of the symbol
 	 * @return the encoded char
 	 */
-	unsigned char st_info(Binding b, Type t) {
+	static unsigned char st_info(Binding b, Type t) {
 		return (b << 4) + (t & 0xf);
+	}
+
+	static Binding binding(unsigned char st_info) {
+		switch(st_info >> 4) {
+		case Local:		return Local;
+		case Global:	return Global;
+		case Weak:		return Weak;
+		}
+		return Local;
 	}
 
 	/**
@@ -257,7 +297,7 @@ private:
 	 * @param v The visibiilty
 	 * @return the encoded char
 	 */
-	unsigned char st_other(Visibility v) {
+	static unsigned char st_other(Visibility v) {
 		return v & 0x3;
 	}
 
@@ -268,7 +308,7 @@ private:
 
 protected:
 public:
-	SymbolTable(StringTable *string_table, J9PortLibrary *port_lib);
+	SymbolTable(StringTable *local_strings, StringTable *global_strings, J9PortLibrary *port_lib);
 	~SymbolTable();
 
 	/**
@@ -297,39 +337,69 @@ public:
 	/**
 	 * Write the table using the provided writer.
 	 *
+	 * @param writer The image writer
+	 * @param binding Binding::Global or Local to indicate which view of the table to write
+	 *
 	 * @return true if successful, false on failure
 	 */
-	bool write_table_segment(SnapshotImageWriter *writer);
+	bool write_table_segment(SnapshotImageWriter *writer, Binding binding);
 
 	/**
-	 * Set the section header related to this string table
+	 * Set the section header related to this string table for local symbol table
 	 *
 	 * @param header the SnapshotImageSectionHeader pointer representing this string table.
 	 * @return void
 	 */
-	void set_section_header(SnapshotImageSectionHeader *header) { _section = header; }
+	void set_local_section_header(SnapshotImageSectionHeader *header) { _local_section = header; }
 
 	/**
-	 * Get the section header related to this string table
+	 * Set the section header related to this string table for global symbol table
+	 *
+	 * @param header the SnapshotImageSectionHeader pointer representing this string table.
+	 * @return void
+	 */
+	void set_global_section_header(SnapshotImageSectionHeader *header) { _global_section = header; }
+
+	/**
+	 * Get the local section header related to this string table
 	 *
 	 *  @return the SnapshotImageSectionHeader pointer representing this string table.
 	 */
-	SnapshotImageSectionHeader * get_section_header(void) { return _section;}
+	SnapshotImageSectionHeader * get_local_section_header(void) { return _local_section; }
 
 	/**
-	 * Get the index for the section header or 0 if no header.
+	 * Get the global section header related to this string table
+	 *
+	 *  @return the SnapshotImageSectionHeader pointer representing this string table.
+	 */
+	SnapshotImageSectionHeader * get_global_section_header(void) { return _global_section; }
+
+	/**
+	 * Get the index for the local section header or 0 if no header.
 	 *
 	 * @return the section header index
 	 */
-	uint32_t get_section_header_index() {
-		if (_section != nullptr) {
-			return _section->index;
+	uint32_t get_local_section_header_index() {
+		if (_local_section != nullptr) {
+			return _local_section->index;
 		}
 		return 0;
 	}
 
 	/**
-	 * Return the size of the table.  The size is
+	 * Get the index for the global section header or 0 if no header.
+	 *
+	 * @return the section header index
+	 */
+	uint32_t get_global_section_header_index() {
+		if (_global_section != nullptr) {
+			return _global_section->index;
+		}
+		return 0;
+	}
+
+	/**
+	 * Return the size of the local table.  The size is
 	 * as calculated as the segment size for the elf
 	 * file.
 	 *
@@ -337,14 +407,74 @@ public:
 	 *
 	 * @return the segment size of the table.
 	 */
-	int64_t get_table_size() { return sizeof(Elf64_Sym) * get_number_of_symbols(); }
+	int64_t get_local_table_size() { return sizeof(Elf64_Sym) * (_num_local_symbols + _num_global_symbols + 1); }
 
 	/**
-	 * Return the StringTable used with this SymbolTable
+	 * Return the size of the global table.  The size is
+	 * as calculated as the segment size for the elf
+	 * file.
+	 *
+	 * For a SymbolTable, this is sizeof(Elf64_Sym) * numSymbols
+	 *
+	 * @return the segment size of the table.
+	 */
+	int64_t get_global_table_size() { return sizeof(Elf64_Sym) * (_num_global_symbols + 1); }
+
+	/**
+	 * Return the StringTable used for local strings in this SymbolTable
 	 *
 	 * @return a pointer to a StringTable
 	 */
-	StringTable *get_string_table(void) { return _string_table; }
+	StringTable *get_local_string_table(void) { return _local_strings; }
+
+	/**
+	 * Return the StringTable used for local strings in this SymbolTable
+	 *
+	 * @return a pointer to a StringTable
+	 */
+	StringTable *get_global_string_table(void) { return _global_strings; }
+};
+
+/* Represents the "PT_DYANMIC" Program Header and the ".dynamic" section
+ * as well as all the required / associated data.
+ */
+class DynamicTable {
+/**
+ * Data Members
+ */
+private:
+	/* Must be of type PT_DYNAMIC */
+	SnapshotImageProgramHeader *_dyamic_program_header;
+	SnapshotImageSectionHeader *_dyamic_section_header;
+
+	/* DynamicTableEntry items to include in the dynamic section */
+	J9Pool *_entries;
+
+/* DT_NULL
+ * DT_STRTAB	// string table section header
+ * DT_STRSZ		// size of string table
+ * DT_SYMTAB	// symbol table
+ * DT_HASH		// hash for it
+ * DT_SYMENT	// constant data
+ */
+protected:
+public:
+
+/**
+ * Function Members
+ */
+private:
+	void finalizeEntries();
+	static void finalizeDynamicTableEntry(void *anElement, void *userData);
+	static void writeDynamicTableEntry(void *anElement, void *userData);
+protected:
+public:
+	DynamicTable(J9PortLibrary *port_lib);
+	~DynamicTable();
+
+	DynamicTableEntry *add_entry(int64_t tag, SnapshotImageSectionHeader *header);
+
+	bool write_table_segment(SnapshotImageWriter *writer);
 };
 
 class SnapshotImageWriter
@@ -398,9 +528,12 @@ private:
 	StringTable _static_string_table;
 	SnapshotImageSectionHeader * _static_string_table_header;
 
-	/* Static symbol table (SHT_SYMTAB): .symtab */
-	SymbolTable _static_symbol_table;
-	//StringTable _dynamic_string_table;
+	/* Dynamic string table (SHT_STRTAB): .dynstr */
+	StringTable _dynamic_string_table;
+	SnapshotImageSectionHeader * _dynamic_string_table_header;
+
+	/* Single symbol table that manages both local and global symbols */
+	SymbolTable _symbol_table;
 
 protected:
 public:
@@ -440,17 +573,23 @@ public:
 	void reserveHeaderSpace(void);
 	void writeHeader(void);
 
-	uint64_t get_static_string_table_index(const char *str);
+	uint32_t get_static_string_table_index(const char *str);
 
 	SnapshotImageProgramHeader* startProgramHeader(uint32_t type, uint32_t flags, Elf64_Addr vaddr, Elf64_Addr paddr, uint64_t align) ;
 	void endProgramHeader(SnapshotImageProgramHeader *programHeader, uint64_t extraMemSize = 0);
 	void writeProgramHeaders(void);
 	void writeSectionHeaders(void);
 
+	SymbolTableEntry* create_local_symbol(const char *name, SymbolTable::Type type, uint16_t sectionIndex, uintptr_t value, uint64_t size);
+	SymbolTableEntry* create_global_symbol(const char *name, SymbolTable::Type type, uint16_t sectionIndex, uintptr_t value, uint64_t size);
+
+	bool writeSymbolTable(SymbolTable::Binding binding);
+
 	static void writeSnapshotFile(J9JavaVM *vm);
 
 friend StringTable;
 friend SymbolTable;
+friend DynamicTable;
 };
 
 #endif /* SNAPSHOTIMAGEWRITER_HPP_ */
