@@ -20,6 +20,7 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
  *******************************************************************************/
 
+#include <algorithm>
 #include <cassert>
 #include <elf.h>
 #include <inttypes.h>
@@ -35,7 +36,7 @@
 static uintptr_t string_table_hash(void *entry, void *userData);
 static uintptr_t string_table_equal(void *leftEntry, void *rightEntry, void *userData);
 static void string_table_print(OMRPortLibrary *portLibrary, void *entry, void *userData); 
-static void printSectionHeader(SnapshotImageSectionHeader *header);
+static void printSectionHeader(SnapshotImageSectionHeader *header, const char *name);
 
 SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *port_lib, bool is_little_endian)
 	: _filename(filename)
@@ -58,6 +59,7 @@ SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *po
 	, _dynamic_string_table(port_lib)
 	, _dynamic_string_table_header(nullptr)
 	, _symbol_table(&_static_string_table, &_dynamic_string_table, port_lib)
+	, _hash_table_header(nullptr)
 {
 	printf("SnapshotImageWriter\n");
 	/**
@@ -94,12 +96,16 @@ SnapshotImageWriter::SnapshotImageWriter(const char *filename, J9PortLibrary *po
 	/* TODO: This needs to be part of the PT_DYNAMIC section, not the segmentless section */
 	append_to_section_header_list(dynsym);
 	_symbol_table.set_global_section_header(dynsym);
-	printSectionHeader(dynsym);
+	printSectionHeader(dynsym, "dynsym");
 
 	{ //TODO: this needs to be part of the DYNAMIC section
 		SnapshotImageSectionHeader* dynstr = allocateSectionHeader(SHT_STRTAB, ".dynstr");
 		append_to_section_header_list(dynstr);
 		_dynamic_string_table.set_section_header(dynstr);
+
+		_hash_table_header = allocateSectionHeader(SHT_HASH, ".hash");
+		append_to_section_header_list(_hash_table_header);
+		_hash_table_header->s_header.sh_flags = SHF_ALLOC;
 	}
 }
 
@@ -226,8 +232,8 @@ void endSectionHeader(SnapshotImageSectionHeader *sectionHeader;
 
 #endif
 
-static void printSectionHeader(SnapshotImageSectionHeader *header) {
-	printf(">>>>>> Elf64_Shdr {\n"
+static void printSectionHeader(SnapshotImageSectionHeader *header, const char *name) {
+	printf(">>>>>> Elf64_Shdr(%s) {\n"
 	"sh_name = %" PRIu32 "\n"
 	"sh_type = %" PRIu32 "\n"
 	"sh_flags = %" PRIx64 "\n"
@@ -239,6 +245,7 @@ static void printSectionHeader(SnapshotImageSectionHeader *header) {
 	"sh_addralign = %" PRIu64 "\n"
 	"sh_entsize = %" PRIu64 "\n"
 	"}\n",
+	name,
 	header->s_header.sh_name,
 	header->s_header.sh_type,
 	header->s_header.sh_flags,
@@ -344,7 +351,7 @@ bool SnapshotImageWriter::writeSymbolTable(SymbolTable::Binding binding)
 		// Global case
 		header = _symbol_table.get_global_section_header();
 		table_size = _symbol_table.get_global_table_size();
-		section_index = _symbol_table.get_local_string_table()->get_section_header_index();
+		section_index = _symbol_table.get_global_string_table()->get_section_header_index();
 		num_symbols += _symbol_table.get_number_of_global_symbols();
 		_symbol_table.get_global_string_table()->debug_print_table();
 	}
@@ -362,7 +369,20 @@ bool SnapshotImageWriter::writeSymbolTable(SymbolTable::Binding binding)
 	header->s_header.sh_info = num_symbols;
 	return _symbol_table.write_table_segment(this, binding);
 }
-// TODO: bool SnapshotImageWriter::writeGlobalSymbolTable()
+
+bool SnapshotImageWriter::writeHashTable()
+{
+	SymbolHashTable table(&_symbol_table, _hash_table_header);
+	/* Mark start of the table */
+	_hash_table_header->s_header.sh_offset = _file_offset;
+	table.write_table_segment(this);
+	_hash_table_header->s_header.sh_size = (_file_offset - _hash_table_header->s_header.sh_offset);
+	/* HashTables point to their SymbolTable section */
+	_hash_table_header->s_header.sh_link = _symbol_table.get_global_section_header()->index;
+	printSectionHeader(_hash_table_header, ".hash");
+
+	return true;
+}
 
 bool SnapshotImageWriter::writeSectionHeader(SnapshotImageSectionHeader *header)
 {
@@ -540,6 +560,7 @@ void SnapshotImageWriter::writeSnapshotFile(J9JavaVM *vm)
 		writer.writeSymbolTable(SymbolTable::Binding::Local);
 		writer.writeStringTable(&(writer._dynamic_string_table));
 		writer.writeSymbolTable(SymbolTable::Binding::Global);
+		writer.writeHashTable();
 
 		// Write program and section headers at the end of the file
 		writer.writeProgramHeaders();
@@ -631,6 +652,21 @@ bool StringTable::write_table_segment(SnapshotImageWriter *writer)
 	return true;
 }
 
+uint32_t StringTable::hash_for_string(uint32_t index)
+{
+	J9HashTableState state = { 0 };
+	uint32_t hash = 0;
+	StringTableEntry *entry = static_cast<StringTableEntry*>(hashTableStartDo(_string_table, &state));
+	while (entry != nullptr) {
+		if (entry->offset == index) {
+			hash = entry->hash;
+			break;
+		}
+		entry = static_cast<StringTableEntry*>(hashTableNextDo(&state));
+	}
+printf("hash %" PRIu32 "\n", hash);
+	return hash;
+}
 
 static uintptr_t string_table_hash(void *the_entry, void *userData)
 {
@@ -647,6 +683,8 @@ static uintptr_t string_table_hash(void *the_entry, void *userData)
 		}
 		hash &= ~high;
 	}
+	/* Save the hash for use by the others */
+	entry->hash = uint32_t(hash);
 	return hash;
 
 }
@@ -739,7 +777,14 @@ SymbolTableEntry * SymbolTable::create_symbol(const char *name, Binding binding,
 	 */
 	if ((binding == Global) || (binding == Weak)) {
 		entry->globalStringIndex = _global_strings->get_string_table_index(name);
+printf("Setting Global Symbol string index = %" PRIu32 " for %s\n", entry->globalStringIndex, name);
 		_num_global_symbols += 1;
+		/* The index is assigned *after* incrementing the count of the global
+		 * symbols as the .dynsym table will contain a SHN_UNDEF symbol at index
+		 * 0.  This ensures the index for the symbol is correct which the .hash
+		 * section relies on.
+		 */
+		entry->globalSymbolIndex = _num_global_symbols;
 	} else {
 		_num_local_symbols += 1;
 	}
@@ -788,6 +833,31 @@ bool SymbolTable::write_table_segment(SnapshotImageWriter *writer, Binding bindi
 	return true;
 }
 
+typedef struct SymbolTableDoState {
+	SymbolTable::Binding binding;
+	symbol_do_callback callback;
+	void *userData;
+} SymbolTableDoState;
+
+void SymbolTable::iterator(void *anElement, void *userData)
+{
+	SymbolTableDoState *state = static_cast<SymbolTableDoState *>(userData);
+	SymbolTableEntry *entry = static_cast<SymbolTableEntry *>(anElement);
+
+	if (state->binding == binding(entry->symbol.st_info)) {
+		state->callback(entry, state->userData);
+	}
+}
+
+void SymbolTable::do_symbols(symbol_do_callback callback, void *userData, Binding binding)
+{
+	SymbolTableDoState state;
+	state.binding = binding;
+	state.callback = callback;
+	state.userData = userData;
+	pool_do(_symbols, iterator, &state);
+}
+
 void SymbolTable::writeSymbolTableEntry(void *anElement, void *userData)
 {
 	SymbolTableUserData *data = static_cast<SymbolTableUserData *>(userData);
@@ -826,6 +896,157 @@ SymbolTable::~SymbolTable()
 	}
 }
 
+SymbolHashTable::SymbolHashTable(SymbolTable *symbols, SnapshotImageSectionHeader *header)
+	: _num_buckets(0)
+	, _buckets(nullptr)
+	, _symbols(symbols)
+	, _header(header)
+{
+
+}
+uint32_t SymbolHashTable::hash(SymbolTableEntry *entry)
+{
+	uint32_t string_index = entry->globalStringIndex;
+	StringTable *strings = _symbols->get_global_string_table();
+	uint32_t hash = strings->hash_for_string(string_index);
+	return hash;
+}
+
+#if 0
+typedef struct SymbolTableEntry {
+	Elf64_Sym symbol;
+	uint32_t localStringIndex;
+	uint32_t globalStringIndex;
+	/* Index of the symbol in the symbol table */
+	uint32_t globalSymbolIndex;
+	/* Intended for chaining through the symbols to
+	 * create the hashtable chains
+	 */
+	SymbolTableEntry *hash_chain;
+} SymbolTableEntry;
+typedef struct {
+	uint32_t      st_name;
+	unsigned char st_info;
+	unsigned char st_other;
+	uint16_t      st_shndx;
+	Elf64_Addr    st_value;
+	uint64_t      st_size;
+} Elf64_Sym;
+#endif
+
+void printSymbolTableEntry(SymbolTableEntry *entry) {
+	printf("SymbolTableEntry {\n");
+	printf("symbol{\n");
+	printf("st_name: %" PRIu32 "\n", entry->symbol.st_name);
+	printf("st_info: %x\n", entry->symbol.st_info);
+	printf("st_other: %x\n", entry->symbol.st_other);
+	printf("st_shndx: %" PRIu16 "\n", entry->symbol.st_shndx);
+	printf("st_value: %" PRIx64 "\n", entry->symbol.st_value);
+	printf("st_size: %" PRIu64 "\n", entry->symbol.st_size);
+	printf("}\n");
+	printf("localStringIndex: %" PRIu32 "\n", entry->localStringIndex);
+	printf("globalStringIndex: %" PRIu32 "\n", entry->globalStringIndex);
+	printf("globalSymbolIndex: %" PRIu32 "\n", entry->globalSymbolIndex);
+	printf("hash_chain: %p\n", entry->hash_chain);
+	printf("}\n");
+}
+
+void SymbolHashTable::build_hash_chains(SymbolTableEntry *entry, void *data)
+{
+	SymbolHashTable *table = static_cast<SymbolHashTable*>(data);
+
+	assert(table->_num_buckets != 0);
+
+	printSymbolTableEntry(entry);
+
+	uint32_t hash_code = table->hash(entry);
+	printf("Post table->hash()\n");
+	uint32_t bucket_index = hash_code % table->_num_buckets;
+	printf("hash_code = %" PRIu32 ", bucket_index = %" PRIu32 ", num_buckets = %" PRIu32 "\n", hash_code, bucket_index, table->_num_buckets);
+	SymbolTableEntry *bucket = table->_buckets[bucket_index];
+	if (bucket == nullptr) {
+		table->_buckets[bucket_index] = entry;
+	} else {
+		/* Link the current item into the existing chain */
+		while (bucket->hash_chain != nullptr) {
+			bucket = bucket->hash_chain;
+		}
+		bucket->hash_chain = entry;
+	}
+}
+
+void SymbolHashTable::calculate_buckets_and_chains()
+{
+	assert(_num_buckets == 0);	// ensure this api is only called once
+
+	/* Figure out how many buckets this table should have */
+	uint32_t num_symbols = _symbols->get_number_of_global_symbols() + 1 /* SHN_UNDEF */;
+	uint32_t buckets_estimate = std::max(uint32_t(2), num_symbols / 4);
+
+	/* Allocate the buckets */
+	SymbolTableEntry **buckets = static_cast<SymbolTableEntry**>(malloc(buckets_estimate * sizeof(SymbolTableEntry*)));
+	if (buckets == nullptr) {
+		//TODO handle allocation failure
+		abort();
+	}
+	memset(buckets, 0, buckets_estimate * sizeof(SymbolTableEntry*));
+	_num_buckets = buckets_estimate;
+	_buckets = buckets;
+
+	_symbols->do_symbols(build_hash_chains, this, SymbolTable::Binding::Global);
+}
+
+void SymbolHashTable::write_next_index(SymbolTableEntry *entry, void *data)
+{
+	SnapshotImageWriter *writer = static_cast<SnapshotImageWriter*>(data);
+	SymbolTableEntry *next = entry->hash_chain;
+	uint32_t next_index = 0;
+	if (next != nullptr) {
+		next_index = next->globalSymbolIndex;
+	}
+	writer->writeBytes(reinterpret_cast<const uint8_t*>(&next_index), sizeof(next_index));
+}
+
+bool SymbolHashTable::write_table_segment(SnapshotImageWriter *writer)
+{
+	/* Figure out the structure of the hashtable.  Note, this
+	 * operation is slow and expensive as it has to allocate
+	 * the buckets and add every Symbol to one of the bucket
+	 * chains
+	 */
+	calculate_buckets_and_chains();
+
+	/* Start writing as described in the SymbolHashTable class description */
+	uint32_t value = _num_buckets;
+	writer->writeBytes(reinterpret_cast<const uint8_t*>(&value), sizeof(value));
+	value = _symbols->get_number_of_global_symbols() + 1 /* SHN_UNDEF */;
+	writer->writeBytes(reinterpret_cast<const uint8_t*>(&value), sizeof(value));
+	for (uint32_t i = 0; i < _num_buckets; i++) {
+		SymbolTableEntry *entry = _buckets[i];
+		if (entry == nullptr){
+			value = 0;
+		} else {
+			value = _buckets[i]->globalSymbolIndex;
+		}
+		writer->writeBytes(reinterpret_cast<const uint8_t*>(&value), sizeof(value));
+	}
+	/* Write 0 for the SHN_UNDEF chain[i] */
+	value = 0;
+	writer->writeBytes(reinterpret_cast<const uint8_t*>(&value), sizeof(value));
+	/* Build the chain for the hashtable by iterating over each symbol and writing the
+	 * index of "next" entry in the chain at chain[i].
+	 */
+	//for each symbol, write globalSymbolIndex of entry->hash_chain as this is the
+	// next value in the chain.
+	_symbols->do_symbols(write_next_index, writer, SymbolTable::Binding::Global);
+
+	return true;
+}
+
+
+SymbolHashTable::~SymbolHashTable() {
+	// nothing
+}
 
 DynamicTable::DynamicTable(J9PortLibrary *port_lib)
 	: _dyamic_program_header(nullptr)
@@ -887,7 +1108,7 @@ void DynamicTable::finalizeDynamicTableEntry(void *anElement, void *userData)
 		break;
 	default:
 		printf("Unknown Dynamic entry type: %" PRIu64 " with header=%p\n", entry->entry.d_tag, entry->definingSection);
-		printSectionHeader(entry->definingSection);
+		printSectionHeader(entry->definingSection, "unknown");
 	}
 }
 

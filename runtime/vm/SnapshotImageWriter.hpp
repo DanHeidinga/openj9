@@ -51,17 +51,22 @@ typedef struct StringTableEntry {
 	/* Used to chain the entries in order for writing them out */
 	StringTableEntry *next;
 	uint32_t offset;
+	uint32_t hash;
 } StringTableEntry;
 
 typedef struct SymbolTableEntry {
 	Elf64_Sym symbol;
 	uint32_t localStringIndex;
 	uint32_t globalStringIndex;
+	/* Index of the symbol in the symbol table */
+	uint32_t globalSymbolIndex;
 	/* Intended for chaining through the symbols to
 	 * create the hashtable chains
 	 */
 	SymbolTableEntry *hash_chain;
 } SymbolTableEntry;
+
+typedef void (*symbol_do_callback)(SymbolTableEntry *, void *);
 
 typedef struct DynamicTableEntry {
 	Elf64_Dyn entry;
@@ -181,11 +186,76 @@ public:
 	bool write_table_segment(SnapshotImageWriter *writer);
 
 	/**
+	 * Calculate the hash for the string at `index`.
+	 *
+	 * @param index the index into the string table
+	 * @return the hash (or 0 for non-existant) for string at index
+	 */
+	uint32_t hash_for_string(uint32_t index);
+
+	/**
 	 * Debug API to print the table to stdout.
 	 */
 	void debug_print_table();
 
 };
+
+class SymbolTable;	// Forward declaration
+
+/**
+ * Implement the HashTable used for the .hash
+ * section of the .dynamic section.  This speeds up the
+ * lookup of global symbols by the Elf loader.
+ *
+ * Layout of the table in memory is:
+ * -----------------
+ * | num_buckets
+ * | length of symbol table (chain length)
+ * | bucket[0]
+ * | bucket[...]
+ * | bucket[n]
+ * | chain[0]
+ * | chain[1]
+ * | chain[...]
+ * | chain[n]
+ * -----------------
+ * bucket[i] is the start of a chain, where i = hash(sym) % num_buckets
+ * then lookup symbol[i].  If not a match, next symbol will be chain[i].
+ * Note, chain will be the same length as the SymbolTable.
+ *
+ */
+class SymbolHashTable {
+/**
+ * Data Members
+ */
+private:
+	uint32_t _num_buckets;
+	SymbolTableEntry **_buckets;
+
+	SymbolTable *_symbols;
+	SnapshotImageSectionHeader *_header;
+protected:
+public:
+
+/**
+ * Function Members
+ */
+private:
+
+	void calculate_buckets_and_chains();
+
+	static void build_hash_chains(SymbolTableEntry *entry, void *data);
+	uint32_t hash(SymbolTableEntry *entry);
+	static void write_next_index(SymbolTableEntry *entry, void *data);
+
+protected:
+public:
+	SymbolHashTable(SymbolTable *symbols, SnapshotImageSectionHeader *header);
+	~SymbolHashTable();
+
+	bool write_table_segment(SnapshotImageWriter *writer);
+};
+
 
 /*
 typedef struct {
@@ -305,6 +375,14 @@ private:
 	 * each element of the SymbolTable
 	 */
 	static void writeSymbolTableEntry(void *anElement, void *userData);
+
+	/**
+	 * Private callback function used to drive the pool_do()
+	 * iteration for the do() call.
+	 * @param anElement a SymbolTableEntry pointer
+	 * @param userData SymbolTableDoState pointer
+	 */
+	static void iterator(void *anElement, void *userData);
 
 protected:
 public:
@@ -433,6 +511,15 @@ public:
 	 * @return a pointer to a StringTable
 	 */
 	StringTable *get_global_string_table(void) { return _global_strings; }
+
+	/**
+	 * Iterate over the SymbolTableElements with the a matching `binding`.
+	 *
+	 * @param callback the per-element callback function
+	 * @param userData data passed to the callback
+	 * @param binding the types of symbols to pass to the callback: Global or Local
+	 */
+	void do_symbols(symbol_do_callback callback, void *userData, Binding binding);
 };
 
 /* Represents the "PT_DYANMIC" Program Header and the ".dynamic" section
@@ -535,6 +622,8 @@ private:
 	/* Single symbol table that manages both local and global symbols */
 	SymbolTable _symbol_table;
 
+	SnapshotImageSectionHeader * _hash_table_header;
+
 protected:
 public:
 
@@ -585,10 +674,19 @@ public:
 
 	bool writeSymbolTable(SymbolTable::Binding binding);
 
+	/**
+	 * Create the SymbolHashTable based on the SymbolTable
+	 * and write the table into the file.  Update the section
+	 * header with the appropriate data - file position, link
+	 * to the symbol table, etc.
+	 */
+	bool writeHashTable();
+
 	static void writeSnapshotFile(J9JavaVM *vm);
 
 friend StringTable;
 friend SymbolTable;
+friend SymbolHashTable;
 friend DynamicTable;
 };
 
